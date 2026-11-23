@@ -1,0 +1,61 @@
+{
+  "name": "@ipab/ipfs-store",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Verified bounded UnixFS content acquisition and shared block storage.",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./dag": {
+      "types": "./dist/dag.d.ts",
+      "import": "./dist/dag.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/silvermoon-work/ipab.git",
+    "directory": "packages/ipfs-store"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node scripts/test.mjs",
+    "test-coverage": "node scripts/test-coverage.mjs"
+  },
+  "dependencies": {
+    "@helia/http": "catalog:",
+    "@helia/unixfs": "catalog:",
+    "@helia/block-brokers": "catalog:",
+    "@helia/routers": "catalog:",
+    "@ipld/dag-cbor": "catalog:",
+    "@ipld/dag-pb": "catalog:",
+    "@silvermoon-work/ipfs-access": "catalog:",
+    "@silvermoon-work/ipfs-payload": "catalog:",
+    "blockstore-core": "catalog:",
+    "multiformats": "catalog:",
+    "ipfs-unixfs-exporter": "catalog:"
+  },
+  "devDependencies": {
+    "@ipld/car": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "ipfs-unixfs-importer": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readContentConfiguration } from "@silvermoon-work/ipfs-store/node";
-import type { StoreConfiguration } from "@silvermoon-work/ipfs-store";
+import { readContentConfiguration } from "@ipab/ipfs-store/node";
+import type { StoreConfiguration } from "@ipab/ipfs-store";
 import { HostError, object, syntax } from "./errors.js";
 
 export type ConfigKey =

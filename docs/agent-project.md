@@ -6,7 +6,10 @@
 当前 `apps/ipab` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、
 本地元数据及 Store owner 协调。普通 App argv/stdio 取代早期单 CID Task 输入；
 关联管理叫 register，不是 apps；open 不提供临时应用覆盖。
-公共 content-bundle 与 ipfs-store 使用发布依赖，不复制源码或迁移发布归属。
+Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`，
+名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
+`workspace:*` 引用 Store。三个成员均 private，不迁移旧发布归属。
+Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
 
 ## Engineering
@@ -28,8 +31,13 @@
 - 不复制参考工程的业务包、历史生命周期记录、发布授权或个人配置。
 - 新成员 minimum engines.node 为 22.15.0，所有适用成员保持同一 minimum；
   不自动提高消费者最低环境。
+- 迁入包保留原 MIT LICENSE、CID／协议与存储协调标识。private workspace
+  使用统一的开发最低环境，旧发布包的消费者最低环境不变。
+- Store 的 node:test 测试已改用 Vitest 的 test/onTestFinished/afterAll 和
+  fake timers，保留原业务断言；真实 Kubo 测试使用独立离线仓库，
+  `KUBO_REAL_TEST=1` 启用，绝不对共享 daemon 执行 GC。
 - 新成员脚本按完整标准使用 `node scripts/<same-name>.mjs`，共享逻辑在
-  `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
+  根 `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
 - 运行时／CLI 边界、准确 App Schema 和保留策略见 docs/design-overview.md
   与 README.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon GC。
 

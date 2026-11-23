@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IpfsStore } from "@silvermoon-work/ipfs-store";
+import { IpfsStore } from "@ipab/ipfs-store";
 import { State } from "../src/state.js";
 import {
   alive,

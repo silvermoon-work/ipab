@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
-import { IpfsStore } from "@silvermoon-work/ipfs-store";
+import { IpfsStore } from "@ipab/ipfs-store";
 import { randomUUID } from "node:crypto";
+import stringWidth from "string-width";
 import {
   configKey,
   effectiveConfig,
@@ -27,6 +28,7 @@ export interface IO {
   out(text: string): void;
   err(text: string): void;
   tty: boolean;
+  columns?(): number | undefined;
   confirm(text: string): Promise<boolean>;
 }
 export const processIO: IO = {
@@ -37,6 +39,9 @@ export const processIO: IO = {
     process.stderr.write(`${text}\n`);
   },
   tty: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+  columns() {
+    return process.stdout.columns;
+  },
   async confirm(text) {
     const reader = createInterface({
       input: process.stdin,
@@ -104,20 +109,96 @@ function printable(text: string): string {
     .join("");
 }
 
-function table(headers: string[], rows: string[][], empty: string): string {
+function abbreviated(text: string, limit: number): string {
+  const characters = [...text];
+  return characters.length <= limit
+    ? text
+    : `${characters.slice(0, limit - 3).join("")}...`;
+}
+
+function commandArguments(argv: readonly string[]): string {
+  return (
+    argv
+      .map((argument) =>
+        /^[A-Za-z0-9_./:@%=,+-]+$/.test(argument)
+          ? argument
+          : JSON.stringify(argument),
+      )
+      .join(" ") || "-"
+  );
+}
+
+function fittedColumns(text: string, columns: number): string {
+  if (stringWidth(text) <= columns) return text;
+  let prefix = "";
+  let width = 0;
+  for (const { segment } of new Intl.Segmenter(undefined, {
+    granularity: "grapheme",
+  }).segment(text)) {
+    const next = stringWidth(segment);
+    if (width + next > columns - 3) break;
+    prefix += segment;
+    width += next;
+  }
+  return `${prefix}...`;
+}
+
+function endedDisplay(endedAt: string, now: number): string {
+  const ended = Date.parse(endedAt);
+  if (!Number.isFinite(ended))
+    throw new HostError("Execution record has an invalid end time.");
+  const age = now - ended;
+  if (age < 0 || age >= 86_400_000)
+    return new Date(ended).toISOString().slice(0, 10);
+  return age >= 3_600_000
+    ? `${Math.floor(age / 3_600_000)}h`
+    : `${Math.floor(age / 60_000)}m`;
+}
+
+function table(
+  headers: string[],
+  rows: string[][],
+  empty: string,
+  lastColumn?: { columns: number | undefined; fallbackCharacters: number },
+): string {
   if (!rows.length) return empty;
   const cells = rows.map((row) => row.map(printable));
   const widths = headers.map((header, column) =>
     cells.reduce(
-      (width, row) => Math.max(width, row[column]!.length),
-      header.length,
+      (width, row) => Math.max(width, stringWidth(row[column]!)),
+      stringWidth(header),
     ),
   );
+  if (lastColumn) {
+    const column = headers.length - 1;
+    const columns = lastColumn.columns;
+    if (
+      columns !== undefined &&
+      (!Number.isSafeInteger(columns) || columns <= 0)
+    )
+      throw new HostError("Invalid terminal width.");
+    const available =
+      columns === undefined
+        ? undefined
+        : Math.max(
+            stringWidth(headers[column]!),
+            columns -
+              widths.slice(0, column).reduce((sum, width) => sum + width, 0) -
+              column * 2,
+          );
+    for (const row of cells)
+      row[column] =
+        available === undefined
+          ? abbreviated(row[column]!, lastColumn.fallbackCharacters)
+          : fittedColumns(row[column]!, available);
+  }
   return [headers, ...cells]
     .map((row) =>
       row
         .map((cell, column) =>
-          column === headers.length - 1 ? cell : cell.padEnd(widths[column]!),
+          column === headers.length - 1
+            ? cell
+            : cell.padEnd(cell.length + widths[column]! - stringWidth(cell)),
         )
         .join("  "),
     )
@@ -452,38 +533,50 @@ async function performCli(
           filter,
           Number(parsed.options.limit ?? value("history.limit")),
           typeof parsed.options.before === "string"
-            ? parsed.options.before
+            ? state.resolveRunId(parsed.options.before)
             : undefined,
         );
+        if (parsed.flags.json) {
+          emit(page, "");
+          break;
+        }
+        const aliases = new Map<string, string>();
+        for (const alias of state.aliases())
+          if (!aliases.has(alias.cid)) aliases.set(alias.cid, alias.name);
+        const reference = (cid: string | null): string =>
+          cid === null ? "none" : abbreviated(aliases.get(cid) ?? cid, 16);
+        const shortId = state.shortRunId.bind(state);
+        const now = Date.now();
         const rows = table(
-          ["RUN ID", "ENDED", "STATUS", "APP CID", "OUTPUT CID", "ARGV"],
+          ["RUN ID", "ENDED", "STATUS", "APP", "OUTPUT", "ARGV"],
           page.items.map((record) => [
-            record.id,
-            record.endedAt,
+            shortId(record.id),
+            endedDisplay(record.endedAt, now),
             record.status,
-            record.appCid,
-            record.outputCid ?? "none",
-            JSON.stringify(record.argv),
+            reference(record.appCid),
+            reference(record.outputCid),
+            commandArguments(record.argv),
           ]),
           "No ended executions.",
+          { columns: io.columns?.(), fallbackCharacters: 48 },
         );
         emit(
           page,
           rows +
             (page.nextBefore
-              ? `\nMore matches; use --before ${page.nextBefore} with the same filters.`
+              ? `\nMore matches; use --before ${shortId(page.nextBefore)} with the same filters.`
               : ""),
         );
         break;
       }
       case "history show": {
-        const record = state.run(first!);
+        const record = state.run(state.resolveRunId(first!));
         emit(record, runDetails(record));
         break;
       }
       case "history remove": {
         const ids = parsed.positional.length
-          ? [...new Set(parsed.positional)]
+          ? [...new Set(parsed.positional.map(state.resolveRunId.bind(state)))]
           : selectedIds(state, filter);
         for (const id of ids) state.run(id);
         if (

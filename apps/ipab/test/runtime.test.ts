@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { encodeSchema } from "@silvermoon-work/content-bundle";
-import { IpfsStore } from "@silvermoon-work/ipfs-store";
+import { encodeSchema } from "@ipab/bundle";
+import { IpfsStore } from "@ipab/ipfs-store";
 import * as dagPb from "@ipld/dag-pb";
 import { UnixFS } from "ipfs-unixfs";
 import { CID } from "multiformats/cid";

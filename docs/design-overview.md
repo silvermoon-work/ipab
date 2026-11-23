@@ -3,8 +3,9 @@
 ## 当前实现与规范优先级
 
 当前 `apps/ipab` 实现已确认 CLI：exec/open、alias、register、config、
-history，以及 Node 子进程运行时。它依赖发布的 content-bundle 和 ipfs-store，
-不迁移或复制它们的实现，不包含 npm 交付流程。CLI 的用户确认规范和后续
+history，以及 Node 子进程运行时。Content Bundle 与 Store 已迁入 private
+成员 `@ipab/bundle`、`@ipab/ipfs-store`，包含 Kubo pin 兼容修复，
+不包含 npm 交付流程。CLI 的用户确认规范和后续
 Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临时 Open With。
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile

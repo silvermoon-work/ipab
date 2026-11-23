@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { IpfsStore } from "@silvermoon-work/ipfs-store";
+import type { IpfsStore } from "@ipab/ipfs-store";
 import { CID } from "multiformats/cid";
 import { HostError, message, object } from "./errors.js";
 import { requestFrame, type Reply } from "./context.js";

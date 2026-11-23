@@ -11,11 +11,22 @@ allowBuilds:
 
 catalog:
   "@ipld/dag-pb": 4.2.0
-  "@silvermoon-work/content-bundle": 0.1.0-rc.0
-  "@silvermoon-work/ipfs-store": 0.1.0
+  "@helia/http": 3.0.4
+  "@helia/unixfs": 8.0.9
+  "@helia/block-brokers": 5.2.4
+  "@helia/routers": 4.0.6
+  "@ipld/car": 5.4.6
+  "@ipld/dag-cbor": 10.0.2
+  "@silvermoon-work/ipfs-access": 0.1.0
+  "@silvermoon-work/ipfs-payload": 0.1.0
+  ajv: 8.20.0
+  blockstore-core: 7.0.1
+  ipfs-unixfs-exporter: 16.2.3
+  yaml: 2.9.1
   ipfs-unixfs: 13.1.2
   ipfs-unixfs-importer: 17.1.1
   multiformats: 14.0.5
+  string-width: 8.2.1
   "@eslint/js": 10.0.1
   "@types/node": 26.6.6
   "@vitest/coverage-v8": 5.1.0
@@ -32,4 +43,3 @@ catalog:
 minimumReleaseAgeExclude:
   - "@eslint/config-array@0.23.6"
   - eslint@10.15.0
-  - "@silvermoon-work/content-bundle@0.1.0-rc.0"

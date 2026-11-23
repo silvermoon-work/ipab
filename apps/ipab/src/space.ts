@@ -3,12 +3,8 @@ import { UnixFS } from "ipfs-unixfs";
 import * as dagPb from "@ipld/dag-pb";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
-import type { IpfsStore } from "@silvermoon-work/ipfs-store";
-import {
-  openBundle,
-  encodeSchema,
-  type ContentBundle,
-} from "@silvermoon-work/content-bundle";
+import type { IpfsStore } from "@ipab/ipfs-store";
+import { openBundle, encodeSchema, type ContentBundle } from "@ipab/bundle";
 import { HostError, message, object } from "./errors.js";
 import type { Ownership } from "./history.js";
 

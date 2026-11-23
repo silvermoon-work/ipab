@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import stringWidth from "string-width";
 import { runCli, help, parse } from "../src/cli.js";
 import {
   configKey,
@@ -23,6 +24,7 @@ describe("management contract", () => {
     work = await fixture();
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     await work.cleanup();
   });
   const schema = appSchemaBlock.cid.toString();
@@ -97,9 +99,10 @@ describe("management contract", () => {
     });
     const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
     expect(page.out).toMatch(
-      /^RUN ID\s+ENDED\s+STATUS\s+APP CID\s+OUTPUT CID\s+ARGV\nrun-002/,
+      /^RUN ID\s+ENDED\s+STATUS\s+APP\s+OUTPUT\s+ARGV\nrun-002/,
     );
-    expect(page.out).toContain(output);
+    expect(page.out).toContain("reader");
+    expect(page.out).toContain(`${output.slice(0, 13)}...`);
     expect(page.out).toContain("use --before run-002 with the same filters");
     const machine = JSON.parse(
       (await cli(work.stateDir, ["--json", "history", "list", "--limit", "1"]))
@@ -145,6 +148,296 @@ describe("management contract", () => {
         (result) => result.err === "",
       ),
     ).toBe(true);
+  });
+
+  it("history lists current aliases and readable quoted arguments without changing full records", async () => {
+    const argv = ["--flag", "two words", "", 'quote"x', "\n"];
+    const state = new State(work.stateDir);
+    state.setAlias("z-reader", another, false);
+    state.setAlias("reader", another, false);
+    state.setAlias("result", schema, false);
+    state.saveRun(record("readable-run", another, { argv, outputCid: schema }));
+    state.close();
+    const result = await cli(work.stateDir, ["history", "list"]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("reader");
+    expect(result.out).toContain("result");
+    expect(result.out).not.toContain("z-reader");
+    expect(result.out).not.toContain(another);
+    expect(result.out).not.toContain(schema);
+    expect(result.out).toContain('--flag "two words" "" "quote\\"x" "\\n"');
+    expect(result.out.split("\n")).toHaveLength(2);
+    const machine = await cli(work.stateDir, ["--json", "history", "list"]);
+    expect(JSON.parse(machine.out) as unknown).toMatchObject({
+      items: [{ appCid: another, outputCid: schema, argv }],
+    });
+    const details = await cli(work.stateDir, [
+      "history",
+      "show",
+      "readable-run",
+    ]);
+    expect(details.out).toContain(`App CID: ${another}`);
+    expect(details.out).toContain(`Output CID: ${schema}`);
+    expect(details.out).toContain(`Argv: ${JSON.stringify(argv)}`);
+  });
+
+  it("history limits references and argv at their display boundaries without splitting Unicode", async () => {
+    const state = new State(work.stateDir);
+    for (const length of [47, 48, 49]) {
+      state.saveRun(
+        record(`run-${length}`, another, {
+          outputCid: schema,
+          argv: ["x".repeat(length)],
+        }),
+      );
+    }
+    state.saveRun(
+      record("unicode-run", another, { argv: ["\u{1f600}".repeat(49)] }),
+    );
+    state.close();
+    const result = await cli(work.stateDir, ["history", "list"]);
+    expect(result.code).toBe(0);
+    for (const length of [47, 48, 49]) {
+      const row = result.out
+        .split("\n")
+        .find((line) => line.startsWith(`run-${length}`));
+      expect(row?.split(/\s{2,}/)).toEqual([
+        `run-${length}`,
+        expect.stringMatching(/^(?:\d+[mh]|\d{4}-\d{2}-\d{2})$/),
+        "succeeded",
+        `${another.slice(0, 13)}...`,
+        `${schema.slice(0, 13)}...`,
+        length <= 48 ? "x".repeat(length) : `${"x".repeat(45)}...`,
+      ]);
+    }
+    const unicode = result.out
+      .split("\n")
+      .find((line) => line.startsWith("unicode-"));
+    expect(unicode?.split(/\s{2,}/).at(-1)).toBe(
+      `"${"\u{1f600}".repeat(44)}...`,
+    );
+    const updated = new State(work.stateDir);
+    updated.setAlias("a-long-readable-app-name", another, false);
+    updated.close();
+    const aliased = await cli(work.stateDir, ["history", "list"]);
+    expect(aliased.out).toContain("a-long-readab...");
+    expect(aliased.out).not.toContain("a-long-readable-app-name");
+  });
+
+  it("short run IDs remain unique across pages and resolve safely for show, pagination and removal", async () => {
+    const firstId = "01234567-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const secondId = "01234567-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const state = new State(work.stateDir);
+    state.saveRun(
+      record(firstId, another, { endedAt: "2026-11-23T00:00:02Z" }),
+    );
+    state.saveRun(record(secondId, another));
+    state.close();
+    const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
+    expect(page.code).toBe(0);
+    expect(page.out).toMatch(/\n01234567-a\s/);
+    expect(page.out).toContain("use --before 01234567-a with the same filters");
+    expect(page.out).not.toContain(firstId);
+    const next = await cli(work.stateDir, [
+      "history",
+      "list",
+      "--before",
+      "01234567-a",
+    ]);
+    expect(next.out).toMatch(/\n01234567-b\s/);
+    const details = await cli(work.stateDir, [
+      "--json",
+      "history",
+      "show",
+      "01234567-a",
+    ]);
+    expect(JSON.parse(details.out) as unknown).toMatchObject({ id: firstId });
+    const ambiguous = await cli(work.stateDir, [
+      "history",
+      "remove",
+      "01234567",
+      "--yes",
+    ]);
+    expect(ambiguous.code).toBe(1);
+    expect(ambiguous.err).toContain("Ambiguous run ID prefix");
+    const remaining = await cli(work.stateDir, [
+      "--json",
+      "history",
+      "list",
+      "--limit",
+      "1",
+    ]);
+    expect(JSON.parse(remaining.out) as unknown).toMatchObject({
+      items: [{ id: firstId }],
+      nextBefore: firstId,
+    });
+    const short = await cli(work.stateDir, ["history", "show", "0123456"]);
+    expect(short.code).toBe(1);
+    const removed = await cli(work.stateDir, [
+      "--json",
+      "history",
+      "remove",
+      "01234567-a",
+      firstId,
+      "--yes",
+    ]);
+    expect(removed.code).toBe(0);
+    expect(JSON.parse(removed.out) as unknown).toEqual({
+      removed: [firstId],
+      retentionClaimsReleased: true,
+      garbageCollectionGuaranteed: false,
+    });
+    for (const wildcard of ["0123456*", "0123456?"]) {
+      const rejected = await cli(work.stateDir, [
+        "history",
+        "remove",
+        wildcard,
+        "--yes",
+      ]);
+      expect(rejected.code).toBe(1);
+      expect(rejected.err).toContain("does not exist");
+    }
+    expect((await cli(work.stateDir, ["history", "show", secondId])).code).toBe(
+      0,
+    );
+    const literal = new State(work.stateDir);
+    literal.saveRun(record("literal[*?]-abcdef", another));
+    literal.close();
+    const escaped = await cli(work.stateDir, [
+      "--json",
+      "history",
+      "show",
+      "literal[*?",
+    ]);
+    expect(escaped.code).toBe(0);
+    expect(JSON.parse(escaped.out) as unknown).toMatchObject({
+      id: "literal[*?]-abcdef",
+    });
+  });
+
+  it("history argv uses the terminal's remaining columns and grows on wider terminals", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
+    const argv = ["--flag", "x".repeat(90)];
+    const state = new State(work.stateDir);
+    state.saveRun(record("term-run", another, { argv, outputCid: schema }));
+    state.close();
+    let previous = 0;
+    let fullWidth = 0;
+    for (const columns of [70, 80, 120, 200]) {
+      const result = await cli(work.stateDir, ["history", "list"], { columns });
+      expect(result.code).toBe(0);
+      const lines = result.out.split("\n");
+      expect(lines.every((line) => stringWidth(line) <= columns)).toBe(true);
+      const shown = lines[1]?.split(/\s{2,}/).at(-1);
+      expect(shown?.length).toBeGreaterThan(previous);
+      previous = shown?.length ?? 0;
+      if (columns === 200) {
+        expect(shown).toBe(argv.join(" "));
+        fullWidth = stringWidth(lines[1]!);
+      } else expect(shown).toMatch(/\.\.\.$/);
+    }
+    const exact = await cli(work.stateDir, ["history", "list"], {
+      columns: fullWidth,
+    });
+    expect(exact.out.split("\n")[1]).toHaveLength(fullWidth);
+    expect(exact.out).toContain(argv.join(" "));
+    const smaller = await cli(work.stateDir, ["history", "list"], {
+      columns: fullWidth - 1,
+    });
+    expect(smaller.out.split("\n")[1]).toHaveLength(fullWidth - 1);
+    expect(smaller.out).not.toContain(argv.join(" "));
+    const narrow = await cli(work.stateDir, ["history", "list"], {
+      columns: 10,
+    });
+    expect(narrow.code).toBe(0);
+    expect(narrow.out).toContain(`${another.slice(0, 13)}...`);
+    expect(
+      narrow.out
+        .split("\n")[1]
+        ?.split(/\s{2,}/)
+        .at(-1),
+    ).toBe("-...");
+    const machine = await cli(work.stateDir, ["--json", "history", "list"], {
+      columns: 0,
+    });
+    expect(JSON.parse(machine.out) as unknown).toMatchObject({
+      items: [{ argv }],
+    });
+    const invalid = await cli(work.stateDir, ["history", "list"], {
+      columns: 0,
+    });
+    expect(invalid.code).toBe(1);
+    expect(invalid.err).toContain("Invalid terminal width");
+  });
+
+  it("terminal-width truncation counts wide glyphs and preserves complete grapheme clusters", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
+    const family = "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}";
+    for (const [glyph, count] of [
+      ["\u4f60", 6],
+      [family, 6],
+      ["e\u0301", 12],
+    ] as const) {
+      const state = new State(work.stateDir);
+      state.saveRun(
+        record("term-run", another, {
+          outputCid: schema,
+          argv: [glyph.repeat(40)],
+        }),
+      );
+      state.close();
+      const result = await cli(work.stateDir, ["history", "list"], {
+        columns: 80,
+      });
+      expect(result.code).toBe(0);
+      expect(
+        result.out.split("\n").every((line) => stringWidth(line) <= 80),
+      ).toBe(true);
+      expect(
+        result.out
+          .split("\n")[1]
+          ?.split(/\s{2,}/)
+          .at(-1),
+      ).toBe(`"${glyph.repeat(count)}...`);
+    }
+  });
+
+  it("history shows relative end times at minute/hour/day boundaries while full timestamps remain available", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
+    const cases = [
+      ["recent", "2026-11-23T11:59:30Z", "0m"],
+      ["minutes", "2026-11-23T11:50:00Z", "10m"],
+      ["one-hour", "2026-11-23T11:00:00Z", "1h"],
+      ["hours", "2026-11-23T07:00:00Z", "5h"],
+      ["one-day", "2026-11-22T12:00:00Z", "2026-11-22"],
+      ["older", "2026-11-21T12:00:00Z", "2026-11-21"],
+      ["future", "2026-11-24T12:00:00Z", "2026-11-24"],
+    ] as const;
+    const state = new State(work.stateDir);
+    for (const [id, endedAt] of cases)
+      state.saveRun(record(id, another, { endedAt }));
+    state.close();
+    const listed = await cli(work.stateDir, ["history", "list"]);
+    expect(listed.code).toBe(0);
+    for (const [id, , ended] of cases) {
+      const row = listed.out.split("\n").find((line) => line.startsWith(id));
+      expect(row?.split(/\s{2,}/)[1]).toBe(ended);
+    }
+    const machine = await cli(work.stateDir, ["--json", "history", "list"]);
+    expect(JSON.parse(machine.out) as unknown).toHaveProperty(
+      "items",
+      expect.arrayContaining([
+        expect.objectContaining({ id: "minutes", endedAt: cases[1][1] }),
+      ]),
+    );
+    const details = await cli(work.stateDir, ["history", "show", "minutes"]);
+    expect(details.out).toContain(`Ended: ${cases[1][1]}`);
+    const corrupt = new State(work.stateDir);
+    corrupt.saveRun(record("invalid", another, { endedAt: "not-a-date" }));
+    corrupt.close();
+    const failed = await cli(work.stateDir, ["history", "list"]);
+    expect(failed.code).toBe(1);
+    expect(failed.err).toContain("invalid end time");
   });
 
   it("empty human lists succeed clearly and confirmations are not JSON fallbacks", async () => {

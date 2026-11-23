@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { IpfsStore } from "@silvermoon-work/ipfs-store";
+import type { IpfsStore } from "@ipab/ipfs-store";
 import { HostError, message } from "./errors.js";
 import { Ownership, saveHistory } from "./history.js";
 import { ContextServer } from "./ipc.js";

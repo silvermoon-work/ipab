@@ -1,0 +1,46 @@
+{
+  "name": "@ipab/bundle",
+  "version": "0.1.0-rc.0",
+  "private": true,
+  "description": "Validated immutable UnixFS content bundles with CID-addressed JSON Schemas.",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/silvermoon-work/ipab.git",
+    "directory": "packages/bundle"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node scripts/test.mjs",
+    "test-coverage": "node scripts/test-coverage.mjs"
+  },
+  "dependencies": {
+    "@ipld/dag-cbor": "catalog:",
+    "@ipab/ipfs-store": "workspace:*",
+    "ajv": "catalog:",
+    "multiformats": "catalog:",
+    "yaml": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "ipfs-unixfs-importer": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

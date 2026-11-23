@@ -10,6 +10,8 @@ node_modules/
 !.env.example
 .npmrc.local
 .test-work/
+.cache/
+.content-*/
 .DS_Store
 .idea/
 .vscode/

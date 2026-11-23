@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CID } from "multiformats/cid";
-import type { StoreConfiguration } from "@silvermoon-work/ipfs-store";
+import type { StoreConfiguration } from "@ipab/ipfs-store";
 import {
   validateUserConfig,
   type ConfigKey,
@@ -258,6 +258,38 @@ export class State {
       .prepare("SELECT value FROM runs")
       .all()
       .map((row) => JSON.parse(String(row.value)) as RunRecord);
+  }
+  private matchingRunIds(prefix: string): string[] {
+    // Prefixes are literal identifiers, not GLOB patterns.
+    const pattern = `${prefix.replaceAll("[", "[[]").replaceAll("*", "[*]").replaceAll("?", "[?]")}*`;
+    return this.db
+      .prepare("SELECT id FROM runs WHERE id GLOB ? ORDER BY id LIMIT 2")
+      .all(pattern)
+      .map((row) => String(row.id));
+  }
+  shortRunId(id: string): string {
+    let length = Math.min(8, id.length);
+    while (
+      length < id.length &&
+      this.matchingRunIds(id.slice(0, length)).length > 1
+    )
+      length++;
+    return id.slice(0, length);
+  }
+  resolveRunId(value: string): string {
+    if (this.db.prepare("SELECT id FROM runs WHERE id=?").get(value))
+      return value;
+    if (value.length >= 8) {
+      const matches = this.matchingRunIds(value);
+      if (matches.length === 1) return matches[0]!;
+      if (matches.length > 1)
+        throw new HostError(
+          `Ambiguous run ID prefix "${value}"; use more characters or the full ID.`,
+        );
+    }
+    throw new HostError(
+      `Execution record "${value}" does not exist. Run ipab history list.`,
+    );
   }
   run(id: string): RunRecord {
     const row = this.db.prepare("SELECT value FROM runs WHERE id=?").get(id);

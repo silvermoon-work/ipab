@@ -50,9 +50,8 @@ ipab config get store.rpc
 ```
 
 这是 Kubo RPC API，不是 gateway。IPAB 不启动 daemon；离线 daemon
-只能读取已有内容。当前 Store 依赖 `0.1.0` 对 Kubo 返回的
-`indirect through <CID>` pin 状态存在解析兼容问题，相关执行可能失败；
-需采用公共 Store 包的兼容修复版本，不能将配置成功当作执行验证通过。
+只能读取已有内容。CLI 使用本地 workspace Store，已包含
+`indirect through <CID>` pin 状态的兼容修复；配置成功不代替实际执行验证。
 PowerShell 调用 `ipab` 时，argv 模板分隔符应写成引号包裹的 `'--'`，
 避免 PowerShell 吞掉它：
 
@@ -77,8 +76,11 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 
 ## Store、配置与结果
 
-读写及保留使用发布的 `@silvermoon-work/ipfs-store@0.1.0`；Content Bundle
-校验使用 `@silvermoon-work/content-bundle@0.1.0-rc.0`，不复制它们的实现。
+读写及保留使用本地 `@ipab/ipfs-store`；Content Bundle
+校验使用本地 `@ipab/bundle`，均通过 `workspace:*` 依赖并按顺序构建。
+两包的源码、测试和 MIT 许可证已迁入，尚未在新 scope 发布；
+原发布包和源仓库不受影响。Store 的 ipfs-access/ipfs-payload 基础包仍使用
+`@silvermoon-work` 发布依赖，不将它们冒充已迁移成员。
 默认通过 Store 的 `/node` 配置 helper 读取 `TASK_CONTENT_CONFIG`／平台
 TaskContent 配置，缺省使用 `~/.silvermoon.work/content` 的本地可写 Store。
 不是虚构的默认 RPC 服务，也不是只读 gateway。
@@ -127,6 +129,27 @@ RFC3339，最多三位小数秒，按 endedAt 的 `[since,until)` 匹配；更�
 下一游标是本页最后 ID。`show RUN_ID` 成功读取失败记录也退出 0。
 这些查询不要求在线 Store。
 
+`history list` 的 RUN ID 显示至少 8 字符的唯一前缀；有冲突时自动加长，
+唯一性检查覆盖全部历史，不仅是当前页。`history show/remove` 和 `--before`
+接受完整 ID 或至少 8 字符的唯一前缀，精确 ID 优先，歧义明确报错；
+删除在确认前解析并固定完整目标 ID。持久 ID、JSON 和详情中的 ID 不变。
+ENDED 在不足一小时显示分钟（如 `10m`，不足一分钟为 `0m`），
+不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
+未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
+
+APP／OUTPUT 优先显示当前匹配的 alias；
+多个 alias 时取按名称排序的第一个，没有 alias 则显示 CID 前缀。
+两列最多 16 个字符，超限以 `...` 结尾。ARGV 按命令行样式以空格连接，
+特殊参数使用 JSON 字符串引号／转义，空参数为 `""`，无参数为 `-`；
+在终端中自动使用固定列以外的剩余宽度，超限以 `...` 结尾，
+按实际显示列计算中文／emoji 宽度，不拆开组合字符。
+重定向或无法读取终端宽度时，仍最多显示 48 个字符，不截断 Unicode 码点。
+极窄终端无法容纳固定列时，保留 ARGV 标题的最小宽度，表格仍可能换行；
+不会为此截断其他列。
+这只是阅读用的摘要，不保证可以直接交给任意 shell 重放。
+`--json history list` 和 `history show` 保留完整 CID 和实际 argv；
+显示 alias 不修改历史记录中的准确 CID。
+
 删除必须显式 ID 或筛选，两种方式互斥，无隐含全选，不支持分页选项；
 删除全部匹配已结束记录，不限 20。确认之前固定目标集合；TTY 展示数量和保留
 后果并确认，非 TTY 要求 `--yes`。部分失败明确报告已完成／剩余 ID。
@@ -171,8 +194,10 @@ Node 选择依据为 2026-11-23 搭建时读取的
 ## 结构
 
 ```text
-apps/ipab/             private CLI、Node runtime、IPC context 与回归测试
-packages/              公共包 workspace，当前无成员
+apps/ipab/             @ipab/cli：private CLI、Node runtime、IPC context 与回归测试
+packages/bundle/       @ipab/bundle：private 内容包校验、Schema 和 content refs
+packages/ipfs-store/   @ipab/ipfs-store：private Local/Kubo Store 与保留协调
+scripts/lib/           成员共享工具启动逻辑
 docs/agent-project.md  项目工程指导
 pnpm-workspace.yaml   workspace、catalog 和安装策略
 turbo.json             依赖顺序与缓存
@@ -200,8 +225,8 @@ lint-package 无交付任务，不将它称为已验证的发布能力。
 | `pnpm check`         | 格式 → 构建 → 类型 → lint → 覆盖率 → 包检查，失败即停 |
 | `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出         |
 
-已有根脚本继续使用用户确认的直接工具命令；新增 CLI 成员遵循
-`node scripts/<same-name>.mjs`，共享实现放 `scripts/lib/`，传播工具退出失败。
+已有根脚本继续使用用户确认的直接工具命令；新增成员遵循
+`node scripts/<same-name>.mjs`，共享实现放根 `scripts/lib/`，传播工具退出失败。
 标准 [AGENTS.md](AGENTS.md) 的旧脚本接口约定与这一选择的差异，
 明确记录在 [项目指导](docs/agent-project.md)，不声称标准接口检查已经通过。
 

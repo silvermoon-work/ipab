@@ -1,7 +1,4 @@
-import {
-  IpfsStore,
-  type StoreConfiguration,
-} from "@silvermoon-work/ipfs-store";
+import { IpfsStore, type StoreConfiguration } from "@ipab/ipfs-store";
 import type { SQLInputValue } from "node:sqlite";
 import { HostError, message, syntax } from "./errors.js";
 import type { Hold, RunRecord, State } from "./state.js";

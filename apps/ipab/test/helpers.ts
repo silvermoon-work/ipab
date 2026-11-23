@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
-import { IpfsStore } from "@silvermoon-work/ipfs-store";
-import { encodeSchema, type JsonSchema } from "@silvermoon-work/content-bundle";
+import { IpfsStore } from "@ipab/ipfs-store";
+import { encodeSchema, type JsonSchema } from "@ipab/bundle";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
 import { appSchemaBlock } from "../src/space.js";
@@ -118,6 +118,7 @@ export async function cli(
   options: {
     env?: NodeJS.ProcessEnv;
     tty?: boolean;
+    columns?: number;
     confirm?: IO["confirm"];
     diagnostic?: (text: string) => void;
   } = {},
@@ -135,6 +136,9 @@ export async function cli(
         options.diagnostic?.(text);
       },
       tty: options.tty ?? false,
+      columns() {
+        return options.columns;
+      },
       confirm: options.confirm ?? (() => Promise.resolve(false)),
     },
     options.env ?? {},

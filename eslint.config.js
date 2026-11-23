@@ -4,7 +4,14 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/coverage/**", "**/dist/**", "**/.test-work/**", ".turbo/**"],
+    ignores: [
+      "**/coverage/**",
+      "**/dist/**",
+      "**/.test-work/**",
+      "**/.cache/**",
+      "**/.content-*/**",
+      ".turbo/**",
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({

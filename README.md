@@ -26,6 +26,40 @@ ipab --json history list --status succeeded
 ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 ```
 
+### 本机命令与 Kubo
+
+CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前保持 private，尚未发布到 npm。
+在仓库根目录使用 PowerShell 将构建后的本地包链接到全局：
+
+```powershell
+pnpm build
+$pnpmEntry = pnpm exec node -p 'process.env.npm_execpath'
+node $pnpmEntry add --global "@ipab/cli@link:$((Resolve-Path apps\ipab).Path)"
+ipab --version
+```
+
+显式调用项目的 pnpm entry，避免全局操作切回本机其他 pnpm 版本。
+链接后修改源码需重新 `pnpm build`，无需重新发布或安装包。
+全局 bin 目录需在 PATH 中。
+
+本地 Kubo daemon 已运行且 API 地址为 `127.0.0.1:5001` 时，可以保存配置：
+
+```powershell
+ipab config set store.rpc http://127.0.0.1:5001
+ipab config get store.rpc
+```
+
+这是 Kubo RPC API，不是 gateway。IPAB 不启动 daemon；离线 daemon
+只能读取已有内容。当前 Store 依赖 `0.1.0` 对 Kubo 返回的
+`indirect through <CID>` pin 状态存在解析兼容问题，相关执行可能失败；
+需采用公共 Store 包的兼容修复版本，不能将配置成功当作执行验证通过。
+PowerShell 调用 `ipab` 时，argv 模板分隔符应写成引号包裹的 `'--'`，
+避免 PowerShell 吞掉它：
+
+```powershell
+ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
+```
+
 - 全局 `--state-dir PATH`、`--store-rpc URL`、`--json` 必须在子命令之前。
   `--json` 只适用于管理命令，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。

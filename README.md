@@ -7,6 +7,12 @@ InterPlanetary Application Bundle 的独立工程仓库。
 本次搭建参考 `silvermoon-work/okr-agent` 的共享工程配置，不复制其业务包、
 历史生命周期资料或个人配置。
 
+## 设计概览
+
+[IPAB Design Overview](docs/design-overview.md) 汇总内容包、DAG-CBOR Schema、
+content refs、App Bundle、默认应用关联、快照及 Store 的设计方向，
+并区分已确认原则、当前实现与尚未定稿的接口。
+
 ## 开发环境
 
 - Node：使用 [.node-version](.node-version) 中的准确版本。

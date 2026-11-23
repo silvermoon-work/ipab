@@ -15,7 +15,7 @@ import {
 } from "../src/config.js";
 import { HostError, message, object } from "../src/errors.js";
 import { aliasName, exactCid, State } from "../src/state.js";
-import { appSchemaBlock } from "../src/space.js";
+import { appSchemaCid } from "../src/space.js";
 import { fixture, cli, record, importFiles } from "./helpers.js";
 
 describe("management contract", () => {
@@ -27,7 +27,7 @@ describe("management contract", () => {
     vi.restoreAllMocks();
     await work.cleanup();
   });
-  const schema = appSchemaBlock.cid.toString();
+  const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
 
   it("management tables/details are human-readable while JSON schemas remain unchanged", async () => {
@@ -613,10 +613,13 @@ describe("management contract", () => {
         aliasName(name);
       }).toThrow();
     expect(() => exactCid("bad")).toThrow();
-    expect(() => exactCid(another, true)).toThrow("DAG-CBOR");
+    expect(() => exactCid(another, true)).toThrow("UnixFS directory");
+    expect(exactCid("builtin:bundle-schema.v1", true)).toBe(
+      "builtin:bundle-schema.v1",
+    );
     const state = new State(work.stateDir);
     expect(() => state.resolve("unknown")).toThrow("Unknown");
-    expect(() => state.resolve(another, true)).toThrow("DAG-CBOR");
+    expect(() => state.resolve(another, true)).toThrow("UnixFS directory");
     state.close();
   });
 

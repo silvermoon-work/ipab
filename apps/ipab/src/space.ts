@@ -4,21 +4,41 @@ import * as dagPb from "@ipld/dag-pb";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import type { IpfsStore } from "@ipab/ipfs-store";
-import { openBundle, encodeSchema, type ContentBundle } from "@ipab/bundle";
+import { openBundle, canonicalJson, type ContentBundle } from "@ipab/bundle";
 import { HostError, message, object } from "./errors.js";
 import type { Ownership } from "./history.js";
 
 export const appSchema = {
+  $id: "urn:ipab:node-app.v1",
   type: "object",
   additionalProperties: false,
   required: ["profile", "runtime", "entry"],
   properties: {
     profile: { const: "ipab.node.v1" },
     runtime: { const: "node" },
-    entry: { type: "string", pattern: "^resources/[A-Za-z0-9._/-]+\\.cjs$" },
+    entry: { type: "string" },
   },
 } as const;
-export const appSchemaBlock = await encodeSchema(appSchema);
+export const appSchemaCid = CID.parse(
+  "bafybeidq5zd7tzccgueniq5fnv2yugw45ijmifw76sknpem7mz5jynmaxe",
+);
+export const appSchemaFiles = new Map<string, Uint8Array>([
+  [
+    ".bundle.yaml",
+    canonicalJson({
+      entry: {
+        path: "schema.json",
+        contentType: "application/json",
+        schema: "builtin:bundle-schema.v1",
+      },
+    }),
+  ],
+  [
+    "schema.json",
+    canonicalJson({ schemas: ["node-app.json"], main: appSchema.$id }),
+  ],
+  ["node-app.json", canonicalJson(appSchema)],
+]);
 export const CHUNK_BYTES = 64 * 1024;
 export const OUTPUT_BYTES = 64 * 1024 * 1024;
 export const MAX_PATHS = 4096;
@@ -110,7 +130,7 @@ export async function loadApp(
 ): Promise<{ path: string; source: Uint8Array }> {
   const bundle = await validatedBundle(root, store, owner, signal);
   if (
-    !bundle.manifest.entry.schemaCid.equals(appSchemaBlock.cid) ||
+    bundle.schemaKey !== appSchemaCid.toString() ||
     bundle.manifest.entry.contentType !== "application/json"
   )
     throw new HostError(
@@ -142,6 +162,13 @@ export async function loadApp(
       "validation",
     );
   const path = relativePath(description.entry);
+  if (!path.startsWith("resources/") || !path.endsWith(".cjs"))
+    throw new HostError(
+      "Node App entry must be a resources/*.cjs file.",
+      1,
+      "APP_PROFILE_INVALID",
+      "validation",
+    );
   return {
     path,
     source: await bytes(await bundle.readFile(path), 8 * 1024 * 1024),

@@ -1,423 +1,416 @@
-import * as dagCbor from "@ipld/dag-cbor";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ValidateFunction } from "ajv";
-import { CID } from "multiformats/cid";
-import { sha256 } from "multiformats/hashes/sha2";
 import { ContentBundleError } from "./errors.js";
-import { assertJson, record, schemaCid } from "./parsing.js";
-import type { BundleLimits, JsonSchema, SchemaBlock } from "./types.js";
-
-const dialect = "https://json-schema.org/draft/2020-12/schema";
-const maps = [
-  "$defs",
-  "definitions",
-  "properties",
-  "patternProperties",
-  "dependentSchemas",
-];
-const lists = ["allOf", "anyOf", "oneOf", "prefixItems"];
-const singles = [
-  "items",
-  "contains",
-  "additionalProperties",
-  "unevaluatedProperties",
-  "unevaluatedItems",
-  "propertyNames",
-  "contentSchema",
-  "not",
-  "if",
-  "then",
-  "else",
-];
+import { assertJson, record, safePath } from "./parsing.js";
+import type {
+  JsonSchema,
+  SchemaDefinitions,
+  SchemaDescriptor,
+} from "./types.js";
 
 export function pointerPart(value: string): string {
   return value.replaceAll("~", "~0").replaceAll("/", "~1");
 }
-
-function fragment(pointer: string): string {
-  return pointer.split("/").map(encodeURIComponent).join("/");
+export function absoluteId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9._~:/?[\]@!$&'()*+,;=%-]+$/u.test(
+      value,
+    ) &&
+    !/%(?![0-9A-Fa-f]{2})/u.test(value)
+  );
 }
-
-export function externalRef(value: string): {
-  cid: CID;
-  uri: string;
-  fragment: string;
-} {
-  const match = /^ipfs:\/\/([^/#?]+)(#.*)?$/u.exec(value);
-  if (!match)
-    throw new ContentBundleError(
-      "SCHEMA_INVALID",
-      "External $ref must use ipfs://<CID> with an optional fragment.",
-    );
-  const cid = schemaCid(match[1]!);
-  const fragment = match[2] ?? "";
-  return { cid, uri: `ipfs://${cid.toString()}`, fragment };
+function invalid(message: string, pointer = ""): never {
+  throw new ContentBundleError("SCHEMA_INVALID", message, "", pointer);
 }
+const keywords = new Set([
+  "$id",
+  "$ref",
+  "type",
+  "enum",
+  "const",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "anyOf",
+  "title",
+  "description",
+  "x-content-ref",
+]);
+const types = new Set([
+  "null",
+  "boolean",
+  "string",
+  "number",
+  "integer",
+  "object",
+  "array",
+]);
 
-function validator(): Ajv2020 {
-  return new Ajv2020({
-    strict: true,
-    strictTypes: false,
-    strictTuples: false,
-    strictRequired: false,
-    validateFormats: false,
-    allErrors: true,
-    inlineRefs: false,
-  })
-    .addKeyword({ keyword: "$anchor", schemaType: "string", valid: true })
-    .addKeyword({
-      keyword: "x-content-ref",
-      schemaType: "boolean",
-      type: "string",
-      valid: true,
-    });
-}
-
-interface SchemaNode {
-  schema: JsonSchema;
-  uri: string;
-}
-
-function inspect(
-  schema: JsonSchema,
-  limits: Pick<BundleLimits, "nodes" | "depth">,
-  normalizeRefs = false,
-) {
-  assertJson(schema, limits.nodes, limits.depth);
-  const nodes = new Map<string, JsonSchema>();
-  const anchors = new Map<string, string>();
-  const refs = new Set<string>();
-  const visit = (value: unknown, pointer: string): void => {
-    if (typeof value !== "boolean" && !record(value))
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Expected an object or boolean Schema.",
-        "",
-        pointer,
-      );
-    nodes.set(pointer, value);
-    if (typeof value === "boolean") return;
-    for (const key of [
-      "$id",
-      "$async",
-      "$dynamicRef",
-      "$dynamicAnchor",
-      "$recursiveRef",
-    ])
-      if (Object.hasOwn(value, key))
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          `${key} is not supported by the CID Schema profile.`,
-          "",
-          pointer,
-        );
-    if (value.$schema !== undefined && value.$schema !== dialect)
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Only JSON Schema 2020-12 is supported.",
-        "",
-        pointer,
-      );
+/** Check every listed definition, including definitions not reachable from main. */
+export function inspectSchemaBundle(
+  descriptor: unknown,
+  files: ReadonlyMap<string, unknown>,
+  options: {
+    nodes?: number;
+    depth?: number;
+    jsonDepth?: number;
+    schemas?: number;
+    charge?: () => void;
+  } = {},
+): SchemaDefinitions {
+  for (const [key, value] of Object.entries(options))
     if (
-      Object.hasOwn(value, "x-content-ref") &&
-      (typeof value["x-content-ref"] !== "boolean" || value.type !== "string")
+      key === "charge"
+        ? typeof value !== "function"
+        : !["nodes", "depth", "jsonDepth", "schemas"].includes(key) ||
+          !Number.isSafeInteger(value) ||
+          (value as number) <= 0
     )
       throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "x-content-ref requires type: string and a boolean annotation.",
+        "OPTIONS_INVALID",
+        "Schema limits must be positive safe integers.",
+      );
+  const charge = options.charge ?? (() => {});
+  assertJson(descriptor, options.nodes, options.jsonDepth, charge);
+  if (
+    !record(descriptor) ||
+    Object.keys(descriptor).some(
+      (key) => !["schemas", "main", "title", "description"].includes(key),
+    ) ||
+    !Array.isArray(descriptor.schemas) ||
+    !descriptor.schemas.length ||
+    !absoluteId(descriptor.main)
+  )
+    invalid("Descriptor requires explicit schemas and an absolute main ID.");
+  for (const key of ["title", "description"])
+    if (descriptor[key] !== undefined && typeof descriptor[key] !== "string")
+      invalid(`Invalid descriptor ${key}.`);
+  if (descriptor.schemas.length > (options.schemas ?? 128))
+    throw new ContentBundleError(
+      "LIMIT_EXCEEDED",
+      "Schema file count exceeded.",
+    );
+  const paths = new Set<string>();
+  const definitions = new Map<string, JsonSchema>();
+  const references: string[] = [];
+  const visit = (
+    schema: unknown,
+    root: boolean,
+    pointer: string,
+    depth: number,
+  ): void => {
+    charge();
+    if (depth > (options.depth ?? 64))
+      throw new ContentBundleError("LIMIT_EXCEEDED", "Schema depth exceeded.");
+    if (typeof schema === "boolean") return;
+    if (!record(schema))
+      invalid("Expected a schema object or boolean.", pointer);
+    for (const key of Object.keys(schema))
+      if (!keywords.has(key))
+        invalid(`Unsupported schema keyword ${key}.`, pointer);
+    if (!root && Object.hasOwn(schema, "$id"))
+      invalid("Nested $id is not supported.", pointer);
+    if (
+      schema.type !== undefined &&
+      (typeof schema.type !== "string" || !types.has(schema.type))
+    )
+      invalid("type must be one structural type name.", pointer);
+    for (const key of ["title", "description"])
+      if (schema[key] !== undefined && typeof schema[key] !== "string")
+        invalid(`Invalid ${key}.`, pointer);
+    if (
+      schema.enum !== undefined &&
+      (!Array.isArray(schema.enum) || !schema.enum.length)
+    )
+      invalid("enum requires a nonempty array.", pointer);
+    if (
+      Array.isArray(schema.enum) &&
+      schema.enum.some((value, index, values) =>
+        values
+          .slice(0, index)
+          .some((previous) => equal(value, previous, charge)),
+      )
+    )
+      invalid("enum values must be unique.", pointer);
+    if (schema.$ref !== undefined) {
+      if (!absoluteId(schema.$ref))
+        invalid("$ref must be a full explicit absolute ID.", pointer);
+      references.push(schema.$ref);
+    }
+    if (schema["x-content-ref"] !== undefined) {
+      const rule = schema["x-content-ref"];
+      if (
+        schema.type !== "string" ||
+        typeof rule !== "string" ||
+        (rule !== "bundle" &&
+          (!rule.startsWith("file:") || !absoluteId(rule.slice(5))))
+      )
+        invalid(
+          "x-content-ref requires type:string and bundle or file:<absolute ID>.",
+          pointer,
+        );
+      if (rule !== "bundle") references.push(rule.slice(5));
+    }
+    if (schema.properties !== undefined) {
+      if (!record(schema.properties))
+        invalid("properties requires a schema map.", pointer);
+      for (const [name, child] of Object.entries(schema.properties))
+        visit(
+          child,
+          false,
+          `${pointer}/properties/${pointerPart(name)}`,
+          depth + 1,
+        );
+    }
+    if (
+      schema.required !== undefined &&
+      (!Array.isArray(schema.required) ||
+        schema.required.some((name) => typeof name !== "string") ||
+        new Set(schema.required).size !== schema.required.length)
+    )
+      invalid("required requires unique property names.", pointer);
+    for (const key of ["items", "additionalProperties"])
+      if (schema[key] !== undefined)
+        visit(schema[key], false, `${pointer}/${key}`, depth + 1);
+    if (schema.anyOf !== undefined) {
+      if (!Array.isArray(schema.anyOf) || !schema.anyOf.length)
+        invalid("anyOf requires nonempty full branches.", pointer);
+      for (const [index, child] of schema.anyOf.entries())
+        visit(child, false, `${pointer}/anyOf/${String(index)}`, depth + 1);
+    }
+  };
+  for (const path of descriptor.schemas) {
+    if (typeof path !== "string")
+      invalid("Schema paths must be relative strings.");
+    safePath(path);
+    if (paths.has(path)) invalid("Duplicate schema file path.");
+    paths.add(path);
+    const schema = files.get(path);
+    if (!record(schema) || !absoluteId(schema.$id))
+      invalid(`Schema file ${path} requires a root absolute $id.`);
+    if (definitions.has(schema.$id))
+      invalid(`Duplicate schema ID ${schema.$id}.`);
+    assertJson(schema, options.nodes, options.jsonDepth, charge);
+    definitions.set(schema.$id, schema);
+    visit(schema, true, path, 0);
+  }
+  if (!definitions.has(descriptor.main))
+    invalid("main is not an exact schema ID in this bundle.");
+  for (const ref of references)
+    if (!definitions.has(ref)) invalid(`Unknown schema ID ${ref}.`);
+  const active = new Set<JsonSchema>();
+  const done = new Set<JsonSchema>();
+  const productive = (schema: JsonSchema, depth = 0): void => {
+    charge();
+    if (depth > (options.depth ?? 64))
+      throw new ContentBundleError(
+        "LIMIT_EXCEEDED",
+        "Schema reference depth exceeded.",
+      );
+    if (typeof schema === "boolean" || done.has(schema)) return;
+    if (active.has(schema)) invalid("Nonproductive schema reference cycle.");
+    active.add(schema);
+    if (typeof schema.$ref === "string")
+      productive(definitions.get(schema.$ref)!, depth + 1);
+    if (Array.isArray(schema.anyOf))
+      for (const child of schema.anyOf)
+        productive(child as JsonSchema, depth + 1);
+    active.delete(schema);
+    done.add(schema);
+    if (record(schema.properties))
+      for (const child of Object.values(schema.properties))
+        productive(child as JsonSchema, depth + 1);
+    for (const key of ["items", "additionalProperties"])
+      if (schema[key] !== undefined)
+        productive(schema[key] as JsonSchema, depth + 1);
+  };
+  for (const schema of definitions.values()) productive(schema);
+  return {
+    descriptor: Object.freeze({
+      schemas: Object.freeze([...paths]),
+      main: descriptor.main,
+      ...(descriptor.title === undefined
+        ? {}
+        : { title: descriptor.title as string }),
+      ...(descriptor.description === undefined
+        ? {}
+        : { description: descriptor.description as string }),
+    }) satisfies SchemaDescriptor,
+    definitions,
+  };
+}
+
+function equal(a: unknown, b: unknown, charge: () => void): boolean {
+  charge();
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b))
+    return (
+      a.length === b.length &&
+      a.every((item, index) => equal(item, b[index], charge))
+    );
+  if (record(a) && record(b))
+    return (
+      Object.keys(a).length === Object.keys(b).length &&
+      Object.keys(a).every(
+        (key) => Object.hasOwn(b, key) && equal(a[key], b[key], charge),
+      )
+    );
+  return false;
+}
+export interface ValidationContext {
+  charge(this: void): void;
+  depth: number;
+  reference(
+    rule: string,
+    value: string,
+    pointer: string,
+    inBranch: boolean,
+  ): Promise<void>;
+}
+
+/** Structural checks and content references are evaluated together in each branch. */
+export async function validateValue(
+  definitions: SchemaDefinitions,
+  id: string,
+  value: unknown,
+  context: ValidationContext,
+): Promise<void> {
+  const fail = (pointer: string): never => {
+    throw new ContentBundleError(
+      "CONTENT_INVALID",
+      "Data does not satisfy its schema.",
+      "",
+      pointer,
+    );
+  };
+  const visit = async (
+    schema: JsonSchema,
+    data: unknown,
+    pointer: string,
+    depth: number,
+    branch: boolean,
+    contentChecks = true,
+  ): Promise<void> => {
+    context.charge();
+    if (depth > context.depth)
+      throw new ContentBundleError(
+        "LIMIT_EXCEEDED",
+        "Validation depth exceeded.",
         "",
         pointer,
       );
-    for (const key of ["unevaluatedProperties", "unevaluatedItems"])
-      if (value[key] !== undefined && typeof value[key] !== "boolean")
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          `${key} currently supports only boolean Schemas.`,
-          "",
-          pointer,
-        );
-    if (value.$anchor !== undefined) {
-      if (typeof value.$anchor !== "string" || anchors.has(value.$anchor))
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          "Invalid or duplicate Schema anchor.",
-          "",
-          pointer,
-        );
-      anchors.set(value.$anchor, pointer);
+    if (schema === true) return;
+    if (schema === false) return fail(pointer);
+    const type = schema.type;
+    if (type !== undefined) {
+      const matches =
+        type === "null"
+          ? data === null
+          : type === "array"
+            ? Array.isArray(data)
+            : type === "object"
+              ? record(data)
+              : type === "integer"
+                ? typeof data === "number" && Number.isSafeInteger(data)
+                : type === "number"
+                  ? typeof data === "number" && Number.isFinite(data)
+                  : typeof data === type;
+      if (!matches) fail(pointer);
     }
-    if (value.$ref !== undefined) {
-      if (typeof value.$ref !== "string")
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          "$ref must be a URI-reference.",
-          "",
-          pointer,
-        );
-      let reference = value.$ref;
-      if (!reference.startsWith("#")) {
-        const ref = externalRef(reference);
-        if (normalizeRefs) value.$ref = reference = ref.uri + ref.fragment;
-      }
-      refs.add(reference);
-    }
-    for (const key of maps)
-      if (record(value[key]))
-        for (const [name, child] of Object.entries(value[key]))
-          visit(child, `${pointer}/${key}/${pointerPart(name)}`);
-    for (const key of lists)
-      if (Array.isArray(value[key]))
-        for (const [index, child] of value[key].entries())
-          visit(child, `${pointer}/${key}/${String(index)}`);
-    for (const key of singles)
-      if (value[key] !== undefined) visit(value[key], `${pointer}/${key}`);
-  };
-  visit(schema, "");
-  const ajv = validator();
-  if (!ajv.validateSchema(schema))
-    throw new ContentBundleError("SCHEMA_INVALID", ajv.errorsText(ajv.errors));
-  return { nodes, anchors, refs };
-}
-
-export async function encodeSchema(schema: JsonSchema): Promise<SchemaBlock> {
-  inspect(schema, { nodes: 100_000, depth: 64 });
-  const bytes = dagCbor.encode(schema);
-  if (bytes.byteLength > 1024 * 1024)
-    throw new ContentBundleError("LIMIT_EXCEEDED", "Schema exceeds 1 MiB.");
-  return { cid: CID.createV1(dagCbor.code, await sha256.digest(bytes)), bytes };
-}
-
-export class Schemas {
-  private readonly ajv = validator();
-  private readonly documents = new Map<string, ReturnType<typeof inspect>>();
-  private compiled = false;
-
-  constructor(
-    private readonly read: (cid: CID) => Promise<Uint8Array>,
-    private readonly limits: BundleLimits,
-  ) {}
-
-  async load(cid: CID, depth = 0): Promise<string> {
-    const uri = `ipfs://${schemaCid(cid.toString()).toString()}`;
-    if (this.documents.has(uri)) return uri;
-    if (depth > this.limits.depth || this.documents.size >= this.limits.schemas)
-      throw new ContentBundleError(
-        "LIMIT_EXCEEDED",
-        "Schema dependency limits exceeded.",
+    if (
+      Object.hasOwn(schema, "const") &&
+      !equal(schema.const, data, context.charge)
+    )
+      fail(pointer);
+    if (
+      Array.isArray(schema.enum) &&
+      !schema.enum.some((item) => equal(item, data, context.charge))
+    )
+      fail(pointer);
+    if (typeof schema.$ref === "string")
+      await visit(
+        definitions.definitions.get(schema.$ref)!,
+        data,
+        pointer,
+        depth + 1,
+        branch,
+        contentChecks,
       );
-    const bytes = await this.read(cid);
-    if (bytes.byteLength > this.limits.schemaBytes)
-      throw new ContentBundleError(
-        "LIMIT_EXCEEDED",
-        "Schema block exceeds its byte limit.",
-      );
-    try {
-      const value: unknown = dagCbor.decode(bytes);
-      if (typeof value !== "boolean" && !record(value))
-        throw new Error("Schema must be an object or boolean.");
-      const canonical = dagCbor.encode(value);
+    if (record(data)) {
       if (
-        bytes.length !== canonical.length ||
-        !bytes.every((byte, index) => byte === canonical[index])
+        Array.isArray(schema.required) &&
+        schema.required.some((name) => !Object.hasOwn(data, name as string))
       )
-        throw new Error(
-          "Schema block must use deterministic DAG-CBOR encoding.",
-        );
-      const compiledSchema = structuredClone(value);
-      const document = inspect(compiledSchema, this.limits, true);
-      this.documents.set(uri, document);
-      this.ajv.addSchema(compiledSchema, uri);
-      this.compiled = false;
-    } catch (cause) {
-      if (cause instanceof ContentBundleError) throw cause;
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Invalid DAG-CBOR Schema.",
-        "",
-        "",
-        [uri],
-        { cause },
-      );
-    }
-    for (const ref of this.documents.get(uri)!.refs)
-      if (!ref.startsWith("#"))
-        await this.load(externalRef(ref).cid, depth + 1);
-    return uri;
-  }
-
-  node(uri: string): SchemaNode {
-    const hash = uri.indexOf("#");
-    const base = hash < 0 ? uri : uri.slice(0, hash);
-    let pointer: string;
-    try {
-      pointer = hash < 0 ? "" : decodeURIComponent(uri.slice(hash + 1));
-    } catch (cause) {
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Invalid Schema fragment.",
-        "",
-        "",
-        [uri],
-        { cause },
-      );
-    }
-    const document = this.documents.get(base);
-    if (pointer && !pointer.startsWith("/"))
-      pointer = document?.anchors.get(pointer) ?? pointer;
-    const schema = document?.nodes.get(pointer);
-    if (schema === undefined)
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Schema reference does not identify a Schema.",
-        "",
-        "",
-        [uri],
-      );
-    return { schema, uri: `${base}#${fragment(pointer)}` };
-  }
-
-  private validation(uri: string): ValidateFunction {
-    try {
-      const validate = this.ajv.getSchema(uri);
-      if (!validate) throw new Error("Missing Schema.");
-      return validate;
-    } catch (cause) {
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Cannot compile Schema.",
-        "",
-        "",
-        [uri],
-        { cause },
-      );
-    }
-  }
-
-  private compileAll(): void {
-    if (this.compiled) return;
-    for (const [base, document] of this.documents) {
-      this.validation(base);
-      for (const ref of document.refs) {
-        const target = ref.startsWith("#")
-          ? base + ref
-          : externalRef(ref).uri + externalRef(ref).fragment;
-        this.node(target);
-        this.validation(target);
-      }
-    }
-    this.compiled = true;
-  }
-
-  validate(uri: string, value: unknown): void {
-    this.compileAll();
-    const validate = this.validation(uri);
-    if (!validate(value))
-      throw new ContentBundleError(
-        "CONTENT_INVALID",
-        this.ajv.errorsText(validate.errors),
-        "",
-        validate.errors?.[0]?.instancePath ?? "",
-      );
-  }
-
-  async references(
-    uri: string,
-    value: unknown,
-    follow: (value: string, pointer: string) => Promise<void>,
-  ): Promise<void> {
-    let visits = 0;
-    const active = new Set<string>();
-    const walk = async (
-      node: SchemaNode,
-      data: unknown,
-      pointer: string,
-      depth: number,
-    ): Promise<void> => {
-      if (++visits > this.limits.nodes || depth > this.limits.depth)
-        throw new ContentBundleError(
-          "LIMIT_EXCEEDED",
-          "Schema evaluation traversal limit exceeded.",
-        );
-      const key = `${node.uri}\n${pointer}`;
-      if (active.has(key) || typeof node.schema === "boolean") return;
-      active.add(key);
-      try {
-        const schema = node.schema;
-        if (schema["x-content-ref"] === true && typeof data === "string")
-          await follow(data, pointer);
-        const base = node.uri.split("#")[0]!;
-        if (typeof schema.$ref === "string") {
-          const target = schema.$ref.startsWith("#")
-            ? base + schema.$ref
-            : externalRef(schema.$ref).uri + externalRef(schema.$ref).fragment;
-          await walk(this.node(target), data, pointer, depth + 1);
-        }
-        const child = (suffix: string, item = data, location = pointer) =>
-          walk(
-            this.node(`${node.uri}${fragment(suffix)}`),
-            item,
-            location,
+        fail(pointer);
+      const properties = record(schema.properties) ? schema.properties : {};
+      for (const [name, child] of Object.entries(data)) {
+        const rule = Object.hasOwn(properties, name)
+          ? (properties[name] as JsonSchema)
+          : (schema.additionalProperties as JsonSchema | undefined);
+        if (rule !== undefined)
+          await visit(
+            rule,
+            child,
+            `${pointer}/${pointerPart(name)}`,
             depth + 1,
+            branch,
+            contentChecks,
           );
-        const matches = (suffix: string, item = data) =>
-          this.validation(`${node.uri}${fragment(suffix)}`)(item);
-        for (const key of ["allOf", "anyOf", "oneOf"])
-          if (Array.isArray(schema[key]))
-            for (const index of schema[key].keys()) {
-              const suffix = `/${key}/${String(index)}`;
-              if (key === "allOf" || matches(suffix)) await child(suffix);
-            }
-        if (schema.if !== undefined) {
-          const branch = matches("/if") ? "then" : "else";
-          if (schema[branch] !== undefined) await child(`/${branch}`);
-        }
-        if (record(data)) {
-          const properties = record(schema.properties) ? schema.properties : {};
-          const patterns = record(schema.patternProperties)
-            ? schema.patternProperties
-            : {};
-          for (const [name, item] of Object.entries(data)) {
-            const location = `${pointer}/${pointerPart(name)}`;
-            let covered = Object.hasOwn(properties, name);
-            if (covered)
-              await child(`/properties/${pointerPart(name)}`, item, location);
-            for (const pattern of Object.keys(patterns))
-              if (new RegExp(pattern, "u").test(name)) {
-                covered = true;
-                await child(
-                  `/patternProperties/${pointerPart(pattern)}`,
-                  item,
-                  location,
-                );
-              }
-            if (!covered && schema.additionalProperties !== undefined)
-              await child("/additionalProperties", item, location);
-            if (schema.propertyNames !== undefined)
-              await child("/propertyNames", name, location);
-          }
-          if (record(schema.dependentSchemas))
-            for (const name of Object.keys(schema.dependentSchemas))
-              if (Object.hasOwn(data, name))
-                await child(`/dependentSchemas/${pointerPart(name)}`);
-        }
-        if (Array.isArray(data)) {
-          const prefix = Array.isArray(schema.prefixItems)
-            ? schema.prefixItems
-            : [];
-          for (const [index, item] of data.entries()) {
-            const location = `${pointer}/${String(index)}`;
-            if (index < prefix.length)
-              await child(`/prefixItems/${String(index)}`, item, location);
-            else if (schema.items !== undefined)
-              await child("/items", item, location);
-            if (schema.contains !== undefined && matches("/contains", item))
-              await child("/contains", item, location);
-          }
-        }
-      } finally {
-        active.delete(key);
       }
-    };
-    await walk(this.node(uri), value, "", 0);
-  }
+    }
+    if (Array.isArray(data) && schema.items !== undefined)
+      for (const [index, child] of data.entries())
+        await visit(
+          schema.items as JsonSchema,
+          child,
+          `${pointer}/${String(index)}`,
+          depth + 1,
+          branch,
+          contentChecks,
+        );
+    if (Array.isArray(schema.anyOf)) {
+      let success = false;
+      for (const child of schema.anyOf) {
+        try {
+          if (contentChecks)
+            await visit(
+              child as JsonSchema,
+              data,
+              pointer,
+              depth + 1,
+              true,
+              false,
+            );
+          await visit(
+            child as JsonSchema,
+            data,
+            pointer,
+            depth + 1,
+            true,
+            contentChecks,
+          );
+          success = true;
+          break;
+        } catch (cause) {
+          if (
+            !(cause instanceof ContentBundleError) ||
+            cause.code !== "CONTENT_INVALID"
+          )
+            throw cause;
+        }
+      }
+      if (!success) fail(pointer);
+    }
+    if (contentChecks && typeof schema["x-content-ref"] === "string")
+      await context.reference(
+        schema["x-content-ref"],
+        data as string,
+        pointer,
+        branch,
+      );
+  };
+  const schema = definitions.definitions.get(id);
+  if (schema === undefined) invalid(`Unknown schema ID ${id}.`);
+  await visit(schema, value, "", 0, false, false);
+  await visit(schema, value, "", 0, false);
 }

@@ -42,9 +42,6 @@ catalogs:
     '@vitest/coverage-v8':
       specifier: 5.1.0
       version: 5.1.0
-    ajv:
-      specifier: 8.20.0
-      version: 8.20.0
     blockstore-core:
       specifier: 7.0.1
       version: 7.0.1
@@ -159,6 +156,12 @@ importers:
         specifier: 'catalog:'
         version: 8.2.1
     devDependencies:
+      '@ipab/bundle-builder':
+        specifier: workspace:*
+        version: link:../../packages/bundle-builder
+      '@ipab/schema-bundle-builder':
+        specifier: workspace:*
+        version: link:../../packages/schema-bundle-builder
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -177,12 +180,6 @@ importers:
       '@ipab/ipfs-store':
         specifier: workspace:*
         version: link:../ipfs-store
-      '@ipld/dag-cbor':
-        specifier: 'catalog:'
-        version: 10.0.2
-      ajv:
-        specifier: 'catalog:'
-        version: 8.20.0
       multiformats:
         specifier: 'catalog:'
         version: 14.0.5
@@ -190,6 +187,9 @@ importers:
         specifier: 'catalog:'
         version: 2.9.1
     devDependencies:
+      '@ipld/dag-pb':
+        specifier: 'catalog:'
+        version: 4.2.0
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -199,6 +199,37 @@ importers:
       ipfs-unixfs-importer:
         specifier: 'catalog:'
         version: 17.1.1(supports-color@10.2.2)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(vite@8.3.8(@types/node@26.6.6)(yaml@2.9.1))
+
+  packages/bundle-builder:
+    dependencies:
+      '@ipab/bundle':
+        specifier: workspace:*
+        version: link:../bundle
+      '@ipld/car':
+        specifier: 'catalog:'
+        version: 5.4.6
+      '@ipld/dag-pb':
+        specifier: 'catalog:'
+        version: 4.2.0
+      ipfs-unixfs-importer:
+        specifier: 'catalog:'
+        version: 17.1.1(supports-color@10.2.2)
+      multiformats:
+        specifier: 'catalog:'
+        version: 14.0.5
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 5.1.0(vitest@5.1.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -254,6 +285,31 @@ importers:
       ipfs-unixfs-importer:
         specifier: 'catalog:'
         version: 17.1.1(supports-color@10.2.2)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(vite@8.3.8(@types/node@26.6.6)(yaml@2.9.1))
+
+  packages/schema-bundle-builder:
+    dependencies:
+      '@ipab/bundle':
+        specifier: workspace:*
+        version: link:../bundle
+      '@ipab/bundle-builder':
+        specifier: workspace:*
+        version: link:../bundle-builder
+    devDependencies:
+      '@ipld/car':
+        specifier: 'catalog:'
+        version: 5.4.6
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 5.1.0(vitest@5.1.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

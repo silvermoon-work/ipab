@@ -1,6 +1,19 @@
-export { openBundle } from "./bundle.js";
-export { parseBundleManifest, parseContentRef } from "./parsing.js";
-export { encodeSchema } from "./schema.js";
+export {
+  openBundle,
+  openSchemaBundle,
+  validateContentBundle,
+  bundleLimits,
+  resolveBundleLimits,
+} from "./bundle.js";
+export {
+  parseBundleManifest,
+  parseContentRef,
+  parseData,
+  canonicalJson,
+  safePath,
+  SCHEMA_PROFILE,
+} from "./parsing.js";
+export { inspectSchemaBundle } from "./schema.js";
 export { ContentBundleError } from "./errors.js";
 export type {
   ContentBundle,
@@ -8,8 +21,9 @@ export type {
   BundleLimits,
   BundleManifest,
   ContentType,
-  ContentRef,
   JsonSchema,
-  SchemaBlock,
+  SchemaBundle,
+  SchemaDescriptor,
+  SchemaDefinitions,
   ContentBundleErrorCode,
 } from "./types.js";

@@ -2,7 +2,7 @@
   "name": "@ipab/bundle",
   "version": "0.1.0-rc.0",
   "private": true,
-  "description": "Validated immutable UnixFS content bundles with CID-addressed JSON Schemas.",
+  "description": "Validated immutable UnixFS Content and Schema Bundles.",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
@@ -30,13 +30,12 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
-    "@ipld/dag-cbor": "catalog:",
     "@ipab/ipfs-store": "workspace:*",
-    "ajv": "catalog:",
     "multiformats": "catalog:",
     "yaml": "catalog:"
   },
   "devDependencies": {
+    "@ipld/dag-pb": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "ipfs-unixfs-importer": "catalog:",

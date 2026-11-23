@@ -63,10 +63,13 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   `--json` 只适用于管理命令，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
-- `open CONTENT` 完整校验 Content Bundle，读取入口 Schema CID，使用保存的
+- `open CONTENT` 完整校验 Bundle，读取嵌入 Schema
+  Bundle 目录的准确 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
   `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
   只替换整个参数，不展开 shell 字符串。
+- Schema Bundle 自身使用 `builtin:bundle-schema.v1` 注册键；`register set`
+  接受该固定字符串或 UnixFS 目录 SHA-256 CID，不再接受 DAG-CBOR Schema CID。
 - `alias list/set/remove` 只维护准确 CID 引用，不构成 alias 链，不 pin 或执行。
   `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
   `--replace`；
@@ -164,7 +167,8 @@ APP／OUTPUT 优先显示当前匹配的 alias；
 
 ## 设计概览
 
-[IPAB Design Overview](docs/design-overview.md) 汇总内容包、DAG-CBOR Schema、
+[IPAB Design Overview](docs/design-overview.md) 汇总内容包、内嵌 UnixFS Schema
+Bundle、
 content refs、App Bundle、默认应用关联、快照及 Store 的设计方向，
 并记录当前 Node profile、CLI、Space、输出保留与信任边界；
 已确认 CLI 的普通 argv 语义取代早期“App 唯一输入 CID”假设。
@@ -196,6 +200,8 @@ Node 选择依据为 2026-11-23 搭建时读取的
 ```text
 apps/ipab/             @ipab/cli：private CLI、Node runtime、IPC context 与回归测试
 packages/bundle/       @ipab/bundle：private 内容包校验、Schema 和 content refs
+packages/bundle-builder/ @ipab/bundle-builder：repeatable VFS 与确定性 UnixFS/CAR
+packages/schema-bundle-builder/ @ipab/schema-bundle-builder：本地 Schema 标准化与构建
 packages/ipfs-store/   @ipab/ipfs-store：private Local/Kubo Store 与保留协调
 scripts/lib/           成员共享工具启动逻辑
 docs/agent-project.md  项目工程指导
@@ -205,6 +211,13 @@ tsconfig.json          严格 TypeScript 基础配置
 vitest.config.ts       各 code package 共用的测试与覆盖率配置
 .github/workflows/ci.yaml
 ```
+
+当前协议、结构化 Schema 方言、引用和共享预算见
+[Bundle runtime](packages/bundle/README.md)，构建接口见
+[Bundle builder](packages/bundle-builder/README.md) 和
+[Schema Bundle builder](packages/schema-bundle-builder/README.md)。
+旧 `schemaCid` manifest、DAG-CBOR Schema 和数据内携带 Schema CID 的引用语法
+均已移除，不提供兼容或注册表迁移。
 
 成员 build/typecheck/test/test-coverage 均执行真实代码与测试，包括本地 writable
 Store、生成的 UnixFS DAG 和实际 Node 子进程。没有 npm 交付包，因此

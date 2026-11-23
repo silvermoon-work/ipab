@@ -10,12 +10,7 @@ import {
 } from "../src/context.js";
 import { ContextServer } from "../src/ipc.js";
 import { Ownership } from "../src/history.js";
-import {
-  appSchemaBlock,
-  bytes,
-  CHUNK_BYTES,
-  OutputSpace,
-} from "../src/space.js";
+import { appSchemaCid, bytes, CHUNK_BYTES, OutputSpace } from "../src/space.js";
 import { State } from "../src/state.js";
 import { fixture, importFiles } from "./helpers.js";
 
@@ -73,7 +68,7 @@ describe("bounded IPC streams on real writable Store", () => {
       owner,
       output,
       fatal,
-      appSchemaBlock.cid.toString(),
+      appSchemaCid.toString(),
     );
     client = createContext(transport.port());
   });
@@ -112,7 +107,7 @@ describe("bounded IPC streams on real writable Store", () => {
   it("supports read backpressure, streamed writes and UnixFS links without Bundle validation", async () => {
     expect(() => client.context.appCid).toThrow("not initialized");
     await client.initialize();
-    expect(client.context.appCid).toBe(appSchemaBlock.cid.toString());
+    expect(client.context.appCid).toBe(appSchemaCid.toString());
     const source = await importFiles(work.store, {
       "nested/file": new Uint8Array(CHUNK_BYTES * 3).fill(3),
     });
@@ -386,7 +381,7 @@ describe("bounded IPC streams on real writable Store", () => {
       ),
     ).rejects.toThrow("must contain bytes");
     await expect(
-      client.context.output.link("bad-link", appSchemaBlock.cid.toString()),
+      client.context.output.link("bad-link", appSchemaCid.toString()),
     ).rejects.toThrow();
   });
 
@@ -463,11 +458,11 @@ describe("bounded IPC streams on real writable Store", () => {
     const remote = createContext(port);
     const waiting = Array.from({ length: 32 }, () =>
       remote.context.output
-        .link("file", appSchemaBlock.cid.toString())
+        .link("file", appSchemaCid.toString())
         .catch((error) => error as Error),
     );
     await expect(
-      remote.context.output.link("file", appSchemaBlock.cid.toString()),
+      remote.context.output.link("file", appSchemaCid.toString()),
     ).rejects.toThrow("capacity");
     replies.emit("message", null);
     replies.emit("message", { version: 2, id: 1 });
@@ -483,7 +478,7 @@ describe("bounded IPC streams on real writable Store", () => {
       },
     });
     await expect(
-      broken.context.output.link("file", appSchemaBlock.cid.toString()),
+      broken.context.output.link("file", appSchemaCid.toString()),
     ).rejects.toThrow("transport broken");
     broken.close();
     const invalid = createContext({
@@ -500,7 +495,7 @@ describe("bounded IPC streams on real writable Store", () => {
     const aborting = createContext(port);
     const abort = new AbortController();
     const pending = aborting.context.output
-      .link("file", appSchemaBlock.cid.toString(), { signal: abort.signal })
+      .link("file", appSchemaCid.toString(), { signal: abort.signal })
       .catch((error) => error as Error);
     abort.abort();
     expect(waiters.at(-1)?.operation).toBe("cancel");
@@ -520,7 +515,7 @@ describe("bounded IPC streams on real writable Store", () => {
       owner,
       output,
       fatal,
-      appSchemaBlock.cid.toString(),
+      appSchemaCid.toString(),
     );
     await raw(transport, 2001, "unknown", {});
     expect(fatal).toHaveBeenCalledWith(

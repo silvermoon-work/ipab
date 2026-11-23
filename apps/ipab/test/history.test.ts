@@ -12,7 +12,7 @@ import {
   saveHistory,
   timestamp,
 } from "../src/history.js";
-import { appSchemaBlock } from "../src/space.js";
+import { appSchemaCid } from "../src/space.js";
 import { fixture, importFiles, record, cli } from "./helpers.js";
 
 describe("history and durable retention", () => {
@@ -27,7 +27,7 @@ describe("history and durable retention", () => {
     await work.cleanup();
     vi.restoreAllMocks();
   });
-  const cid = appSchemaBlock.cid.toString();
+  const cid = appSchemaCid.toString();
 
   it("list filters share endedAt boundaries, AND matching and stable cursor order", () => {
     for (let index = 0; index < 26; index++)

@@ -10,8 +10,21 @@ Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
-Content Bundle 按公共库完整校验 `.bundle.yaml`、入口内容、DAG-CBOR Schema、
-外部 `$ref` 和 content refs；Schema 字符串引用的外部 blocks 显式保留。
+Content Bundle 完整校验 `.bundle.yaml`、入口内容、内嵌 UnixFS Schema Bundle
+及 content refs；同一目录 DAG 已包含全部定义。当前协议详见
+[Bundle runtime](../packages/bundle/README.md)。旧 DAG-CBOR Schema 协议及
+`schemaCid` manifest 已移除，无兼容或注册表迁移。
+
+普通 entry 的 `schema: /schema` 指向当前根内嵌的 Schema Bundle 目录；
+其准确目录 CID 是 register 键。Schema Bundle 的 entry.schema 必须准确为
+`builtin:bundle-schema.v1`，入口 JSON descriptor 明确列出内部无起始斜杠路径
+和必需 main。所有文件根 $id 为独一的作者自选 absolute URI；$ref 与 file:
+目标仅准确匹配当前 Bundle 完整 $id。无网络、fragment/pointer/相对引用。
+Schema 集合可通过 builtin 注册键打开。
+
+当前最小结构方言及 anyOf 全分支内容验证、root-relative content refs、
+共享预算、确定性 Builder 规则以上述 runtime 文档为准。两个 private Builder
+支持 repeatable VFS、独立 Node 本地适配器和固定 UnixFS/CAR；不上传或 pin。
 
 <a id="node-app-profile"></a>
 
@@ -23,7 +36,7 @@ App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化
 ```yaml
 entry:
   path: app.json
-  schemaCid: bafyreievwb422pkdrnhnb2d7xyuhjq6eswd3xnvrt4ryov2e5zwhob633e
+  schema: /schema
   contentType: application/json
 ```
 
@@ -37,28 +50,32 @@ entry:
 }
 ```
 
-上述 Schema CID 是公共 `encodeSchema` 对下面值产生的确定性 DAG-CBOR SHA-256
-CID，而不是 UnixFS 包装文件 CID：
+`schema/` 是使用固定 Builder 参数和下述 Schema 生成的完整 Schema Bundle；
+准确目录 CID 为 `bafybeidq5zd7tzccgueniq5fnv2yugw45ijmifw76sknpem7mz5jynmaxe`。
+descriptor 为 `{"schemas":["node-app.json"],"main":"urn:ipab:node-app.v1"}`，
+entry 指向 `schema.json` 并使用 builtin profile；schema 文件为：
+
+CLI runtime 只保存固定 CID 与三个准确 canonical 文件字节，不在启动时加载
+Bundle Builder 或构造 VFS/CAR。Builder 仅用于开发测试，重新构建验证该身份。
 
 ```json
 {
+  "$id": "urn:ipab:node-app.v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["profile", "runtime", "entry"],
   "properties": {
     "profile": { "const": "ipab.node.v1" },
     "runtime": { "const": "node" },
-    "entry": {
-      "type": "string",
-      "pattern": "^resources/[A-Za-z0-9._/-]+\\.cjs$"
-    }
+    "entry": { "type": "string" }
   }
 }
 ```
 
-Schema block 必须可由配置的 Store 读取。entry 必须是安全的相对路径、
+嵌入的 Schema Bundle 必须完整可读且 CID 准确。宿主 runtime 另行强制 entry
+为安全 `resources/` 下的 `.cjs` 相对路径，不使用方言不支持的 pattern。entry 是
 普通 JS 文件，最大 8 MiB；程序是自包含 CommonJS bundle，可使用普通 Node
-builtins，不自动安装外部依赖。作者在外部构建程序；IPAB 不提供 Builder。
+builtins，不自动安装外部依赖。作者在外部构建程序；Bundle Builder 不编译 JS。
 宿主先完整校验内容和 App profile，再将唯一 JS entry materialize 到本次
 状态目录的私有运行目录，启动 Node bootstrap，设置普通
 `process.argv = [node, materializedEntry, ...actualArguments]` 后加载 entry。
@@ -131,7 +148,7 @@ advanced byte serialization、pull 和逐 chunk ACK；最多 32 个请求／stre
 64 MiB 新文件字节；链接 DAG 受 Store blocks/depth/byte budget 约束。
 重复／重叠路径失败，不隐式替换。writeFile 流式导入 UnixFS，每个构造 block
 都经 `stageBlock` 从第一次写入起保护；链接的已有有效 UnixFS 目标及依赖
-先 retain 并 staged，不把 DAG-CBOR Schema 伪装成文件。
+先 retain 并 staged，不允许非 UnixFS DAG 伪装成文件。
 
 App 退出 0 且所有流完整成功后，构造嵌套 UnixFS 目录并 `finishImport`。
 **空输出也生成真实空目录 root**。非零退出、取消、破损流或未结束写入
@@ -171,7 +188,8 @@ callback 在 Store participant mutex 内重新读持久根，不捕获旧数组�
 
 下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
 其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
-和“迁移公共库”均已被上述实现及确认决定取代。
+和“迁移公共库”均已被上述实现及确认决定取代。下文所有 DAG-CBOR Schema、
+schemaCid、旧外部 $ref 及旧 content refs 也是历史协议，禁止用于当前构建。
 
 ## 历史设计草案（实现前）
 

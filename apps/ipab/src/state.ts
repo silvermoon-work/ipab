@@ -43,14 +43,17 @@ export interface Hold {
 }
 
 export function exactCid(value: string, schema = false): string {
+  if (schema && value === "builtin:bundle-schema.v1") return value;
   let cid: CID;
   try {
     cid = CID.parse(value).toV1();
   } catch {
     syntax("Expected a valid CID.");
   }
-  if (schema && (cid.code !== 0x71 || cid.multihash.code !== 0x12))
-    syntax("Schema must be a DAG-CBOR SHA-256 CID.");
+  if (schema && (cid.code !== 0x70 || cid.multihash.code !== 0x12))
+    syntax(
+      "Schema must be a UnixFS directory SHA-256 CID or builtin:bundle-schema.v1.",
+    );
   return cid.toString();
 }
 

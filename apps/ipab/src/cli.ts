@@ -613,7 +613,7 @@ async function performCli(
           );
           try {
             const content = await validatedBundle(root, store, owner);
-            const schema = content.manifest.entry.schemaCid.toV1().toString();
+            const schema = content.schemaKey;
             const association = state.association(schema);
             if (!association)
               throw new HostError(

@@ -1,7 +1,8 @@
-import { CID } from "multiformats/cid";
-import { parseAllDocuments } from "yaml";
+import { isMap, isSeq, parseAllDocuments } from "yaml";
 import { ContentBundleError } from "./errors.js";
-import type { BundleManifest, ContentRef, ContentType } from "./types.js";
+import type { BundleManifest, ContentType } from "./types.js";
+
+export const SCHEMA_PROFILE = "builtin:bundle-schema.v1";
 
 export function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -13,6 +14,9 @@ export function safePath(path: string): string {
     path.length > 1024 ||
     path.split("/").some((part) => !part || part === "." || part === "..") ||
     /[\\:%?#]/u.test(path) ||
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+      path,
+    ) ||
     [...path].some(
       (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
     )
@@ -25,61 +29,64 @@ export function safePath(path: string): string {
   return path;
 }
 
-export function schemaCid(value: string): CID {
-  let cid: CID;
-  try {
-    cid = CID.parse(value);
-  } catch (cause) {
+export function rootPath(value: string): string {
+  if (!value.startsWith("/"))
     throw new ContentBundleError(
-      "SCHEMA_INVALID",
-      "Invalid Schema CID.",
-      "",
-      "",
-      [],
-      { cause },
+      "PATH_INVALID",
+      "Expected a root-relative / path.",
+      value,
     );
-  }
-  if (cid.version !== 1 || cid.code !== 0x71 || cid.multihash.code !== 0x12)
-    throw new ContentBundleError(
-      "SCHEMA_INVALID",
-      "Schema CID must use CIDv1, dag-cbor and sha2-256.",
-    );
-  return cid;
+  return safePath(value.slice(1));
 }
 
-export function parseContentRef(value: string): ContentRef {
-  if (value.startsWith("bundle:"))
-    return Object.freeze({ kind: "bundle", path: safePath(value.slice(7)) });
-  const match = /^(json|yaml|jsonl):([^:]+):(.+)$/u.exec(value);
-  if (!match)
+export function parseContentRef(
+  value: string,
+  rule: string,
+):
+  | { kind: "bundle"; path: string }
+  | { kind: "json" | "yaml" | "jsonl"; path: string; target: string } {
+  if (rule === "bundle")
+    return { kind: "bundle" as const, path: rootPath(value) };
+  const match = /^(json|yaml|jsonl):(\/.+)$/u.exec(value);
+  if (!match || !rule.startsWith("file:"))
     throw new ContentBundleError(
       "REFERENCE_INVALID",
-      "Expected json/yaml/jsonl:<Schema CID>:<path> or bundle:<path>.",
+      "Expected json:/path, yaml:/path or jsonl:/path.",
     );
   const kind =
     match[1] === "json" ? "json" : match[1] === "yaml" ? "yaml" : "jsonl";
-  return Object.freeze({
-    kind,
-    schemaCid: schemaCid(match[2]!),
-    path: safePath(match[3]!),
-  });
+  return { kind, path: rootPath(match[2]!), target: rule.slice(5) };
 }
 
 export function assertJson(
   value: unknown,
   maximumNodes = 100_000,
   maximumDepth = 64,
+  charge: () => void = () => {},
 ): void {
+  jsonLimits(maximumNodes, maximumDepth);
   const ancestors = new Set<object>();
   let nodes = 0;
   const visit = (item: unknown, depth: number): void => {
+    charge();
     if (++nodes > maximumNodes || depth > maximumDepth)
       throw new ContentBundleError(
         "LIMIT_EXCEEDED",
         "JSON value exceeds node/depth limits.",
       );
-    if (item === null || typeof item === "boolean" || typeof item === "string")
+    if (typeof item === "string") {
+      if (
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+          item,
+        )
+      )
+        throw new ContentBundleError(
+          "CONTENT_INVALID",
+          "Invalid Unicode surrogate.",
+        );
       return;
+    }
+    if (item === null || typeof item === "boolean") return;
     if (
       typeof item === "number" &&
       Number.isFinite(item) &&
@@ -98,10 +105,117 @@ export function assertJson(
         "Expected finite, acyclic JSON-compatible data with safe integers.",
       );
     ancestors.add(item);
-    for (const child of Object.values(item)) visit(child, depth + 1);
+    if (
+      Array.isArray(item) &&
+      (Object.keys(item).length !== item.length ||
+        Object.keys(item).some((key, index) => key !== String(index)))
+    )
+      throw new ContentBundleError(
+        "CONTENT_INVALID",
+        "Expected a dense JSON array without extra properties.",
+      );
+    for (const [key, child] of Object.entries(item)) {
+      if (!Array.isArray(item)) visit(key, depth + 1);
+      visit(child, depth + 1);
+    }
     ancestors.delete(item);
   };
   visit(value, 0);
+}
+
+function jsonLimits(nodes: number, depth: number): void {
+  if (
+    ![nodes, depth].every((value) => Number.isSafeInteger(value) && value > 0)
+  )
+    throw new ContentBundleError(
+      "OPTIONS_INVALID",
+      "JSON limits must be positive safe integers.",
+    );
+}
+
+function json(source: string, maximumDepth: number): unknown {
+  let offset = 0;
+  const space = () => {
+    while (/[ \t\r\n]/u.test(source[offset] ?? "") && offset < source.length)
+      offset++;
+  };
+  const string = (): string => {
+    const start = offset++;
+    while (offset < source.length) {
+      const char = source[offset++];
+      if (char === "\\") offset++;
+      else if (char === '"')
+        return JSON.parse(source.slice(start, offset)) as string;
+    }
+    throw new Error("Unterminated JSON string.");
+  };
+  const value = (depth: number): unknown => {
+    if (depth > maximumDepth)
+      throw new ContentBundleError("LIMIT_EXCEEDED", "JSON depth exceeded.");
+    space();
+    const char = source[offset];
+    if (char === '"') return string();
+    if (char === "{" || char === "[") {
+      offset++;
+      const object: Record<string, unknown> = Object.create(null) as Record<
+        string,
+        unknown
+      >;
+      const array: unknown[] = [];
+      const close = char === "{" ? "}" : "]";
+      space();
+      if (source[offset] === close) {
+        offset++;
+        return char === "{" ? object : array;
+      }
+      for (;;) {
+        if (char === "{") {
+          space();
+          if (source[offset] !== '"') throw new Error("Expected JSON key.");
+          const key = string();
+          if (Object.hasOwn(object, key))
+            throw new Error("Duplicate JSON key.");
+          space();
+          if (source[offset++] !== ":") throw new Error("Expected colon.");
+          object[key] = value(depth + 1);
+        } else array.push(value(depth + 1));
+        space();
+        const next = source[offset++];
+        if (next === close) return char === "{" ? object : array;
+        if (next !== ",") throw new Error("Expected comma.");
+      }
+    }
+    const token =
+      /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/u.exec(
+        source.slice(offset),
+      );
+    if (!token) throw new Error("Invalid JSON token.");
+    offset += token[0].length;
+    return JSON.parse(token[0]) as unknown;
+  };
+  const result = value(0);
+  space();
+  if (offset !== source.length) throw new Error("Trailing JSON input.");
+  return result;
+}
+
+export function canonicalJson(
+  value: unknown,
+  nodes = 100_000,
+  depth = 64,
+  charge: () => void = () => {},
+): Uint8Array {
+  assertJson(value, nodes, depth, charge);
+  const serialize = (item: unknown): string => {
+    if (Array.isArray(item)) return `[${item.map(serialize).join(",")}]`;
+    if (record(item))
+      return `{${Object.keys(item)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${serialize(item[key])}`)
+        .join(",")}}`;
+    return JSON.stringify(item);
+  };
+  return new TextEncoder().encode(serialize(value));
 }
 
 export function parseData(
@@ -109,24 +223,30 @@ export function parseData(
   type: ContentType,
   nodes = 100_000,
   depth = 64,
+  charge: () => void = () => {},
 ): unknown {
+  jsonLimits(nodes, depth);
   try {
     const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     let value: unknown;
-    if (type === "application/json") value = JSON.parse(source);
+    if (type === "application/json") value = json(source, depth);
     else if (type === "application/jsonl") {
       const lines = source.split("\n");
       if (lines.at(-1) === "") lines.pop();
       value = lines.map((line, index): unknown => {
         try {
-          return JSON.parse(line);
+          return json(line, depth);
         } catch (cause) {
+          const failure =
+            cause instanceof ContentBundleError ? cause : undefined;
           throw new ContentBundleError(
-            "CONTENT_INVALID",
-            `Invalid JSONL at line ${String(index + 1)}.`,
-            "",
-            `/${String(index)}`,
-            [],
+            failure?.code ?? "CONTENT_INVALID",
+            failure
+              ? `${failure.message} (JSONL line ${String(index + 1)}).`
+              : `Invalid JSONL at line ${String(index + 1)}.`,
+            failure?.path ?? "",
+            `/${String(index)}${failure?.pointer ?? ""}`,
+            failure?.referenceChain ?? [],
             { cause },
           );
         }
@@ -144,9 +264,26 @@ export function parseData(
       const document = documents[0]!;
       const issue = document.errors[0] ?? document.warnings[0];
       if (issue) throw new ContentBundleError("CONTENT_INVALID", issue.message);
+      let visited = 0;
+      const inspect = (node: unknown, level: number): void => {
+        charge();
+        if (++visited > nodes || level > depth)
+          throw new ContentBundleError(
+            "LIMIT_EXCEEDED",
+            "YAML value exceeds node/depth limits.",
+          );
+        if (isMap(node))
+          for (const pair of node.items) {
+            inspect(pair.key, level + 1);
+            inspect(pair.value, level + 1);
+          }
+        else if (isSeq(node))
+          for (const child of node.items) inspect(child, level + 1);
+      };
+      inspect(document.contents, 0);
       value = document.toJS({ maxAliasCount: 100 });
     }
-    assertJson(value, nodes, depth);
+    assertJson(value, nodes, depth, charge);
     return value;
   } catch (cause) {
     if (cause instanceof ContentBundleError) throw cause;
@@ -161,25 +298,29 @@ export function parseData(
   }
 }
 
-export function parseBundleManifest(bytes: Uint8Array): BundleManifest {
-  if (bytes.byteLength > 64 * 1024)
+export function parseBundleManifest(
+  bytes: Uint8Array,
+  maximum = 64 * 1024,
+  charge: () => void = () => {},
+): BundleManifest {
+  if (bytes.byteLength > maximum)
     throw new ContentBundleError(
       "LIMIT_EXCEEDED",
       "Bundle manifest exceeds 64 KiB.",
     );
   try {
-    const value = parseData(bytes, "application/yaml");
+    const value = parseData(bytes, "application/yaml", 100_000, 64, charge);
     if (
       !record(value) ||
       Object.keys(value).some((key) => key !== "entry") ||
       !record(value.entry) ||
       Object.keys(value.entry).some(
-        (key) => !["path", "schemaCid", "contentType"].includes(key),
+        (key) => !["path", "schema", "contentType"].includes(key),
       )
     )
       throw new Error("Expected only an entry descriptor.");
-    const { path, schemaCid: cid, contentType } = value.entry;
-    if (typeof path !== "string" || typeof cid !== "string")
+    const { path, schema, contentType } = value.entry;
+    if (typeof path !== "string" || typeof schema !== "string")
       throw new Error("Invalid entry fields.");
     if (
       contentType !== "application/json" &&
@@ -190,7 +331,7 @@ export function parseBundleManifest(bytes: Uint8Array): BundleManifest {
     return Object.freeze({
       entry: Object.freeze({
         path: safePath(path),
-        schemaCid: schemaCid(cid),
+        schema: schema === SCHEMA_PROFILE ? schema : `/${rootPath(schema)}`,
         contentType,
       }),
     });

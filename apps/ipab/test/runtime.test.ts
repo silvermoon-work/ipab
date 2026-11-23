@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { encodeSchema } from "@ipab/bundle";
 import { IpfsStore } from "@ipab/ipfs-store";
+import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
 import * as dagPb from "@ipld/dag-pb";
 import { UnixFS } from "ipfs-unixfs";
 import { CID } from "multiformats/cid";
@@ -14,7 +14,8 @@ import {
   relativePath,
   validatedBundle,
   loadApp,
-  appSchemaBlock,
+  appSchemaCid,
+  appSchemaFiles,
   CHUNK_BYTES,
 } from "../src/space.js";
 import { Ownership } from "../src/history.js";
@@ -27,6 +28,15 @@ import {
   importFiles,
   subprocess,
 } from "./helpers.js";
+
+async function invalidBlock(store: IpfsStore): Promise<CID> {
+  const bytes = dagPb.encode(
+    dagPb.prepare({ Data: Uint8Array.of(0xff), Links: [] }),
+  );
+  const cid = CID.createV1(dagPb.code, await sha256.digest(bytes));
+  await store.put(cid, bytes);
+  return cid;
+}
 
 describe("real UnixFS and Node subprocess runtime", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
@@ -44,6 +54,16 @@ describe("real UnixFS and Node subprocess runtime", () => {
     await work.cleanup();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it("rebuilds the fixed runtime Node profile identity from its exact canonical file bytes", async () => {
+    const encoded = await encodeBundleCar(memoryTree(appSchemaFiles));
+    try {
+      expect(encoded.cid.equals(appSchemaCid)).toBe(true);
+      await bytes(encoded.stream, 64 * 1024);
+    } finally {
+      await encoded.close();
+    }
   });
 
   it("ordinary argv/stdin/binary stdout are exact and output is the entire finalized directory", async () => {
@@ -147,7 +167,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         work.stateDir,
         "exec",
         badApp,
-        appSchemaBlock.cid.toString(),
+        (await invalidBlock(work.store)).toString(),
       ],
       config,
     );
@@ -223,6 +243,61 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(missing.stderr).toContain("register set or ipab exec");
     expect(state.runs()).toHaveLength(1);
   }, 20000);
+  it("opens Schema Bundle collections through the fixed builtin registration key", async () => {
+    const schema = await importFiles(
+      work.store,
+      Object.fromEntries(appSchemaFiles),
+    );
+    const root = await app(
+      work.store,
+      "process.stdout.write(process.argv[2]);",
+    );
+    state.setAssociation("builtin:bundle-schema.v1", root, ["%"], false);
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "open", schema],
+      config,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout.toString()).toBe(schema);
+    expect(state.runs()[0]?.origin).toBe("open");
+    state.removeAssociation("builtin:bundle-schema.v1");
+  }, 20000);
+  it.each(["other/app.cjs", "resources/app.js"])(
+    "enforces Node entry paths outside the structural schema: %s",
+    async (entry) => {
+      const root = await importFiles(work.store, {
+        ".bundle.yaml": JSON.stringify({
+          entry: {
+            path: "app.json",
+            schema: "/schema",
+            contentType: "application/json",
+          },
+        }),
+        "app.json": JSON.stringify({
+          profile: "ipab.node.v1",
+          runtime: "node",
+          entry,
+        }),
+        [entry]: "throw new Error('must not execute');",
+        ...Object.fromEntries(
+          [...appSchemaFiles].map(([path, bytes]) => [`schema/${path}`, bytes]),
+        ),
+      });
+      const owner = await Ownership.create(
+        state,
+        work.store,
+        "invalid-app-entry",
+        null,
+      );
+      try {
+        await expect(loadApp(root, work.store, owner)).rejects.toMatchObject({
+          code: "APP_PROFILE_INVALID",
+        });
+      } finally {
+        await owner.release();
+      }
+    },
+  );
 
   it("empty success finalizes an empty UnixFS directory; failed app preserves its exit without partial output", async () => {
     const empty = await app(work.store, "process.stdout.write('plain');");
@@ -583,8 +658,7 @@ process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{}); setInterval(()=>{},10
       loadApp((await content(work.store)).root, work.store, validationOwner),
     ).rejects.toThrow("App");
     await validationOwner.release();
-    const block = await encodeSchema({ type: "object" });
-    expect(block.cid.code).toBe(0x71);
+    expect(appSchemaCid.code).toBe(0x70);
     expect(JSON.parse(await readFile(config, "utf8")) as unknown).toEqual(
       work.store.configuration,
     );

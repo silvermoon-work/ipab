@@ -2,16 +2,115 @@
 
 InterPlanetary Application Bundle 的独立工程仓库。
 
-当前仅包含工程脚手架；尚未迁入 `content-bundle`、宿主或示例 App，
-也没有实现 `open` / `apps` 命令、配置 npm 交付项或发布流程。
-本次搭建参考 `silvermoon-work/okr-agent` 的共享工程配置，不复制其业务包、
-历史生命周期资料或个人配置。
+IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/stdout/stderr，
+通过独立 IPC 提供 IPFS 文件流及可写输出 Space。**它不是沙箱**：应用拥有
+当前用户的 Node、文件系统、网络和环境权限；只执行你信任的应用。
+当前 workspace 为 private，不包含 npm 发布或节点管理流程。
+
+## 使用
+
+```sh
+pnpm build
+node apps/ipab/dist/main.js --help
+```
+
+以下示例的 `ipab` 指构建后的 `apps/ipab/dist/main.js`（也可用 Node 直接运行）。
+CID 占位符应替换为真实的 CID：
+
+```sh
+ipab alias set reader <app-cid>
+ipab exec reader --cid <content-cid>
+ipab register set <schema-cid> reader -- --cid %
+ipab open <content-cid>
+ipab --json history list --status succeeded
+ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
+```
+
+- 全局 `--state-dir PATH`、`--store-rpc URL`、`--json` 必须在子命令之前。
+  `--json` 只适用于管理命令，不能包装 exec/open 的应用 stdout。
+- `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
+  `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
+- `open CONTENT` 完整校验 Content Bundle，读取入口 Schema CID，使用保存的
+  Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
+  `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
+  只替换整个参数，不展开 shell 字符串。
+- `alias list/set/remove` 只维护准确 CID 引用，不构成 alias 链，不 pin 或执行。
+  `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
+  `--replace`；
+  相同值幂等成功。Alias 的后续修改不影响关联或历史。
+- 根及分组无参数显示帮助；所有节点支持 `-h/--help`。缺少叶子参数退出 2，
+  不交互补参。管理操作成功 0、操作失败 1、语法失败 2；应用非零退出码保留。
+
+## Store、配置与结果
+
+读写及保留使用发布的 `@silvermoon-work/ipfs-store@0.1.0`；Content Bundle
+校验使用 `@silvermoon-work/content-bundle@0.1.0-rc.0`，不复制它们的实现。
+默认通过 Store 的 `/node` 配置 helper 读取 `TASK_CONTENT_CONFIG`／平台
+TaskContent 配置，缺省使用 `~/.silvermoon.work/content` 的本地可写 Store。
+不是虚构的默认 RPC 服务，也不是只读 gateway。
+
+`store.rpc` 缺省为 `null`，表示使用上述真实 Store 配置。显式 HTTP(S) URL
+（`--store-rpc`／`IPAB_STORE_RPC`／用户配置）选择库的 Kubo backend，
+替代整个公共 Store 配置；IPAB 不实现 Kubo HTTP 或另造通用 Store RPC 协议。
+URL 禁止凭据、查询和 fragment。默认 Store 配置中的 URL 同样检查。
+连接或配置失败不会静默换后端。
+
+| 配置键             | 默认      | 值域／环境变量                                             |
+| ------------------ | --------- | ---------------------------------------------------------- |
+| `store.rpc`        | `null`    | 公共 HTTP(S) URL 或 `default`；`IPAB_STORE_RPC`            |
+| `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                       |
+| `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录 |
+| `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                    |
+
+`config get [KEY]` 显示有效值与 flag/env/user/default 来源；
+`config set KEY VALUE` 只保存用户层，遇到更高优先级覆盖时提示；
+`config reset KEY` 只移除单键用户覆盖，不清理历史或 pins。
+坏配置明确报错。优先级为 flag > env > user > default。
+状态目录由 `--state-dir`／`IPAB_STATE_DIR` 引导；默认 Windows
+`%LOCALAPPDATA%\ipab`，其他平台 `$XDG_DATA_HOME/ipab` 或
+`~/.local/share/ipab`，不存为自定位配置键。
+
+成功执行（包括空输出）固化整个输出 UnixFS 目录根；输出不要求 `.bundle.yaml`
+或 Schema。执行失败／取消或固化前发生错误时，不固化部分输出，记录
+`outputCid: null`；
+若输出已固化后才发生历史保存／清理错误，保留真实输出 CID，但整体仍失败。
+应用退出 0 但输出提交／清理失败仍非零。输出 CID 及执行 ID 只提示到 stderr，
+绝不追加到应用 stdout。详细 Node App profile 与流接口见
+[设计概览](docs/design-overview.md#node-app-profile)。
+
+## 历史与隐私
+
+历史默认开启，保存 appCid、**实际 argv**、outputCid、起止时间、状态、
+实际应用退出值或 null、错误阶段及记录自有保留信息；不设 contentCid，
+不捕获 stdio。参数可能有秘密：使用受保护的 stdin 或关闭历史，
+不能依赖自动识别任意 App 参数中的秘密。
+
+`history list` 与 `history remove` 共用 AND 筛选：`--app`、`--status`
+（succeeded/failed/cancelled）、`--since`、`--until`。时间必须为明确时区
+RFC3339，最多三位小数秒，按 endedAt 的 `[since,until)` 匹配；更高精度明确报错，
+不截断边界。排序 endedAt DESC、ID DESC。
+`list` 的 `--limit`／`--before RUN_ID` 只是分页；JSON 为 items/nextBefore，
+下一游标是本页最后 ID。`show RUN_ID` 成功读取失败记录也退出 0。
+这些查询不要求在线 Store。
+
+删除必须显式 ID 或筛选，两种方式互斥，无隐含全选，不支持分页选项；
+删除全部匹配已结束记录，不限 20。确认之前固定目标集合；TTY 展示数量和保留
+后果并确认，非 TTY 要求 `--yes`。部分失败明确报告已完成／剩余 ID。
+
+`output.retention=history` 且历史开启时，每条记录以独立 durable Store owner
+保留输出；先 retain，再提交记录，再 confirmRetained。删除只释放该记录的
+责任；共享根及活跃执行由其他 owner 继续保护。原后端和协调配置保存在所有权
+元数据中，改变当前配置不会在错误后端 unpin。释放失败保留可重试信息。
+只回收确认 idle 的遗留 owner，不恢复活跃 owner。
+`none` 或关闭历史时，运行结束后没有历史自有保留；CID 仍是实际已生成根，
+但后端可能回收它。Local unpin 不删除 blocks；不执行 shared daemon GC。
 
 ## 设计概览
 
 [IPAB Design Overview](docs/design-overview.md) 汇总内容包、DAG-CBOR Schema、
 content refs、App Bundle、默认应用关联、快照及 Store 的设计方向，
-并区分已确认原则、当前实现与尚未定稿的接口。
+并记录当前 Node profile、CLI、Space、输出保留与信任边界；
+已确认 CLI 的普通 argv 语义取代早期“App 唯一输入 CID”假设。
 
 ## 开发环境
 
@@ -38,8 +137,8 @@ Node 选择依据为 2026-11-23 搭建时读取的
 ## 结构
 
 ```text
-apps/                  预留可执行应用目录，目前为空
-packages/              预留公共包目录，目前为空
+apps/ipab/             private CLI、Node runtime、IPC context 与回归测试
+packages/              公共包 workspace，当前无成员
 docs/agent-project.md  项目工程指导
 pnpm-workspace.yaml   workspace、catalog 和安装策略
 turbo.json             依赖顺序与缓存
@@ -48,10 +147,9 @@ vitest.config.ts       各 code package 共用的测试与覆盖率配置
 .github/workflows/ci.yaml
 ```
 
-不创建占位业务包来制造构建或测试结果。当前 `build`、成员 `typecheck`、
-`test`、`test-coverage` 和 `lint-package` 会报告零 workspace 任务；
-根 TypeScript 配置、全仓库 lint 和格式检查仍实际运行。
-这只能验证脚手架，不能证明尚未迁入的代码通过了测试。
+成员 build/typecheck/test/test-coverage 均执行真实代码与测试，包括本地 writable
+Store、生成的 UnixFS DAG 和实际 Node 子进程。没有 npm 交付包，因此
+lint-package 无交付任务，不将它称为已验证的发布能力。
 
 ## 工程命令
 
@@ -68,7 +166,8 @@ vitest.config.ts       各 code package 共用的测试与覆盖率配置
 | `pnpm check`         | 格式 → 构建 → 类型 → lint → 覆盖率 → 包检查，失败即停 |
 | `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出         |
 
-根据用户确认，脚本使用直接工具命令，不增加同名转发脚本。
+已有根脚本继续使用用户确认的直接工具命令；新增 CLI 成员遵循
+`node scripts/<same-name>.mjs`，共享实现放 `scripts/lib/`，传播工具退出失败。
 标准 [AGENTS.md](AGENTS.md) 的旧脚本接口约定与这一选择的差异，
 明确记录在 [项目指导](docs/agent-project.md)，不声称标准接口检查已经通过。
 
@@ -78,8 +177,9 @@ vitest.config.ts       各 code package 共用的测试与覆盖率配置
 
 ## 后续迁入包
 
-共享工具版本放入 catalog，内部依赖使用 `workspace:*`。成员分别声明 build、
-typecheck、test、test-coverage；ESLint 和 Prettier 从根目录统一执行。
+共享工具版本放入 catalog，内部依赖使用
+`workspace:*`。成员分别声明 build、typecheck、test、test-coverage；
+ESLint 和 Prettier 从根目录统一执行。
 
 成员测试可直接使用标准工具：
 

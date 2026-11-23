@@ -1,0 +1,592 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFile, readFile, access } from "node:fs/promises";
+import { join } from "node:path";
+import { encodeSchema } from "@silvermoon-work/content-bundle";
+import { IpfsStore } from "@silvermoon-work/ipfs-store";
+import * as dagPb from "@ipld/dag-pb";
+import { UnixFS } from "ipfs-unixfs";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
+import { State } from "../src/state.js";
+import {
+  bytes,
+  OutputSpace,
+  relativePath,
+  validatedBundle,
+  loadApp,
+  appSchemaBlock,
+  CHUNK_BYTES,
+} from "../src/space.js";
+import { Ownership } from "../src/history.js";
+import { execute } from "../src/runtime.js";
+import {
+  app,
+  cli,
+  content,
+  fixture,
+  importFiles,
+  subprocess,
+} from "./helpers.js";
+
+describe("real UnixFS and Node subprocess runtime", () => {
+  let work: Awaited<ReturnType<typeof fixture>>;
+  let state: State;
+  let config: string;
+  beforeEach(async () => {
+    work = await fixture();
+    state = new State(work.stateDir);
+    config = join(work.root, "store.json");
+    await writeFile(config, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", config);
+  });
+  afterEach(async () => {
+    state.close();
+    await work.cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("ordinary argv/stdin/binary stdout are exact and output is the entire finalized directory", async () => {
+    const source = `const fs = require("node:fs");
+const input = fs.readFileSync(0);
+process.stdout.write(input);
+process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
+(async () => {
+  await ipab.output.writeFile("nested/result.bin", new ReadableStream({start(c) { c.enqueue(input); c.close(); }}));
+  await ipab.output.writeFile("second.txt", new ReadableStream({start(c) { c.enqueue(Buffer.from("two")); c.close(); }}));
+})().catch(e => {console.error(e); process.exitCode = 9;});`;
+    const root = await app(work.store, source);
+    const argv = ["--help", "--cid", "--", "--json", "a b", "%", "☃"];
+    const input = Buffer.from([0, 255, 1, 2, 13, 10]);
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", root, ...argv],
+      config,
+      input,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toEqual(input);
+    expect(result.stderr).toContain(JSON.stringify(argv));
+    const run = state.runs()[0]!;
+    expect(run.status).toBe("succeeded");
+    expect(run.appCid).toBe(root);
+    expect(run.argv).toEqual(argv);
+    expect(run.retention.owned).toBe(true);
+    expect(run.outputCid).not.toBe(root);
+    expect((await work.store.read(run.outputCid!)).type).toBe("directory");
+    const resultNode = await work.store.read(
+      `${run.outputCid}/nested/result.bin`,
+    );
+    expect(resultNode.type).not.toBe("directory");
+    if (resultNode.type !== "directory")
+      expect(
+        await bytes(ReadableStream.from(resultNode.content()), 100),
+      ).toEqual(Uint8Array.from(input));
+    const second = await work.store.read(`${run.outputCid}/second.txt`);
+    if (second.type !== "directory")
+      expect(
+        new TextDecoder().decode(
+          await bytes(ReadableStream.from(second.content()), 100),
+        ),
+      ).toBe("two");
+    expect(result.stdout.toString()).not.toContain(run.outputCid!);
+    expect(result.stderr).toContain(`Output: ${run.outputCid}`);
+  }, 20000);
+
+  it("reads arbitrary Space without manifest and links only valid UnixFS file/directory targets", async () => {
+    const space = await importFiles(work.store, {
+      "raw/data.bin": new Uint8Array(CHUNK_BYTES * 3).fill(42),
+      "other.txt": "value",
+    });
+    const file = (await work.store.read(`${space}/other.txt`)).cid.toString();
+    const source = `(async () => {
+  const stream = await ipab.readFile(process.argv[2], "raw/data.bin");
+  await ipab.output.writeFile("copy.bin", stream);
+  await ipab.output.writeFile("self-description.json", await ipab.readFile(ipab.appCid, "app.json"));
+  await ipab.output.link("linked-tree", process.argv[2]);
+  await ipab.output.link("linked-file", process.argv[3]);
+})().catch(e => { console.error(e); process.exitCode = 7; });`;
+    const root = await app(work.store, source);
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", root, space, file],
+      config,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    const output = state.runs()[0]!.outputCid!;
+    const copy = await work.store.read(`${output}/copy.bin`);
+    if (copy.type !== "directory")
+      expect(
+        (await bytes(ReadableStream.from(copy.content()), CHUNK_BYTES * 3))
+          .length,
+      ).toBe(CHUNK_BYTES * 3);
+    expect(
+      (await work.store.read(`${output}/linked-file`)).cid.toString(),
+    ).toBe(file);
+    expect(
+      (await work.store.read(`${output}/linked-tree`)).cid.toString(),
+    ).toBe(space);
+    const own = await work.store.read(`${output}/self-description.json`);
+    if (own.type !== "directory")
+      expect(
+        JSON.parse(
+          new TextDecoder().decode(
+            await bytes(ReadableStream.from(own.content()), 1024),
+          ),
+        ) as unknown,
+      ).toEqual({
+        profile: "ipab.node.v1",
+        runtime: "node",
+        entry: "resources/app.cjs",
+      });
+    const badApp = await app(
+      work.store,
+      `(async()=>{try {await ipab.output.link("not-unixfs", process.argv[2]);} catch(e) {console.error(e.message);}})();`,
+    );
+    const bad = await subprocess(
+      [
+        "--state-dir",
+        work.stateDir,
+        "exec",
+        badApp,
+        appSchemaBlock.cid.toString(),
+      ],
+      config,
+    );
+    expect(bad.code).toBe(1);
+    expect(
+      state.runs().find((run) => run.appCid === badApp)?.outputCid,
+    ).toBeNull();
+  }, 20000);
+
+  it("rejects a linked directory with a non-UnixFS DAG-PB descendant", async () => {
+    const invalid = dagPb.encode(
+      dagPb.prepare({ Data: Uint8Array.of(0xff), Links: [] }),
+    );
+    const invalidCid = CID.createV1(dagPb.code, await sha256.digest(invalid));
+    await work.store.put(invalidCid, invalid);
+    const directory = dagPb.encode(
+      dagPb.prepare({
+        Data: new UnixFS({ type: "directory" }).marshal(),
+        Links: [{ Name: "invalid", Hash: invalidCid, Tsize: invalid.length }],
+      }),
+    );
+    const root = CID.createV1(dagPb.code, await sha256.digest(directory));
+    await work.store.put(root, directory);
+    expect((await work.store.read(root)).type).toBe("directory");
+    await expect(
+      work.store.read(`${root.toString()}/invalid`),
+    ).rejects.toThrow();
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "invalid-link",
+      "invalid-link-stage",
+    );
+    try {
+      const output = new OutputSpace(work.store, owner, "invalid-link-stage");
+      await expect(output.link("tree", root.toString())).rejects.toThrow();
+      await expect(output.finalize()).rejects.toThrow();
+    } finally {
+      await owner.release();
+    }
+  });
+
+  it("open validates Content Bundle, expands whole tokens and uses saved exact association", async () => {
+    const input = await content(work.store);
+    const root = await app(
+      work.store,
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+    );
+    state.setAlias("document", input.root, false);
+    state.setAlias("program", root, false);
+    state.setAssociation(
+      input.schema,
+      "program",
+      ["--cid", "%", "--literal=%", "%"],
+      false,
+    );
+    state.setAlias("program", input.root, true);
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "open", "document"],
+      config,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    const actual = ["--cid", input.root, "--literal=%", input.root];
+    expect(result.stdout.toString()).toBe(JSON.stringify(actual));
+    expect(state.runs()[0]?.argv).toEqual(actual);
+    expect(state.runs()[0]?.origin).toBe("open");
+    state.removeAssociation(input.schema);
+    const missing = await subprocess(
+      ["--state-dir", work.stateDir, "open", input.root],
+      config,
+    );
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain("register set or ipab exec");
+    expect(state.runs()).toHaveLength(1);
+  }, 20000);
+
+  it("empty success finalizes an empty UnixFS directory; failed app preserves its exit without partial output", async () => {
+    const empty = await app(work.store, "process.stdout.write('plain');");
+    const good = await subprocess(
+      ["--state-dir", work.stateDir, "exec", empty],
+      config,
+    );
+    expect(good.code, good.stderr).toBe(0);
+    expect(good.stdout.toString()).toBe("plain");
+    const emptyRoot = state.runs()[0]!.outputCid!;
+    const directory = await work.store.read(emptyRoot);
+    if (directory.type === "directory") {
+      const entries = [];
+      for await (const item of directory.entries()) entries.push(item);
+      expect(entries).toEqual([]);
+    }
+    const failed = await app(
+      work.store,
+      `(async()=> {
+await ipab.output.writeFile("partial",new ReadableStream({start(c){c.enqueue(Buffer.from("partial"));c.close();}}));
+process.exitCode=23; })();`,
+    );
+    const bad = await subprocess(
+      ["--state-dir", work.stateDir, "exec", failed],
+      config,
+    );
+    expect(bad.code).toBe(23);
+    const record = state.runs().find((run) => run.appCid === failed)!;
+    expect(record.status).toBe("failed");
+    expect(record.appExitCode).toBe(23);
+    expect(record.outputCid).toBeNull();
+    expect(record.retention.owned).toBe(false);
+    expect(record.error?.phase).toBe("execution");
+  }, 20000);
+
+  it("unfinished/caught failed writes cannot become fake successes", async () => {
+    const pending = await app(
+      work.store,
+      `(async()=> {
+await ipab.output.writeFile("pending", new ReadableStream({pull(){return new Promise(()=>{});}}));
+})();`,
+    );
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", pending],
+      config,
+    );
+    expect(result.code, result.stderr).toBe(1);
+    expect(result.stderr).toContain("unfinished output");
+    const broken = await app(
+      work.store,
+      `(async()=> {
+try {await ipab.output.writeFile("broken", new ReadableStream({start(c){c.error(new Error("stream broke"));}}));} catch(e) {}
+})();`,
+    );
+    const failed = await subprocess(
+      ["--state-dir", work.stateDir, "exec", broken],
+      config,
+    );
+    expect(failed.code).toBe(1);
+    expect(
+      state
+        .runs()
+        .every((run) => run.outputCid === null && run.status === "failed"),
+    ).toBe(true);
+  }, 20000);
+
+  it("protects every constructed block from first write; failed finalization and cleanup are nonzero", async () => {
+    const root = await app(
+      work.store,
+      `(async()=>{await ipab.output.writeFile("file",new ReadableStream({start(c){c.enqueue(Buffer.from("data"));c.close();}}));})();`,
+    );
+    const stage = vi.spyOn(work.store, "stageBlock");
+    const put = vi.spyOn(work.store, "put");
+    const diagnostics: string[] = [];
+    const result = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: true,
+        diagnostic: (text) => {
+          diagnostics.push(text);
+        },
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(stage).toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    const finish = vi
+      .spyOn(work.store, "finishImport")
+      .mockRejectedValueOnce(new Error("commit failed"));
+    const failure = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        diagnostic: (text) => {
+          diagnostics.push(text);
+        },
+      },
+    );
+    expect(failure.exitCode).toBe(1);
+    expect(failure.record.appExitCode).toBe(0);
+    expect(failure.record.outputCid).toBeNull();
+    expect(failure.record.error?.phase).toBe("commit");
+    finish.mockRestore();
+    const discard = vi
+      .spyOn(work.store, "discardImport")
+      .mockRejectedValueOnce(new Error("cleanup failed"));
+    const cleanup = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        diagnostic: (text) => {
+          diagnostics.push(text);
+        },
+      },
+    );
+    expect(cleanup.exitCode).toBe(1);
+    expect(cleanup.record.error?.phase).toBe("cleanup");
+    expect(state.run(cleanup.record.id).status).toBe("failed");
+    discard.mockRestore();
+  }, 20000);
+
+  it("history-off and no-retention modes do not capture stdio or create hidden permanent pins", async () => {
+    const root = await app(work.store, "process.stdout.write('hello');");
+    const diagnostics: string[] = [];
+    const result = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: ["sensitive-arg"] },
+      {
+        history: false,
+        retain: true,
+        diagnostic: (text) => {
+          diagnostics.push(text);
+        },
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(state.runs()).toEqual([]);
+    expect(diagnostics.join("\n")).toContain("no history-owned retention");
+    expect(work.store.pins()).not.toContain(result.record.outputCid);
+    const unretained = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        diagnostic: () => {},
+      },
+    );
+    expect(unretained.record.retention).toEqual({
+      owned: false,
+      state: "none",
+    });
+    expect(JSON.stringify(state.runs())).not.toContain("stdout");
+  }, 20000);
+
+  it("abort before launch produces a cancelled record, and invalid App profile never executes JS", async () => {
+    const input = await content(work.store, { arbitrary: true });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const result = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: input.root, argv: [] },
+      {
+        history: true,
+        retain: true,
+        signal: cancelled.signal,
+        diagnostic: () => {},
+      },
+    );
+    expect(result.exitCode).toBe(130);
+    expect(result.record.status).toBe("cancelled");
+    expect(result.record.appExitCode).toBeNull();
+    const invalid = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: input.root, argv: [] },
+      { history: true, retain: true, diagnostic: () => {} },
+    );
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.record.error?.phase).toBe("validation");
+    expect(invalid.record.appExitCode).toBeNull();
+    expect((await cli(work.stateDir, ["exec", "unknown"])).code).toBe(1);
+  });
+
+  it("the source CLI dispatches exec/open through the same runtime and reports Store-close failure", async () => {
+    const root = await app(work.store, "process.exitCode = 0;");
+    const input = await content(work.store);
+    state.setAlias("app", root, false);
+    state.setAssociation(input.schema, root, ["%", "--cid=%"], false);
+    const explicit = await cli(work.stateDir, ["exec", "app", "--help", "--"]);
+    expect(explicit.code, explicit.err).toBe(0);
+    const opened = await cli(work.stateDir, ["open", input.root]);
+    expect(opened.code, opened.err).toBe(0);
+    expect(state.runs().find((run) => run.origin === "open")?.argv).toEqual([
+      input.root,
+      "--cid=%",
+    ]);
+    state.removeAssociation(input.schema);
+    expect((await cli(work.stateDir, ["open", input.root])).err).toContain(
+      "No App registered",
+    );
+    const originalClose = Object.getOwnPropertyDescriptor(
+      IpfsStore.prototype,
+      "close",
+    )!.value as (this: IpfsStore) => Promise<void>;
+    const failure = await cli(work.stateDir, ["exec", root], {
+      diagnostic: (text) => {
+        if (text.startsWith("Output:"))
+          vi.spyOn(IpfsStore.prototype, "close").mockImplementationOnce(
+            async function (this: IpfsStore) {
+              await originalClose.call(this);
+              throw new Error("close failed");
+            },
+          );
+      },
+    });
+    expect(failure.code).toBe(1);
+    expect(failure.err).toContain("Store cleanup failed");
+    vi.restoreAllMocks();
+  }, 20000);
+
+  it("cancels a real uncooperative subprocess, bounds stopping and never commits cancelled output", async () => {
+    const marker = join(work.root, "ready");
+    const root = await app(
+      work.store,
+      `require("node:fs").writeFileSync(process.argv[2],"ready");
+process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);`,
+    );
+    const controller = new AbortController();
+    const stopping = execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [marker] },
+      {
+        history: true,
+        retain: true,
+        signal: controller.signal,
+        diagnostic: () => {},
+      },
+    );
+    let ready = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        await access(marker);
+        ready = true;
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    controller.abort();
+    const result = await stopping;
+    expect(ready).toBe(true);
+    expect(result.exitCode).toBe(130);
+    expect(result.record.status).toBe("cancelled");
+    expect(result.record.outputCid).toBeNull();
+    expect(state.run(result.record.id).status).toBe("cancelled");
+  }, 15000);
+
+  it("JavaScript startup errors and history commit failures are explicit execution failures", async () => {
+    const bad = await app(work.store, "throw new Error('startup broke');");
+    const result = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: bad, argv: [] },
+      {
+        history: true,
+        retain: false,
+        diagnostic: () => {},
+      },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.record.appExitCode).toBe(1);
+    const root = await app(work.store, "process.exitCode = 0;");
+    const save = vi.spyOn(state, "saveRun").mockImplementationOnce(() => {
+      throw new Error("metadata commit failed");
+    });
+    const failed = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        diagnostic: () => {},
+      },
+    );
+    expect(failed.exitCode).toBe(1);
+    expect(failed.record.error?.phase).toBe("history");
+    expect(failed.record.outputCid).not.toBeNull();
+    save.mockRestore();
+  }, 15000);
+
+  it("safe paths, stream bounds and profile/schema validation are real", async () => {
+    for (const path of [
+      "",
+      "../x",
+      "/x",
+      "x//y",
+      "x\\y",
+      "x/%2e",
+      "x/.",
+      "x/..",
+      "x:",
+      "x\u0000",
+      "x.",
+    ])
+      expect(() => relativePath(path)).toThrow("Unsafe");
+    expect(relativePath("nested/file.bin")).toBe("nested/file.bin");
+    await expect(
+      bytes(ReadableStream.from([new Uint8Array(4)]), 2),
+    ).rejects.toThrow("byte limit");
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "unit",
+      "unit-stage",
+    );
+    const output = new OutputSpace(work.store, owner, "unit-stage");
+    await output.write(
+      "x/a",
+      (async function* () {
+        await Promise.resolve();
+        yield new Uint8Array([1]);
+      })(),
+    );
+    await expect(output.write("x", (async function* () {})())).rejects.toThrow(
+      "overlap",
+    );
+    await expect(output.finalize()).rejects.toThrow("overlap");
+    await owner.release();
+    const invalid = await importFiles(work.store, {
+      ".bundle.yaml": "bad",
+      data: "plain",
+    });
+    const validationOwner = await Ownership.create(
+      state,
+      work.store,
+      "validation",
+      null,
+    );
+    await expect(
+      validatedBundle(invalid, work.store, validationOwner),
+    ).rejects.toThrow();
+    await expect(
+      loadApp((await content(work.store)).root, work.store, validationOwner),
+    ).rejects.toThrow("App");
+    await validationOwner.release();
+    const block = await encodeSchema({ type: "object" });
+    expect(block.cid.code).toBe(0x71);
+    expect(JSON.parse(await readFile(config, "utf8")) as unknown).toEqual(
+      work.store.configuration,
+    );
+  });
+});

@@ -1,7 +1,178 @@
 # IPAB Design Overview
 
-本文记录 2026-11-23 讨论形成的设计方向，作为 IPAB 后续协议和产品设计的起点。
-它不是已经完成的 CLI Spec，也不代表文中的示意接口已在本仓库实现。
+## 当前实现与规范优先级
+
+当前 `apps/ipab` 实现已确认 CLI：exec/open、alias、register、config、
+history，以及 Node 子进程运行时。它依赖发布的 content-bundle 和 ipfs-store，
+不迁移或复制它们的实现，不包含 npm 交付流程。CLI 的用户确认规范和后续
+Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临时 Open With。
+
+**Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
+验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
+Content Bundle 按公共库完整校验 `.bundle.yaml`、入口内容、DAG-CBOR Schema、
+外部 `$ref` 和 content refs；Schema 字符串引用的外部 blocks 显式保留。
+
+<a id="node-app-profile"></a>
+
+## Node App profile v1
+
+App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化描述，
+不是直接把任意 `.bundle.yaml` 文件的存在当作有效 App：
+
+```yaml
+entry:
+  path: app.json
+  schemaCid: bafyreievwb422pkdrnhnb2d7xyuhjq6eswd3xnvrt4ryov2e5zwhob633e
+  contentType: application/json
+```
+
+`app.json` 的最小形状（不允许其他字段）：
+
+```json
+{
+  "profile": "ipab.node.v1",
+  "runtime": "node",
+  "entry": "resources/app.cjs"
+}
+```
+
+上述 Schema CID 是公共 `encodeSchema` 对下面值产生的确定性 DAG-CBOR SHA-256
+CID，而不是 UnixFS 包装文件 CID：
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile", "runtime", "entry"],
+  "properties": {
+    "profile": { "const": "ipab.node.v1" },
+    "runtime": { "const": "node" },
+    "entry": {
+      "type": "string",
+      "pattern": "^resources/[A-Za-z0-9._/-]+\\.cjs$"
+    }
+  }
+}
+```
+
+Schema block 必须可由配置的 Store 读取。entry 必须是安全的相对路径、
+普通 JS 文件，最大 8 MiB；程序是自包含 CommonJS bundle，可使用普通 Node
+builtins，不自动安装外部依赖。作者在外部构建程序；IPAB 不提供 Builder。
+宿主先完整校验内容和 App profile，再将唯一 JS entry materialize 到本次
+状态目录的私有运行目录，启动 Node bootstrap，设置普通
+`process.argv = [node, materializedEntry, ...actualArguments]` 后加载 entry。
+运行结束只删除本次创建的 entry 和空运行目录。
+
+早期 Task SDK／Protocol／Engine 的 Space 分层、字节流和 ACK 生命周期可参考，
+但 Task 的固定参数、result/message Schema 与 worker binding 不适合普通
+App argv/stdio，因此不强制使用 `runTask`，也不复制 Engine。
+此 profile 没有固定业务输入或输出 Schema；应用可以直接执行普通 Node 代码。
+
+### App context 与 stdio
+
+宿主预置只读绑定 `globalThis.ipab`，类型接口见 `src/context.ts`：
+
+```ts
+interface AppContext {
+  readonly appCid: string; // 本次准确 App Bundle 根 CID，由 IPC 初始化，不占用 argv
+  readFile(
+    rootCid: string,
+    path: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ReadableStream<Uint8Array>>;
+  output: {
+    writeFile(
+      path: string,
+      stream: ReadableStream<Uint8Array>,
+      options?: { signal?: AbortSignal },
+    ): Promise<string>; // 文件 CID，不是最终输出目录 CID
+    link(
+      path: string,
+      unixfsCid: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<void>;
+  };
+}
+```
+
+例如自包含 `.cjs` entry：
+
+```js
+(async () => {
+  const input = await ipab.readFile(process.argv[2], "data/input.bin");
+  await ipab.output.writeFile("result.bin", input);
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+```
+
+rootCid 必须是有效 UnixFS 目录；路径以 `/` 分隔，拒绝绝对路径、穿越、
+空段、编码路径、反斜杠和有歧义的字符。普通 read 不强制 Bundle 校验。
+这个 Node profile 允许应用通过 context 按 CID 请求任意可读 Space；
+没有声明 CID whitelist 或操作系统隔离。
+
+stdin/stdout/stderr 完全继承，不捕获、不编码成 RPC、不放入输出 Space。
+context 使用第 4 个专用 Node IPC channel 的 version-1 request/reply，
+启动时先取得准确 `appCid` 再加载程序，可用它读取自身 Bundle 的资源，
+advanced byte serialization、pull 和逐 chunk ACK；最多 32 个请求／stream、
+64 KiB chunk。读取取消关闭对应 iterator，写入取消／破损永久标记本次输出
+失败；吞掉错误不能制造提交成功。断连／退出时停止未完成请求。
+
+**不是安全沙箱或远程执行协议**：应用具有当前用户的文件系统、网络、
+环境及进程权限，内存预算仅约束合作式 context，不限制任意恶意 Node
+代码或 IPC 分配。不要运行不可信 App；路径验证保护宿主 Space 操作，
+不是阻止应用调用 Node 文件系统。IPAB 不把节点管理 RPC 当作 context 方法。
+
+### 输出与结束
+
+输出是运行时没有 root CID 的可写 Space。最多 4096 个不重叠的路径、
+64 MiB 新文件字节；链接 DAG 受 Store blocks/depth/byte budget 约束。
+重复／重叠路径失败，不隐式替换。writeFile 流式导入 UnixFS，每个构造 block
+都经 `stageBlock` 从第一次写入起保护；链接的已有有效 UnixFS 目标及依赖
+先 retain 并 staged，不把 DAG-CBOR Schema 伪装成文件。
+
+App 退出 0 且所有流完整成功后，构造嵌套 UnixFS 目录并 `finishImport`。
+**空输出也生成真实空目录 root**。非零退出、取消、破损流或未结束写入
+不固化部分输出，outputCid 为 null。App 非零退出码保留；零退出后提交或
+清理失败返回 1。SIGINT/SIGTERM 转发给当前子进程，给 2 秒结束机会后仅
+终止该进程；取消结果 130/143。没有后台任务、重跑或自动 watch。
+
+输出已经固化后才发生的历史保存／清理错误不会把真实 outputCid 改成 null，
+但整体状态和退出码仍表示失败；这不是将部分输出伪装成成功。
+
+outputCid 始终是整个输出 Space 的目录 root，不是单文件 CID、App CID、
+输入 CID 或 stdout 解析值。输出不要求 Bundle manifest／Schema。
+运行 ID 与真实输出 CID 只通过宿主 stderr 提示及历史查询报告。
+
+## 配置、历史与所有权
+
+命令、JSON 字段、优先级及隐私说明见 [README](../README.md)。
+默认 `store.rpc=null` 使用 ipfs-store `/node` 公共配置及本地默认数据目录；
+显式 URL 选择库的 Kubo 配置，不新建 RPC 服务或直接调用 Kubo HTTP。
+默认状态为平台用户数据目录下的 ipab；SQLite 元数据使用 WAL 与短事务，
+与内容 blocks 分离。不忽略 malformed config，不保存 URL 凭据。
+
+历史默认开启；`output.retention=history` 默认由记录 owner 保留输出，
+`none` 不保留，关闭历史也没有隐藏永久保留。输入及构建输出由运行 owner
+保护；历史记录拥有自己的独立 owner。先 retain，再提交记录引用，随后
+confirmRetained，保留 backend/coordination 身份以防配置改变时误释放。
+
+删除先将记录标记 releasing 并清空其持久引用，再 recover/reconcile：
+callback 在 Store participant mutex 内重新读持久根，不捕获旧数组。
+释放成功才删除记录和 owner 元数据；失败仍可查询并重试，
+批量明确报告 completed/remaining。正在提交的活跃 owner 不能恢复／删除。
+原进程已不存在的遗留构造 owner 可在下次执行恢复；仍活跃的进程不恢复。
+这不是后台 GC，也不解除其他记录、外部用户或活跃运行的保护。
+
+历史时间筛选按 endedAt 的 `[since,until)` 匹配。RFC3339 参数必须有时区，
+最多三位小数秒，与记录的毫秒精度一致；更高精度明确报错，不截断后继续删除。
+
+下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
+其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
+和“迁移公共库”均已被上述实现及确认决定取代。
+
+## 历史设计草案（实现前）
 
 ## 1. 定位与当前状态
 

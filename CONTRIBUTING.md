@@ -9,7 +9,8 @@ pnpm check
 
 根 check 依次执行格式、构建、类型、全仓库 lint、成员覆盖率和交付包检查。
 不能通过排除源码、删除测试、放宽门槛或吞掉错误来取得通过结果。
-当前没有 code packages，成员任务为零；没有独立根测试套件。
+当前 `apps/ipab` 是 private code package，包含真实 CLI、子进程和 writable
+Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包发布检查无任务。
 
 ## Workspace
 
@@ -23,7 +24,9 @@ pnpm check
 - `pnpm test` 为单轮非 coverage 测试，`pnpm test-coverage` 执行覆盖率。
 - 全部四项全局覆盖率门槛为 90%，包含未测试源码，不使用 `passWithNoTests`
   隐藏缺失测试。
-- 使用已有工具的直接命令；只有实际构建或集成逻辑才需要自定义脚本。
+- 既有根工具脚本及其标准接口差异保留；新增成员命令遵循
+  `node scripts/<same-name>.mjs`，共享逻辑放 `scripts/lib/`，必须传播失败。
+- 所有适用成员 minimum engines.node 保持 22.15.0；修改最低消费环境需明确决定。
 
 对单个成员执行依赖感知验证：
 

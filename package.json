@@ -1,0 +1,46 @@
+{
+  "name": "@silvermoon-work/ipab",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Engineering workspace for InterPlanetary Application Bundle.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/silvermoon-work/ipab.git"
+  },
+  "homepage": "https://github.com/silvermoon-work/ipab#readme",
+  "bugs": {
+    "url": "https://github.com/silvermoon-work/ipab/issues"
+  },
+  "engines": {
+    "node": "^22.15.0 || >=23.5.0"
+  },
+  "packageManager": "pnpm@11.28.12",
+  "scripts": {
+    "build": "turbo run build",
+    "check": "pnpm format-check && pnpm build && pnpm typecheck && pnpm lint && pnpm test-coverage && pnpm lint-package",
+    "clean": "rimraf --glob \"{dist,coverage,.turbo}\" \"{apps,packages}/*/{dist,coverage,.turbo}\"",
+    "format": "prettier --write .",
+    "format-check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "lint-package": "turbo run lint-package",
+    "test": "turbo run test --concurrency=1",
+    "test-coverage": "turbo run test-coverage --concurrency=1",
+    "typecheck": "tsc --noEmit --project tsconfig.json && turbo run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint": "catalog:",
+    "globals": "catalog:",
+    "prettier": "catalog:",
+    "publint": "catalog:",
+    "rimraf": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "typescript-eslint": "catalog:",
+    "vitest": "catalog:"
+  }
+}

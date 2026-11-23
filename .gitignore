@@ -1,0 +1,15 @@
+coverage/
+dist/
+node_modules/
+*.tgz
+*.tsbuildinfo
+.turbo/
+.release-artifacts/
+.env
+.env.*
+!.env.example
+.npmrc.local
+.test-work/
+.DS_Store
+.idea/
+.vscode/

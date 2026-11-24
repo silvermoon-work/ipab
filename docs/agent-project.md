@@ -60,7 +60,11 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 - App-first 根 init NAME [DIR] 创建普通 private TypeScript npm package；
   根 build [DIR] 严格执行项目本地 tsc、esbuild self-contained Node CJS、
   新建自有 staging、再调用内部通用 Bundle Builder 输出默认 dist/app.car。
-  ipab.json 仅声明 src/ 下的 .ts 入口、明确 assets/ 非隐藏资源文件和 app 元数据覆盖；
+  ipab.yaml 是注释式规范配置，旧 ipab.json 仅在 YAML 缺省时兼容，二者并存拒绝；
+  严格数据解析拒绝重复键／未知字段／非法类型，不加载 JS 或执行 hooks。
+  模板可用默认值并展示 icon 路径、name/description i18n、author/license 和
+  supportedSchemas；可选示例仅注释，不创建虚构文件或空目录占位。
+  配置声明 src/ 下的 .ts 入口、明确 assets/ 非隐藏资源文件和 app 元数据覆盖；
   入口必须被 tsconfig 实际检查。只允许 Node builtin 外置，不安装依赖或执行 npm
   hooks／JS 配置／App，不 pin。CLI 默认将构建 CAR 导入当前 Store，
   --no-import 关闭导入；CLI private，生成项目不得声明虚构 registry
@@ -69,6 +73,21 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   set/remove 可接受此只读 builtin 快捷名，
   持久化准确 CID，不能用作任意 App 执行目标。App 定义集中在 app-definition.ts，
   name/version/entry 必填，description 默认空，author/license/icon/i18n 可选；
+  supportedSchemas 可选路径声明单个 resources/ 普通 CAR，省略没有 open 支持类型；
+  声明时所有执行（含 exec）前校验非空、多根、全 roots 单 block 完整 Bundle
+  Schema 定义，CIDv1/DAG-CBOR/SHA-256／canonical／Schema／默认值全部验证。
+  拒绝缺 root、重复 roots／records、额外 blocks、坏 hash／路径、控制文件或
+  entry 碰撞，复用现有资源和聚合 work／深度预算。build 读取顶层
+  supportedSchemas: []（旧省略视为空）明确选择 schemas/ 非隐藏 .json 普通文件，
+  无 glob／扫描／符号链接；严格 JSON 完整定义，不是裸 Schema。按实际 CID
+  去重排序并生成 resources/supported-schemas.car 和 app.json 字段，空源列表不生成。
+  app 不得覆盖生成的 entry/supportedSchemas。通用 Builder／import 对嵌套 CAR
+  保持不透明，不 graft 类型依赖；永不自动导入、注册、pin 或 retain 嵌套 roots。
+  外层 App 保留其嵌套文件字节，不保证内部块独立可寻址。open 在唯一 App load
+  后、spawn 前要求输入 schemaKey 准确在 roots 中，否则明确失败；exec 不根据声明
+  改写／解析 argv 或匹配输入。register 仍本地离线，关联不证明声明。
+  新 App 完整定义 CID 为 bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a，
+  builtin 指向新身份，不静默接受旧身份；须重建并显式更新 pin/register。
   profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
   SemVer／Intl locale tag／非空白／icon 存在检查在 App 专用层，license 只声明，
   不提供 DRM 或控制读写执行。准确新 CID 和有意迁移说明见 README.md。

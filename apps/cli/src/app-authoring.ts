@@ -3,6 +3,7 @@ import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { stringify } from "yaml";
+import { parseData } from "@ipab/bundle";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import { readBytes } from "@ipab/bundle-builder";
 import {
@@ -15,6 +16,10 @@ import {
 } from "./authoring.js";
 import { HostError, object } from "./errors.js";
 import { relativePath } from "./space.js";
+import {
+  buildSupportedSchemas,
+  supportedSchemasPath,
+} from "./supported-schemas.js";
 import {
   appDescription,
   appSchema,
@@ -67,7 +72,43 @@ export async function initApp(
         include: ["src/**/*.ts"],
       }),
     ],
-    ["ipab.json", json({ entry: "src/main.ts", resources: [], app: {} })],
+    [
+      "ipab.yaml",
+      `# IPAB App build configuration (data only; no hooks or JS configuration).
+entry: src/main.ts
+
+# Explicit non-hidden files under assets/; no directories, globs or symlinks.
+resources: []
+# To add an icon, replace [] above with the following list and create the file:
+#   - assets/icon.png
+
+# Explicit JSON complete Bundle definitions under schemas/, NOT bare JSON Schema.
+# No declaration means no supported types for open; direct exec still works.
+supportedSchemas: []
+# To support your own type, replace [] above with this list and create the definition:
+#   - schemas/note.json
+
+# Metadata overrides package.json; remove an override to inherit its package value.
+app:
+  name: ${name}
+  version: "0.0.0" # Exact SemVer, not a range.
+  description: ""
+  # author:
+  #   name: Your name
+  #   email: you@example.com
+  # license: MIT # Declaration only; does not restrict execution or copying.
+  # icon: resources/assets/icon.png # Also select assets/icon.png in resources.
+  # i18n:
+  #   zh-CN:
+  #     name: 你好应用
+  #     description: 应用描述
+  #   en:
+  #     name: Hello App
+  #     description: An example description
+# Translations override name/description separately; missing fields fall back.
+# entry and supportedSchemas inside app are generated; do not override them.
+`,
+    ],
     ["src/main.ts", 'console.log("Hello from your IPAB App.");\n'],
     [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n"],
   ]);
@@ -188,23 +229,43 @@ export async function buildApp(
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new HostError("App build requires a regular project directory.");
   const tree = await filesystemTree(root);
+  const configurations = await Promise.all(
+    ["ipab.yaml", "ipab.json"].map(async (name) => {
+      try {
+        await lstat(join(root, name));
+        return name;
+      } catch (cause) {
+        if (nodeError(cause, "ENOENT")) return undefined;
+        throw cause;
+      }
+    }),
+  );
+  const selected = configurations.filter((name) => name !== undefined);
+  if (selected.length !== 1)
+    throw new HostError(
+      selected.length
+        ? "Both ipab.yaml and legacy ipab.json exist. Keep exactly one App configuration file."
+        : "App configuration is missing. Create ipab.yaml (or keep a legacy ipab.json).",
+    );
+  const configPath = selected[0]!;
   const config = object(
-    JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(
-        await readBytes(tree, "ipab.json", 64 * 1024, options),
-      ),
-    ) as unknown,
-    "ipab.json",
+    parseData(
+      await readBytes(tree, configPath, 64 * 1024, options),
+      configPath === "ipab.yaml" ? "application/yaml" : "application/json",
+    ),
+    configPath,
   );
   if (
     typeof config.entry !== "string" ||
     !Array.isArray(config.resources) ||
     Object.keys(config).some(
-      (key) => !["entry", "resources", "app"].includes(key),
-    )
+      (key) => !["entry", "resources", "supportedSchemas", "app"].includes(key),
+    ) ||
+    (config.supportedSchemas !== undefined &&
+      !Array.isArray(config.supportedSchemas))
   )
     throw new HostError(
-      "ipab.json requires entry and an explicit resources array, with optional app metadata overrides; unknown fields are not supported.",
+      `${configPath} requires entry and an explicit resources array, with optional supportedSchemas array and app metadata overrides; unknown fields are not supported.`,
     );
   const entry = relativePath(config.entry);
   if (!entry.startsWith("src/") || !entry.endsWith(".ts"))
@@ -227,6 +288,24 @@ export async function buildApp(
       );
     resources.add(path);
   }
+  const schemas = new Set<string>();
+  for (const item of (config.supportedSchemas ?? []) as unknown[]) {
+    if (typeof item !== "string")
+      throw new HostError(
+        "Supported Schemas must be explicit relative file paths.",
+      );
+    const path = relativePath(item);
+    if (
+      !path.startsWith("schemas/") ||
+      !path.endsWith(".json") ||
+      path.split("/").some((part) => part.startsWith(".")) ||
+      schemas.has(path)
+    )
+      throw new HostError(
+        "Supported Schemas must be unique non-hidden .json files under schemas/ (no globs or directories).",
+      );
+    schemas.add(path);
+  }
   const pkg = object(
     JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
@@ -246,10 +325,16 @@ export async function buildApp(
     throw new HostError(
       "App metadata cannot override the compiled program entry.",
     );
+  if (Object.hasOwn(overrides, "supportedSchemas"))
+    throw new HostError(
+      "App metadata cannot override the generated supportedSchemas declaration.",
+    );
+  const supportedSchemas = await buildSupportedSchemas(tree, schemas, options);
   const description = appDescription({
     ...defaults,
     ...overrides,
     entry: appSchema.entry.defaultValue.entry,
+    ...(supportedSchemas ? { supportedSchemas: supportedSchemasPath } : {}),
   });
   if (description.icon !== undefined) {
     const icon = relativePath(description.icon);
@@ -339,6 +424,12 @@ export async function buildApp(
       flag: "wx",
       signal: options.signal,
     });
+    if (supportedSchemas)
+      await writeFile(
+        join(stage, ...supportedSchemasPath.split("/")),
+        supportedSchemas,
+        { flag: "wx", signal: options.signal },
+      );
     for (const path of resources) {
       const bytes = await readBytes(tree, path, 16 * 1024 * 1024, options);
       const target = join(stage, "resources", ...path.split("/"));

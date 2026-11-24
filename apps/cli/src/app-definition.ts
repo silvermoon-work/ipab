@@ -26,6 +26,7 @@ export const appSchema = {
         version: { type: "string" },
         description: { type: "string" },
         entry: { type: "string" },
+        supportedSchemas: { type: "string" },
         author: {
           type: "object",
           additionalProperties: false,
@@ -52,7 +53,7 @@ export const appSchema = {
 
 // This is the canonical full definition, not a separate identity for the alias.
 export const appSchemaCid = CID.parse(
-  "bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq",
+  "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
 );
 export const builtinTypes: ReadonlyMap<string, string> = new Map([
   [appBuiltinAlias, appSchemaCid.toString()],
@@ -77,6 +78,7 @@ export interface AppDescription {
   version: string;
   description: string;
   entry: string;
+  supportedSchemas?: string;
   author?: { name: string; email?: string };
   license?: string;
   icon?: string;
@@ -117,6 +119,7 @@ export function appDescription(value: unknown): AppDescription {
           "version",
           "description",
           "entry",
+          "supportedSchemas",
           "author",
           "license",
           "icon",
@@ -153,6 +156,8 @@ export function appDescription(value: unknown): AppDescription {
   }
   if (item.license !== undefined) nonblank(item.license, "App license");
   if (item.icon !== undefined) nonblank(item.icon, "App icon");
+  if (item.supportedSchemas !== undefined)
+    nonblank(item.supportedSchemas, "App supportedSchemas");
   let i18n: AppDescription["i18n"];
   if (item.i18n !== undefined) {
     const translations = object(item.i18n, "App i18n");
@@ -199,6 +204,9 @@ export function appDescription(value: unknown): AppDescription {
     ...(author !== undefined ? { author } : {}),
     ...(item.license !== undefined ? { license: item.license } : {}),
     ...(item.icon !== undefined ? { icon: item.icon } : {}),
+    ...(item.supportedSchemas !== undefined
+      ? { supportedSchemas: item.supportedSchemas }
+      : {}),
     ...(i18n !== undefined ? { i18n } : {}),
   };
 }

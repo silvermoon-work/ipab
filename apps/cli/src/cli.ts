@@ -116,7 +116,11 @@ Examples: ipab init hello
 init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
 Install the generated package's dependencies explicitly; use a locally linked ipab.
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
-ipab.json selects src/main.ts and explicit assets/ files; default output is dist/app.car.
+ipab.yaml selects src/main.ts, explicit assets/ resources and schemas/ JSON definitions.
+The commented init template teaches icon placement, name/description i18n and metadata.
+Legacy ipab.json is accepted only when ipab.yaml is absent; keep exactly one config.
+supportedSchemas controls exact type support for open, not argv or direct exec.
+Default output is dist/app.car.
 --output FILE selects a .car destination; --replace replaces only a regular artifact.
 build imports the result into the configured Store without pinning; --no-import emits only CAR.
 Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
@@ -944,6 +948,7 @@ async function performCli(
               store,
               { origin: "open", appCid, argv: appArgv },
               {
+                inputSchema: schema,
                 history: Boolean(value("history.enabled")),
                 retain: value("output.retention") === "history",
                 diagnostic: (text) => {

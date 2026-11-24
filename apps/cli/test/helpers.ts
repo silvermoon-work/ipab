@@ -3,7 +3,17 @@ import { mkdir, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { encodeSchema, canonicalJson, type JsonSchema } from "@ipab/bundle";
+import {
+  encodeSchema,
+  canonicalJson,
+  type JsonSchema,
+  type BundleManifest,
+} from "@ipab/bundle";
+import {
+  blockLength,
+  createWriter,
+  headerLength,
+} from "@ipld/car/buffer-writer";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
 import { appSchema } from "../src/space.js";
@@ -68,8 +78,8 @@ export async function content(
   store: IpfsStore,
   value: unknown = { hello: "world" },
   schema: JsonSchema = { type: "object" },
-): Promise<{ root: string; schema: string }> {
-  const definition = {
+): Promise<{ root: string; schema: string; definition: BundleManifest }> {
+  const definition: BundleManifest = {
     name: "Fixture",
     description: "",
     entry: {
@@ -85,10 +95,26 @@ export async function content(
     ".bundle.yaml": canonicalJson(definition),
     "data.json": JSON.stringify(value),
   });
-  return { root, schema: schemaCid };
+  return { root, schema: schemaCid, definition };
 }
 
-export async function app(store: IpfsStore, source: string): Promise<string> {
+export function schemaCar(
+  roots: CID[],
+  blocks: { cid: CID; bytes: Uint8Array }[],
+): Uint8Array {
+  const size =
+    headerLength({ roots }) +
+    blocks.reduce((size, block) => size + blockLength(block), 0);
+  const writer = createWriter(new ArrayBuffer(size), { roots });
+  for (const block of blocks) writer.write(block);
+  return writer.close();
+}
+
+export async function app(
+  store: IpfsStore,
+  source: string,
+  supportedSchemas?: Uint8Array,
+): Promise<string> {
   return importFiles(store, {
     ".bundle.yaml": canonicalJson(appSchema),
     "app.json": JSON.stringify({
@@ -96,8 +122,14 @@ export async function app(store: IpfsStore, source: string): Promise<string> {
       version: "0.0.0",
       description: "",
       entry: "resources/app.cjs",
+      ...(supportedSchemas
+        ? { supportedSchemas: "resources/supported-schemas.car" }
+        : {}),
     }),
     "resources/app.cjs": source,
+    ...(supportedSchemas
+      ? { "resources/supported-schemas.car": supportedSchemas }
+      : {}),
   });
 }
 

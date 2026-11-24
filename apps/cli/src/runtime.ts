@@ -20,6 +20,7 @@ export interface ExecutionOptions {
   retain: boolean;
   diagnostic: (text: string) => void;
   signal?: AbortSignal;
+  inputSchema?: string;
 }
 
 export async function execute(
@@ -95,6 +96,16 @@ export async function execute(
       owner,
       controller.signal,
     );
+    if (
+      invocation.origin === "open" &&
+      !app.supportedSchemas.has(options.inputSchema ?? "")
+    )
+      throw new HostError(
+        `Registered App ${invocation.appCid} does not declare support for Schema ${options.inputSchema ?? "(missing)"}. Rebuild the App with this complete definition in ipab.yaml supportedSchemas and update its pin/register association, or use ipab exec explicitly.`,
+        1,
+        "APP_SCHEMA_UNSUPPORTED",
+        "validation",
+      );
     phase = "startup";
     await mkdir(directory, { recursive: true });
     directoryCreated = true;

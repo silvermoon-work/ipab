@@ -67,6 +67,9 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   校验存储完整性、路径、完整类型定义和入口数据，从 `.bundle.yaml`
   计算准确类型 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
+  启动子进程前还要求所选 App 的 supportedSchemas CAR roots 包含输入的准确
+  类型 CID；省略声明意味着不支持任何 open 类型，不是通配符。关联本身不证明支持。
+  不匹配须重建 App 并显式更新 pin/register，或使用普通 `exec`；不会成功回退。
   `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
   只替换整个参数，不展开 shell 字符串。其他资源与子 Bundle 不接受宿主的业务校验，
   引用格式、依赖读取与验证由 App 自行处理。
@@ -169,7 +172,7 @@ ipab bundle import .\dist\app.car
 `init NAME [DIR]` 创建普通 private TypeScript npm package；NAME 为不带 scope
 的小写 npm 包名，省略 DIR 时创建 NAME 目录。目标必须不存在或为空，没有覆盖
 源码的 force 选项。生成 `package.json`、严格 `tsconfig.json`、`src/main.ts`、
-`ipab.json` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
+`ipab.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
 `ipab build`，不声明不存在的 registry `@ipab/cli` 版本。
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
@@ -178,17 +181,30 @@ ipab bundle import .\dist\app.car
 默认使用当前项目，
 读取数据配置（不加载 JS 配置、npm lifecycle hooks 或用户插件）：
 
-```json
-{
-  "entry": "src/main.ts",
-  "resources": ["assets/message.txt"],
-  "app": {
-    "name": "Hello App",
-    "icon": "resources/assets/message.txt",
-    "i18n": { "zh-CN": { "name": "你好应用" } }
-  }
-}
+```yaml
+entry: src/main.ts
+resources: []
+supportedSchemas: []
+app:
+  name: hello
+  version: "0.0.0"
+  description: ""
+  # icon: resources/assets/icon.png
+  # i18n:
+  #   zh-CN:
+  #     name: 你好应用
+  #     description: 应用描述
 ```
+
+脚手架注释展示 author/license 覆盖、icon 放置、name/description
+i18n 与类型源文件。
+可选功能默认关闭，不生成虚构 icon／Schema 或空目录占位文件。启用 icon 时创建
+`assets/icon.png`，将 resources 的 `[]` 替换为 `[assets/icon.png]`，再取消 icon
+行的注释。启用类型时创建完整定义 `schemas/note.json`，将 supportedSchemas
+的 `[]` 替换为 `[schemas/note.json]`。已有 `ipab.json` 仍支持；迁移时转换为
+`ipab.yaml` 并删除旧文件。只允许这两种配置且必须恰好存在一个，拒绝二者并存。
+两种格式使用严格数据解析，拒绝重复键、未知字段／非法类型；注释和格式不参与
+App 身份。不加载 JS 配置、不执行 hooks。
 
 - 入口必须是 `src/` 下的 `.ts` 文件，并实际包含于项目 `tsconfig.json`。
   显式执行项目 `node_modules/typescript/bin/tsc`，强制严格检查与 noEmit，
@@ -203,6 +219,29 @@ ipab bundle import .\dist\app.car
   `resources/assets/message.txt`。不自动打包源码、node_modules、配置、
   `.env` 或未选中的资源；应用通过自己的 App CID 和 Space context 读取资源，
   不依赖 materialized 程序旁的本地文件。
+- supportedSchemas 默认为 `[]`，旧源配置省略也按空处理。只接受 `schemas/`
+  下显式、唯一、非隐藏 `.json` 普通文件，无 glob、扫描、目录或符号链接。
+  每个文件是**完整 Bundle 定义**（name、可选 description、entry 的
+  path/schema/contentType/defaultValue），不是裸 JSON Schema；例如：
+
+  ```json
+  {
+    "name": "Note",
+    "entry": {
+      "path": "note.json",
+      "schema": { "type": "string" },
+      "contentType": "application/json",
+      "defaultValue": ""
+    }
+  }
+  ```
+
+  严格解析并复用 Bundle runtime 校验默认值、归一化和编码，按实际 CID 去重，
+  roots 和 block records 按 CID 排序；改变源文件列表顺序不改变产物。
+  非空列表生成单个 `resources/supported-schemas.car` 并自动写入 app.json
+  supportedSchemas 路径；空列表不生成文件或字段。坏／缺源定义使整次构建失败，
+  保留旧 CAR，仅清理本次自有数据。
+
 - 每次使用全新唯一自有 staging，写入完整内置 `.bundle.yaml` 和默认 `app.json`，
   再复用 Bundle Builder 固化 CAR／CID。失败不打包旧程序或旧资源，
   只清理本次 staging，不清空 `dist`、旧 staging 或 Store。
@@ -231,21 +270,36 @@ icon 是 Bundle 根相对的 `resources/` 普通文件路径，loader 验证安�
 的映射，拒绝无效或规范化重复的语言 tag、未知字段与非字符串翻译；
 翻译名也不得为空白。语义为选中语言的字段分别覆盖 base name/description，
 缺少翻译／字段回退 base，不实现语言选择 UI，也不隐式按前缀选择其他语言。
-name／author name／email／license／icon／version 的文本上限为 1024 字符。
+name／author
+name／email／license／icon／version／supportedSchemas 路径的文本上限为 1024 字符。
 
 构建从普通 `package.json`
 的 name/version/description/author/license 复制元数据，
-`ipab.json.app` 可覆盖这些字段并添加 icon/i18n；不可覆盖编译程序 entry。
-生成的 config 默认 app={}，描述未提供时为空。`.bundle.yaml` 的 name/description
+`ipab.yaml.app`（或旧 `ipab.json.app`）可覆盖这些字段并添加 icon/i18n；
+不可覆盖生成的 entry 或 supportedSchemas。脚手架显式展示 name/version/description，
+删除某个覆盖字段即可继承 package.json，描述未提供时为空。`.bundle.yaml`
+的 name/description
 命名共享 Node App 类型，不是单个 App；单个 App 元数据变化会改变内容根 CID，
 不会改变共享类型 CID。
 
 离线 alias `builtin:node-app.v1` 对应完整定义和 canonical DAG-CBOR CID：
-`bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
+`bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a`。
 alias 可用于 bundle init/inspect 与 register set/remove；状态只保存 CID。
 这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
-profile/runtime 字段现在被拒绝。旧包应重建并显式更新 pin/register，不自动迁移。
+profile/runtime 字段仍被拒绝。本次添加可选 supportedSchemas 改变了共享类型身份，
+旧 App CID 不被静默接受；旧包应重建并显式更新 pin/register，不自动迁移。
 Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
+
+app.json 的可选 supportedSchemas 是安全的 `resources/` 普通文件路径，必须存在，
+不可碰撞程序入口或控制文件；外部手工构建的 App 也须遵守。loader 在任何执行
+（包括 exec）前验证此嵌套 CAR。它是非空、多根 Schema collection：每个 root
+都必须为完整归一化 Bundle 定义的 CIDv1/DAG-CBOR/SHA-256，单 block 最多
+1 MiB；必须含所有 roots，拒绝重复 roots／block records、额外 block、坏 hash、
+非 canonical 定义、非法 Schema 或默认值。复用现有文件数、字节、深度和聚合
+work 预算，拒绝空的已声明 CAR。该声明不解析或改写 argv，exec 不做输入类型匹配。
+嵌套 CAR 永不自动导入 Store、注册、pin 或 retain 其 roots；外层 App 保留的是
+嵌套文件字节，不承诺其中 Schema blocks 可以全局按 CID 读取。
+通用 Bundle Builder／import 对该资源保持不透明；register 仍是本地离线关联登记。
 
 ## Bundle 开发（底层）
 

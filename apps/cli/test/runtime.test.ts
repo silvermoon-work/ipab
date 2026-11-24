@@ -28,6 +28,7 @@ import {
   fixture,
   importFiles,
   subprocess,
+  schemaCar,
 } from "./helpers.js";
 
 async function invalidBlock(store: IpfsStore): Promise<CID> {
@@ -60,6 +61,39 @@ describe("real UnixFS and Node subprocess runtime", () => {
   it("rebuilds the fixed runtime Node profile identity as one DAG-CBOR block", async () => {
     const encoded = await encodeSchema(appSchema);
     expect(encoded.cid.equals(appSchemaCid)).toBe(true);
+    expect(encoded.cid.toString()).toBe(
+      "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
+    );
+    const legacy = {
+      ...appSchema,
+      entry: {
+        ...appSchema.entry,
+        schema: {
+          ...appSchema.entry.schema,
+          properties: Object.fromEntries(
+            Object.entries(appSchema.entry.schema.properties).filter(
+              ([key]) => key !== "supportedSchemas",
+            ),
+          ),
+        },
+      },
+    };
+    expect((await encodeSchema(legacy)).cid.toString()).toBe(
+      "bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq",
+    );
+    const root = await importFiles(work.store, {
+      ".bundle.yaml": JSON.stringify(legacy),
+      "app.json": JSON.stringify(appSchema.entry.defaultValue),
+      "resources/app.cjs": "throw new Error('must not execute');",
+    });
+    const owner = await Ownership.create(state, work.store, "legacy-app", null);
+    try {
+      await expect(loadApp(root, work.store, owner)).rejects.toMatchObject({
+        code: "APP_PROFILE_INVALID",
+      });
+    } finally {
+      await owner.release();
+    }
   });
 
   it("derives the complete type from the retained directory without fetching an external schema", async () => {
@@ -228,9 +262,11 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
 
   it("open validates Content Bundle, expands whole tokens and uses saved exact association", async () => {
     const input = await content(work.store);
+    const schema = await encodeSchema(input.definition);
     const root = await app(
       work.store,
       "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+      schemaCar([schema.cid], [schema]),
     );
     await addPin(state, "document", input.root, work.store.configuration);
     await addPin(state, "program", root, work.store.configuration);
@@ -259,6 +295,178 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(missing.stderr).toContain("register set or ipab exec");
     expect(state.runs()).toHaveLength(1);
   }, 20000);
+  it("open requires exact declared support before child invocation, while exec preserves ordinary argv", async () => {
+    const input = await content(work.store);
+    const supported = await encodeSchema(input.definition);
+    const other = await encodeSchema({
+      ...input.definition,
+      name: "Other type",
+    });
+    const source =
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)));";
+    const omitted = await app(work.store, source);
+    const mismatch = await app(
+      work.store,
+      source,
+      schemaCar([other.cid], [other]),
+    );
+    for (const root of [omitted, mismatch]) {
+      state.setAssociation(input.schema, root, ["%"], true);
+      const result = await subprocess(
+        ["--state-dir", work.stateDir, "open", input.root],
+        config,
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout.length).toBe(0);
+      expect(result.stderr).toContain("does not declare support");
+      expect(result.stderr).toContain("ipab.yaml supportedSchemas");
+      const run = state.runs().find((run) => run.appCid === root)!;
+      expect(run.appExitCode).toBeNull();
+      expect(run.outputCid).toBeNull();
+      expect(run.error).toMatchObject({
+        phase: "validation",
+        code: "APP_SCHEMA_UNSUPPORTED",
+      });
+    }
+    const multi = await app(
+      work.store,
+      source,
+      schemaCar([other.cid, supported.cid], [supported, other]),
+    );
+    state.setAssociation(input.schema, multi, ["--cid", "%"], true);
+    const opened = await subprocess(
+      ["--state-dir", work.stateDir, "open", input.root],
+      config,
+    );
+    expect(opened.code, opened.stderr).toBe(0);
+    expect(opened.stdout.toString()).toBe(
+      JSON.stringify(["--cid", input.root]),
+    );
+    const argv = ["--help", "--json", "--", "%", "--cid=unrelated"];
+    const explicit = await subprocess(
+      ["--state-dir", work.stateDir, "exec", mismatch, ...argv],
+      config,
+    );
+    expect(explicit.code, explicit.stderr).toBe(0);
+    expect(explicit.stdout.toString()).toBe(JSON.stringify(argv));
+  }, 60000);
+
+  it("validates nested Schema CARs even for exec without importing or retaining nested roots", async () => {
+    const input = await content(
+      work.store,
+      { hello: "world" },
+      {
+        type: "object",
+        properties: { hello: { const: "world" } },
+        required: ["hello"],
+      },
+    );
+    const schema = await encodeSchema(input.definition);
+    const other = await encodeSchema({
+      ...input.definition,
+      name: "Other type",
+    });
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "nested-schemas",
+      null,
+    );
+    try {
+      const valid = await app(
+        work.store,
+        "",
+        schemaCar([schema.cid, other.cid], [other, schema]),
+      );
+      const loaded = await loadApp(valid, work.store, owner);
+      expect([...loaded.supportedSchemas].sort()).toEqual(
+        [schema.cid.toString(), other.cid.toString()].sort(),
+      );
+      expect(state.hold(owner.owner)?.roots).not.toContain(
+        schema.cid.toString(),
+      );
+      expect(state.hold(owner.owner)?.roots).not.toContain(
+        other.cid.toString(),
+      );
+      await expect(
+        work.store.block.get(schema.cid.toString()),
+      ).rejects.toThrow();
+      await expect(
+        work.store.block.get(other.cid.toString()),
+      ).rejects.toThrow();
+      const invalidDefault = Uint8Array.from(schema.bytes);
+      const offset = Buffer.from(invalidDefault).lastIndexOf("world");
+      invalidDefault.set(Buffer.from("wrong"), offset);
+      const invalidCid = CID.createV1(
+        0x71,
+        await sha256.digest(invalidDefault),
+      );
+      const bare = Uint8Array.of(0xa0);
+      const bareCid = CID.createV1(0x71, await sha256.digest(bare));
+      for (const nested of [
+        Uint8Array.of(1, 2, 3),
+        schemaCar([], []),
+        schemaCar([schema.cid], []),
+        schemaCar([schema.cid, schema.cid], [schema]),
+        schemaCar([schema.cid], [schema, schema]),
+        schemaCar([schema.cid], [schema, other]),
+        schemaCar([schema.cid], [{ cid: schema.cid, bytes: Uint8Array.of(1) }]),
+        schemaCar([bareCid], [{ cid: bareCid, bytes: bare }]),
+        schemaCar([invalidCid], [{ cid: invalidCid, bytes: invalidDefault }]),
+        schemaCar(
+          [CID.createV1(0x55, schema.cid.multihash)],
+          [
+            {
+              cid: CID.createV1(0x55, schema.cid.multihash),
+              bytes: schema.bytes,
+            },
+          ],
+        ),
+      ]) {
+        const root = await app(
+          work.store,
+          "throw new Error('must not execute');",
+          nested,
+        );
+        await expect(loadApp(root, work.store, owner)).rejects.toThrow();
+      }
+      const files = {
+        ".bundle.yaml": JSON.stringify(appSchema),
+        "resources/app.cjs": "throw new Error('must not execute');",
+      };
+      for (const supportedSchemas of [
+        "",
+        " ",
+        "../schemas.car",
+        "app.json",
+        "resources/app.cjs",
+        "resources/missing.car",
+      ]) {
+        const root = await importFiles(work.store, {
+          ...files,
+          "app.json": JSON.stringify({
+            ...appSchema.entry.defaultValue,
+            supportedSchemas,
+          }),
+        });
+        await expect(loadApp(root, work.store, owner)).rejects.toThrow();
+      }
+    } finally {
+      await owner.release();
+    }
+    const corrupt = await app(
+      work.store,
+      "process.stdout.write('must not execute');",
+      Uint8Array.of(1),
+    );
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", corrupt, "--help"],
+      config,
+    );
+    expect(result.code).toBe(1);
+    expect(result.stdout.length).toBe(0);
+    expect(state.runs()[0]?.appExitCode).toBeNull();
+  }, 30000);
   it.each(["other/app.cjs", "resources/app.js"])(
     "enforces Node entry paths outside the structural schema: %s",
     async (entry) => {
@@ -563,8 +771,13 @@ try {await ipab.output.writeFile("broken", new ReadableStream({start(c){c.error(
   });
 
   it("the source CLI dispatches exec/open through the same runtime and reports Store-close failure", async () => {
-    const root = await app(work.store, "process.exitCode = 0;");
     const input = await content(work.store);
+    const schema = await encodeSchema(input.definition);
+    const root = await app(
+      work.store,
+      "process.exitCode = 0;",
+      schemaCar([schema.cid], [schema]),
+    );
     await addPin(state, "app", root, work.store.configuration);
     state.setAssociation(input.schema, root, ["%", "--cid=%"], false);
     const explicit = await cli(work.stateDir, ["exec", "app", "--help", "--"]);

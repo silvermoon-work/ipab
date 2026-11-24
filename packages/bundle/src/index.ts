@@ -16,6 +16,7 @@ export {
   inspectBundleSchema,
   encodeSchema,
   schemaBlockBytes,
+  declaresBundleSchema,
 } from "./schema.js";
 export type { SchemaOptions } from "./schema.js";
 export { ContentBundleError } from "./errors.js";

@@ -13,7 +13,13 @@ import {
   timestamp,
 } from "../src/history.js";
 import { appSchemaCid } from "../src/space.js";
-import { fixture, importFiles, record, cli } from "./helpers.js";
+import {
+  fixture,
+  importFiles,
+  record,
+  cli,
+  seedDisplayPin,
+} from "./helpers.js";
 
 describe("history and durable retention", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
@@ -44,7 +50,7 @@ describe("history and durable retention", () => {
         status: "failed",
       }),
     );
-    state.setAlias("app", cid, false);
+    seedDisplayPin(state, "app", cid);
     const first = listHistory(
       state,
       filters(state, {

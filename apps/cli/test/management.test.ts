@@ -14,10 +14,16 @@ import {
   validateUserConfig,
 } from "../src/config.js";
 import { HostError, message, object } from "../src/errors.js";
-import { aliasName, exactCid, State } from "../src/state.js";
+import { pinName, exactCid, State } from "../src/state.js";
 import { appSchemaCid } from "../src/space.js";
 import { appBuiltinAlias } from "../src/app-definition.js";
-import { fixture, cli, record, importFiles } from "./helpers.js";
+import {
+  fixture,
+  cli,
+  record,
+  importFiles,
+  seedDisplayPin,
+} from "./helpers.js";
 
 describe("management contract", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
@@ -40,7 +46,7 @@ describe("management contract", () => {
       ["--cid", "%", "multi word"],
       false,
     );
-    state.setAlias("reader", another, false);
+    seedDisplayPin(state, "reader", another);
     const failed = record("run-001", another, {
       argv: ["multi word", ""],
       status: "failed",
@@ -60,19 +66,25 @@ describe("management contract", () => {
     state.saveRun(failed);
     state.saveRun(succeeded);
     state.close();
-    const aliases = await cli(work.stateDir, ["alias", "list"]);
-    expect(aliases.out).toMatch(/^NAME\s+CID\nbuiltin:node-app.v1\s+/);
-    expect(aliases.out).toContain("reader");
-    expect(aliases.out).toContain(another);
+    const pins = await cli(work.stateDir, ["pin", "list"]);
+    expect(pins.out).toMatch(/^NAME\s+CID\s+KIND\s+BUNDLE TYPE\nreader\s+/);
+    expect(pins.out).toContain(another);
     expect(
       JSON.parse(
-        (await cli(work.stateDir, ["--json", "alias", "list"])).out,
+        (await cli(work.stateDir, ["--json", "pin", "list"])).out,
       ) as unknown,
     ).toEqual({
       items: [
-        { name: appBuiltinAlias, cid: schema },
-        { name: "reader", cid: another },
+        {
+          name: "reader",
+          cid: another,
+          kind: "content",
+          typeName: null,
+          schemaCid: null,
+        },
       ],
+      pending: [],
+      legacyAliases: [],
     });
     const registered = await cli(work.stateDir, ["register", "list"]);
     expect(registered.out).toMatch(/^SCHEMA CID\s+APP CID\s+ARGV\n/);
@@ -151,18 +163,18 @@ describe("management contract", () => {
     expect(retained.out).toContain("Error: none");
     expect(retained.out).toContain("Retention owner: record-owner");
     expect(
-      [aliases, registered, config, page, details, retained].every(
+      [pins, registered, config, page, details, retained].every(
         (result) => result.err === "",
       ),
     ).toBe(true);
   });
 
-  it("history lists current aliases and readable quoted arguments without changing full records", async () => {
+  it("history lists current pin names and readable quoted arguments without changing full records", async () => {
     const argv = ["--flag", "two words", "", 'quote"x', "\n"];
     const state = new State(work.stateDir);
-    state.setAlias("z-reader", another, false);
-    state.setAlias("reader", another, false);
-    state.setAlias("result", schema, false);
+    seedDisplayPin(state, "z-reader", another);
+    seedDisplayPin(state, "reader", another);
+    seedDisplayPin(state, "result", schema);
     state.saveRun(record("readable-run", another, { argv, outputCid: schema }));
     state.close();
     const result = await cli(work.stateDir, ["history", "list"]);
@@ -224,7 +236,7 @@ describe("management contract", () => {
       `"${"\u{1f600}".repeat(44)}...`,
     );
     const updated = new State(work.stateDir);
-    updated.setAlias("a-long-readable-app-name", another, false);
+    seedDisplayPin(updated, "a-long-readable-app-name", another);
     updated.close();
     const aliased = await cli(work.stateDir, ["history", "list"]);
     expect(aliased.out).toContain("a-long-readab...");
@@ -478,14 +490,16 @@ describe("management contract", () => {
       "",
       "exec",
       "open",
-      "alias",
+      "pin",
       "register",
       "config",
       "history",
       ...[
-        "alias list",
-        "alias set",
-        "alias remove",
+        "pin list",
+        "pin add",
+        "pin delete",
+        "pin show",
+        "pin rename",
         "register list",
         "register set",
         "register remove",
@@ -508,7 +522,7 @@ describe("management contract", () => {
         expect(result.out).toContain("Usage:");
         expect(result.err).toBe("");
       }
-    for (const group of ["alias", "register", "config", "history", ""])
+    for (const group of ["pin", "register", "config", "history", ""])
       expect((await cli(work.stateDir, group ? [group] : [])).code).toBe(0);
     expect((await cli(work.stateDir, ["--version"])).out).toBe("0.0.0");
     expect(existsSync(work.stateDir)).toBe(false);
@@ -525,11 +539,15 @@ describe("management contract", () => {
     ["exec", "--cid"],
     ["--json", "exec", another],
     ["--json", "open", another],
-    ["alias", "bad"],
-    ["alias", "set"],
-    ["alias", "list", "extra"],
-    ["alias", "set", "name", another, "--bad"],
-    ["alias", "set", "name", another, "--replace", "--replace"],
+    ["alias", "list"],
+    ["pin", "bad"],
+    ["pin", "add"],
+    ["pin", "list", "extra"],
+    ["pin", "add", "name", another, "--replace"],
+    ["pin", "add", "bad/name", another],
+    ["pin", "rename", "name", "1bad"],
+    ["pin", "list", "--kind", "content"],
+    ["pin", "list", "--kind"],
     ["register", "set", schema, another, "--"],
     ["register", "set", schema, another, "--", "--cid=%"],
     ["config", "show"],
@@ -570,54 +588,27 @@ describe("management contract", () => {
     expect(() => help("unknown")).toThrow("Unknown command");
   });
 
-  it("aliases are exact identities, idempotent and independent of registrations", async () => {
-    expect((await cli(work.stateDir, ["--json", "alias", "list"])).out).toBe(
-      JSON.stringify({ items: [{ name: appBuiltinAlias, cid: schema }] }),
-    );
-    for (const name of ["z", "a"]) {
-      const result = await cli(work.stateDir, [
-        "--json",
-        "alias",
-        "set",
-        name,
-        schema,
-      ]);
-      expect(JSON.parse(result.out) as unknown).toEqual({ name, cid: schema });
-      expect(
-        (await cli(work.stateDir, ["alias", "set", name, schema])).code,
-      ).toBe(0);
-    }
-    expect(
-      (await cli(work.stateDir, ["alias", "set", "a", another])).code,
-    ).toBe(1);
-    expect(
-      (await cli(work.stateDir, ["--json", "register", "set", "a", "z"])).out,
-    ).toBe(JSON.stringify({ schemaCid: schema, appCid: schema, argv: ["%"] }));
-    expect(
-      (await cli(work.stateDir, ["alias", "set", "z", another, "--replace"]))
-        .code,
-    ).toBe(0);
-    expect(
-      (await cli(work.stateDir, ["--json", "register", "list"])).out,
-    ).toContain(`"appCid":"${schema}"`);
-    const listed = await cli(work.stateDir, ["--json", "alias", "list"]);
-    expect(JSON.parse(listed.out) as unknown).toEqual({
+  it("pin names resolve exact identities and legacy aliases stay untrusted", async () => {
+    const state = new State(work.stateDir);
+    seedDisplayPin(state, "a", schema);
+    seedDisplayPin(state, "z", another);
+    state.db.prepare("INSERT INTO aliases VALUES (?,?)").run("legacy", another);
+    expect(state.resolve("a", true)).toBe(schema);
+    expect(state.resolve("z")).toBe(another);
+    expect(() => state.resolve("legacy")).toThrow("not a pin");
+    state.close();
+    const listed = await cli(work.stateDir, ["--json", "pin", "list"]);
+    expect(JSON.parse(listed.out) as unknown).toMatchObject({
       items: [
         { name: "a", cid: schema },
-        { name: appBuiltinAlias, cid: schema },
         { name: "z", cid: another },
       ],
+      legacyAliases: [{ name: "legacy", cid: another }],
     });
-    expect(
-      (await cli(work.stateDir, ["--json", "alias", "remove", "z"])).out,
-    ).toBe('{"removed":["z"]}');
-    expect((await cli(work.stateDir, ["alias", "remove", "z"])).code).toBe(1);
-    expect(
-      (await cli(work.stateDir, ["alias", "set", "chain", "a"])).code,
-    ).toBe(2);
+    expect(listed.err).toContain("not pinned");
     for (const name of ["1x", "../x", schema])
       expect(() => {
-        aliasName(name);
+        pinName(name);
       }).toThrow();
     expect(() => exactCid("bad")).toThrow();
     expect(() => exactCid(another, true)).toThrow("DAG-CBOR");
@@ -630,32 +621,37 @@ describe("management contract", () => {
         true,
       ),
     ).toThrow("DAG-CBOR");
-    const state = new State(work.stateDir);
-    expect(() => state.resolve("unknown")).toThrow("Unknown");
-    expect(() => state.resolve(another, true)).toThrow("DAG-CBOR");
-    state.close();
+    const reopened = new State(work.stateDir);
+    expect(() => reopened.resolve("unknown")).toThrow("Unknown");
+    expect(() => reopened.resolve(another, true)).toThrow("DAG-CBOR");
+    expect(reopened.aliases()).toEqual([{ name: "legacy", cid: another }]);
+    reopened.close();
   });
 
-  it("lists builtin type aliases without persisting them or allowing user mutation", async () => {
-    const listed = await cli(work.stateDir, ["alias", "list"]);
+  it("builtin type shortcuts stay offline, are not user pins and cannot be occupied", async () => {
+    const listed = await cli(work.stateDir, ["pin", "list"]);
     expect(listed.code).toBe(0);
-    expect(listed.out).toContain(appBuiltinAlias);
-    expect(listed.out).toContain(schema);
+    expect(listed.out).toBe("No named pins.");
+    expect(
+      (await cli(work.stateDir, ["register", "set", appBuiltinAlias, another]))
+        .out,
+    ).toContain(schema);
     const state = new State(work.stateDir);
     expect(state.aliases()).toEqual([]);
     state.close();
     for (const args of [
-      ["alias", "set", appBuiltinAlias, another, "--replace"],
-      ["alias", "remove", appBuiltinAlias],
+      ["pin", "add", appBuiltinAlias, another],
+      ["pin", "delete", appBuiltinAlias],
+      ["pin", "rename", "reader", appBuiltinAlias],
     ]) {
       const response = await cli(work.stateDir, args);
       expect(response.code).toBe(2);
     }
     expect(
       JSON.parse(
-        (await cli(work.stateDir, ["--json", "alias", "list"])).out,
+        (await cli(work.stateDir, ["--json", "pin", "list"])).out,
       ) as unknown,
-    ).toEqual({ items: [{ name: appBuiltinAlias, cid: schema }] });
+    ).toEqual({ items: [], pending: [], legacyAliases: [] });
   });
 
   it("registrations validate full-token templates and require deliberate replacement", async () => {
@@ -769,7 +765,7 @@ describe("management contract", () => {
         .prepare("INSERT INTO config VALUES (?,?)")
         .run("history.enabled", value);
       state.close();
-      const result = await cli(work.stateDir, ["alias", "list"]);
+      const result = await cli(work.stateDir, ["pin", "list"]);
       expect(result.code).toBe(1);
       expect(result.err).toContain("Malformed user configuration");
       expect(result.out).toBe("");

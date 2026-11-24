@@ -6,6 +6,7 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import {
   canonicalJson,
+  declaresBundleSchema,
   ContentBundleError,
   encodeSchema,
   inspectSchema,
@@ -19,6 +20,15 @@ import {
   validateContentBundle,
 } from "../src/index.js";
 import type { BundleLimits, JsonSchema } from "../src/index.js";
+
+it("recognizes schema declarations without treating arbitrary DAG-CBOR as a schema", () => {
+  expect(declaresBundleSchema(dagCbor.encode({ entry: null }))).toBe(true);
+  expect(
+    declaresBundleSchema(dagCbor.encode({ name: "ordinary object" })),
+  ).toBe(false);
+  expect(declaresBundleSchema(dagCbor.encode([]))).toBe(false);
+  expect(() => declaresBundleSchema(Uint8Array.of(0xff))).toThrow();
+});
 
 const text = (value: string) => new TextEncoder().encode(value);
 const json = (value: unknown) => canonicalJson(value);

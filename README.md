@@ -18,7 +18,7 @@ node apps/cli/dist/main.js --help
 CID 占位符应替换为真实的 CID：
 
 ```sh
-ipab alias set reader <app-cid>
+ipab pin add reader <app-cid>
 ipab exec reader --cid <content-cid>
 ipab register set <schema-cid> reader -- --cid %
 ipab open <content-cid>
@@ -74,15 +74,77 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   也接受离线内置类型 alias
   `builtin:node-app.v1`，set/remove 都解析并保存准确 CID。
   不接受 UnixFS 目录 CID 或旧 builtin 注册键；builtin 不是 App 执行目标。
-- `alias list` 同时显示用户 alias 和只读内置类型 `builtin:node-app.v1`
-  的准确 CID；
-  内置类型不写入用户数据库，`alias set/remove` 不能修改它。
-  `alias set/remove` 只维护用户准确 CID 引用，不构成 alias 链，不 pin 或执行。
-  `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
+- 用户短名由具名 pin 提供；只读内置类型 `builtin:node-app.v1` 不是用户 pin，
+  不出现在 `pin list` 中，用户不能占用它；其离线解析能力不变。
+  `register list/set/remove` 保存解析后的准确 CID。改变已有关联需要
   `--replace`；
-  相同值幂等成功。Alias 的后续修改不影响关联或历史。
+  相同值幂等成功。pin 改名／删除不影响关联或历史保存的准确 CID。
 - 根及分组无参数显示帮助；所有节点支持 `-h/--help`。缺少叶子参数退出 2，
   不交互补参。管理操作成功 0、操作失败 1、语法失败 2；应用非零退出码保留。
+
+### 具名 pin
+
+具名 pin 同时承担内容保留责任和 `NAME → 准确 CID` 短名解析；不另设 Alias
+与 pin 开关。名称以 ASCII 字母开头，后续允许字母、数字、`.`、`_`、`-`，
+不能本身是 CID，不能占用 builtin 名字。不同名字允许指向同一 CID，各有独立
+且不依赖可变名称的 Store owner。
+
+```sh
+ipab build
+ipab pin add reader <构建返回的CID>
+ipab exec reader
+ipab pin list
+ipab pin show reader
+ipab pin rename reader my-reader
+ipab exec my-reader
+ipab pin delete my-reader
+```
+
+- `pin add NAME CID` 要求未占用名字和准确 CID，不支持覆盖、replace 或名称链。
+  通过当前 Store 获取、验证完整 DAG、建立持久保留；Local 与 Kubo 后端共用
+  owner／retain／confirm 协调机制。没有可获取内容的后端、缺块、损坏、类型
+  校验或存储失败均非零，不凭空登记为成功。
+- `pin delete NAME` 释放该记录在**原后端**的保留责任并删除名字；不存在则失败。
+  不删除共享 block、不卸载、不请求 GC、不保证立即释放磁盘；不影响其他名字、
+  运行、历史或外部参与者的保留。后续改变 Store 配置不改变旧记录的释放目标。
+- `pin rename OLD_NAME NEW_NAME` 原子地修改名字；冲突失败，不覆盖。CID、类型
+  元数据、owner、register 和历史不变，不重新获取，也不执行 unpin → pin。
+- `pin list [--kind bundle|schema] [--type TYPE]` 只列 IPAB 管理的具名 pin，
+  不冒充整个 Kubo pin 清单。`pin show NAME` 显示完整名字、CID 和对象类别；
+  Bundle／Schema 另显示完整类型定义中的类型名和准确 schema CID。
+  普通文件、无 Bundle 定义的 Space 和普通 DAG-CBOR 可保留，类别为 `content`，
+  明确没有 Bundle 类型元数据；依照过滤接口约定，`--kind` 只接受
+  `bundle`／`schema`，未过滤时仍显示普通内容。
+- `--type` 接受准确 schema CID、Schema pin 的短名或只读 builtin 快捷名。
+  匹配 Bundle 的 schema CID 和 Schema 自身 CID；与 `--kind` 按 AND 组合。
+  不以可能重复的类型名称作为身份，不使用 `app.json` 的应用名称代替类型名。
+  例如 `ipab pin list --kind bundle --type builtin:node-app.v1`。
+- 类型识别复用 Bundle／Schema 解析校验：根目录有 `.bundle.yaml` 就必须通过
+  Bundle 校验；独立 DAG-CBOR 的 `entry` 字段声明类型定义，声明但不合法则失败，
+  不 catch 降级为普通内容。其他 DAG-CBOR 不强制视作 Schema。
+  add 保存校验得到的类型元数据；list/show 只读本地登记，不隐式联网或宣称刚
+  在线验证了节点状态。
+- SQLite 在 Store 操作前原子预留名称、稳定 owner、原后端与恢复记录；
+  retain 后提交引用和类型信息，confirm 与 Store 关闭成功后才登记为可用。
+  删除先持久化 releasing 意图，Store 恢复／释放成功后再删除登记。
+  中断或失败留下 `pending`／`deleting`，不能解析、改名或冒充成功；
+  list 的 JSON 将其单独放在 `pending`，stderr 给出重试提示。
+  重试相同 `pin add NAME CID` 或 `pin delete NAME` 使用原 owner／后端；
+  活跃并发操作明确拒绝，执行／历史的临时 owner 清理不会释放具名 pin。
+
+pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 daemon、不自动换后端。
+`--json pin list` 返回 `items`、`pending`、`legacyAliases`；成功项包含完整
+`name`、`cid`、`kind`、`typeName`、`schemaCid`，普通内容最后两字段为 `null`。
+
+#### 旧 Alias 迁移
+
+旧 `alias` 命令和用户 Alias 解析已被替代。旧 Alias 没有证明内容可用或建立
+保留，**不能自动当作 pin**。状态库的 `aliases` 表原样保留、不静默删除；
+`pin list` 将其单独列为“未 pin 的旧 Alias”（JSON 的 `legacyAliases`），
+旧名字解析失败时给出迁移诊断。按列出的准确 CID 显式执行
+`ipab pin add NAME CID`，获取、验证、实际保留成功后才启用这个名字；
+可用原来的名字，旧数据仍保留供核对。不增加另一套迁移命令。
+已有 register／历史中的准确 CID 不重写；builtin 快捷名继续离线使用。
 
 ## App 开发（上层 Node profile）
 
@@ -182,7 +244,7 @@ name／author name／email／license／icon／version 的文本上限为 1024 �
 `bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
 alias 可用于 bundle init/inspect 与 register set/remove；状态只保存 CID。
 这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
-profile/runtime 字段现在被拒绝。旧包应重建并显式更新 alias/register，不自动迁移。
+profile/runtime 字段现在被拒绝。旧包应重建并显式更新 pin/register，不自动迁移。
 Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
 
 ## Bundle 开发（底层）
@@ -228,7 +290,7 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
   显式 `store.rpc` 则导入该 Kubo，不会启动或配置 daemon，也不换后端。
   使用 Store put 保存原始 block 和准确 CID，不 pin／retain，重复导入安全；
   不保证外部 GC 后仍可用。
-  不执行 App、不创建 alias／register／执行历史，也不执行 GC。失败停止后续
+  不执行 App、不创建具名 pin／register／执行历史，也不执行 GC。失败停止后续
   写入，不删除共享 block 或已有保留，部分 block 可能已写入；存储／关闭失败不报告成功，
   可重试同一 CAR。`--json` 输出 kind=`bundle-import`、cid、schemaCid、
   source（输入绝对路径）、blocks（唯一 block 数）和 bytes（CAR 文件字节数）；
@@ -310,8 +372,8 @@ ENDED 在不足一小时显示分钟（如 `10m`，不足一分钟为 `0m`），
 不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
 未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
 
-APP／OUTPUT 优先显示当前匹配的 alias；
-多个 alias 时取按名称排序的第一个，没有 alias 则显示 CID 前缀。
+APP／OUTPUT 优先显示当前匹配的可用 pin 短名；
+多个 pin 时取按名称排序的第一个，没有 pin 则显示 CID 前缀。
 两列最多 16 个字符，超限以 `...` 结尾。ARGV 按命令行样式以空格连接，
 特殊参数使用 JSON 字符串引号／转义，空参数为 `""`，无参数为 `-`；
 在终端中自动使用固定列以外的剩余宽度，超限以 `...` 结尾，
@@ -321,7 +383,7 @@ APP／OUTPUT 优先显示当前匹配的 alias；
 不会为此截断其他列。
 这只是阅读用的摘要，不保证可以直接交给任意 shell 重放。
 `--json history list` 和 `history show` 保留完整 CID 和实际 argv；
-显示 alias 不修改历史记录中的准确 CID。
+显示 pin 名称不修改历史记录中的准确 CID。
 
 删除必须显式 ID 或筛选，两种方式互斥，无隐含全选，不支持分页选项；
 删除全部匹配已结束记录，不限 20。确认之前固定目标集合；TTY 展示数量和保留

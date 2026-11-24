@@ -23,7 +23,7 @@ import {
 } from "./history.js";
 import { execute } from "./runtime.js";
 import { validatedBundle } from "./space.js";
-import { State, type RunRecord } from "./state.js";
+import { exactCid, pinName, State, type RunRecord } from "./state.js";
 import {
   buildBundle,
   initBundle,
@@ -31,7 +31,8 @@ import {
   importBundle,
 } from "./authoring.js";
 import { buildApp, initApp } from "./app-authoring.js";
-import { builtinTypes, schemaAlias } from "./app-definition.js";
+import { schemaAlias } from "./app-definition.js";
+import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
 
 export interface IO {
   out(text: string): void;
@@ -75,9 +76,11 @@ const commands: Record<string, string> = {
   "bundle import": "bundle import FILE.car",
   exec: "exec APP [APP_ARGS...]",
   open: "open CONTENT",
-  "alias list": "alias list",
-  "alias set": "alias set NAME CID [--replace]",
-  "alias remove": "alias remove NAME",
+  "pin add": "pin add NAME CID",
+  "pin delete": "pin delete NAME",
+  "pin list": "pin list [--kind bundle|schema] [--type TYPE]",
+  "pin show": "pin show NAME",
+  "pin rename": "pin rename OLD_NAME NEW_NAME",
   "register list": "register list",
   "register set": "register set SCHEMA APP [--replace] [-- TEMPLATE...]",
   "register remove": "register remove SCHEMA",
@@ -94,9 +97,10 @@ export function help(path = ""): string {
   if (!path)
     return `IPAB — execute Apps and open content with an explicit IPFS context.
 Usage: ipab [--state-dir PATH] [--store-rpc URL] [--json] COMMAND
-Commands: init, build, bundle, exec, open, alias, register, config, history
+Commands: init, build, bundle, exec, open, pin, register, config, history
 Examples: ipab init hello
           ipab build hello
+          ipab pin add reader CID
           ipab exec APP --help
           ipab register set SCHEMA APP
           ipab --json history list
@@ -125,7 +129,7 @@ Example: ipab bundle import hello\\dist\\app.car
 Validates a self-contained single-root Bundle or type CAR before writing to the configured Store.
 Uses the default local Store or explicit Kubo RPC; no daemon is started.
 Writes original blocks without pinning or retaining; repeated imports are safe.
-Does not execute Apps or change aliases/register. Unpinned blocks may be garbage-collected externally.
+Does not execute Apps or change named pins/register. Unpinned blocks may be garbage-collected externally.
 --json emits kind, cid, schemaCid, source, blocks and bytes; progress goes to stderr.
 Global flags precede COMMAND. Use -h/--help for help.`;
     const examples =
@@ -145,6 +149,21 @@ init writes .bundle.yaml, .bundle-ignore (/dist/) and the default entry into a n
 inspect reads a folder, definition, CAR or CID; no App execution, uploads, imports or pins.
 Use -h/--help for help.`;
   }
+  if (usage && path.startsWith("pin "))
+    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
+Examples: ipab pin add reader APP_CID
+          ipab pin list --kind bundle --type builtin:node-app.v1
+          ipab pin rename reader my-reader
+Global flags precede COMMAND: --state-dir PATH, --store-rpc URL, --json.
+add requires an unused short name and an exact CID; verifies the full DAG and retains it in the configured Store.
+Pinning does not execute or trust an App, install dependencies, or start a daemon.
+delete releases only this pin's ownership on its original backend; no block deletion or GC.
+rename changes only the name, not the CID, type metadata, registration, history or ownership.
+list/show read local registration, not live node status; list excludes builtin shortcuts and reports unfinished operations separately.
+--kind accepts bundle or schema; ordinary content remains visible without a kind filter.
+--type matches exact schema CID (or Schema pin name/builtin shortcut); filters combine with AND.
+User Alias commands are replaced; legacy metadata is preserved but requires explicit verified pin add.
+Use -h/--help for help.`;
   if (usage)
     return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
 Example: ipab ${path === "exec" ? "exec APP --cid CID" : path === "open" ? "open CONTENT" : usage}
@@ -378,7 +397,7 @@ export function parse(argv: readonly string[]): Parsed {
     return result;
   }
   if (!["open", "init", "build"].includes(group)) {
-    if (!["bundle", "alias", "register", "config", "history"].includes(group))
+    if (!["bundle", "pin", "register", "config", "history"].includes(group))
       syntax(`Unknown command "${group}".`);
     if (!tokens.length || tokens[0] === "-h" || tokens[0] === "--help") {
       result.help = true;
@@ -400,7 +419,7 @@ export function parse(argv: readonly string[]): Parsed {
       ? ["replace", "schema-only", "no-import"]
       : result.path === "build"
         ? ["replace", "no-import"]
-        : result.path === "alias set" || result.path === "register set"
+        : result.path === "register set"
           ? ["replace"]
           : result.path === "history remove"
             ? ["yes"]
@@ -412,7 +431,9 @@ export function parse(argv: readonly string[]): Parsed {
         ? ["app", "status", "since", "until", "limit", "before"]
         : result.path === "history remove"
           ? ["app", "status", "since", "until"]
-          : [];
+          : result.path === "pin list"
+            ? ["kind", "type"]
+            : [];
   while (tokens.length) {
     const value = tokens.shift()!;
     if (value.startsWith("--") || value === "-o") {
@@ -435,9 +456,11 @@ export function parse(argv: readonly string[]): Parsed {
     "bundle inspect": [1, 1],
     "bundle import": [1, 1],
     open: [1, 1],
-    "alias list": [0, 0],
-    "alias set": [2, 2],
-    "alias remove": [1, 1],
+    "pin add": [2, 2],
+    "pin delete": [1, 1],
+    "pin list": [0, 0],
+    "pin show": [1, 1],
+    "pin rename": [2, 2],
     "register list": [0, 0],
     "register set": [2, 2],
     "register remove": [1, 1],
@@ -467,6 +490,16 @@ export function parse(argv: readonly string[]): Parsed {
       syntax("history remove requires explicit IDs OR filters, not both.");
   }
   // Validate syntactic values before state access, let alone a backend connection.
+  if (result.path.startsWith("pin ") && result.path !== "pin list") {
+    pinName(result.positional[0]!);
+    if (result.path === "pin add") exactCid(result.positional[1]!);
+    if (result.path === "pin rename") pinName(result.positional[1]!);
+  }
+  if (
+    result.options.kind !== undefined &&
+    !["bundle", "schema"].includes(String(result.options.kind))
+  )
+    syntax("--kind must be bundle or schema.");
   if (result.path.startsWith("config ") && result.positional[0]) {
     if (!(result.path === "config get" && result.positional[0] === "state-dir"))
       configKey(result.positional[0]);
@@ -648,36 +681,101 @@ async function performCli(
         }
         break;
       }
-      case "alias list": {
-        const aliases = [
-          ...state.aliases(),
-          ...[...builtinTypes].map(([name, cid]) => ({ name, cid })),
-        ].sort((left, right) =>
-          left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-        );
+      case "pin list": {
+        if (typeof parsed.options.type === "string") {
+          const named = state.pin(parsed.options.type);
+          if (named && pinDetails(named).kind !== "schema")
+            throw new HostError(
+              "--type short names must identify a Schema pin.",
+            );
+        }
+        const type =
+          typeof parsed.options.type === "string"
+            ? state.resolve(schemaAlias(parsed.options.type), true)
+            : undefined;
+        const pins = state.pins();
+        const listed = pins
+          .filter((pin) => pin.status === "ready")
+          .map(pinDetails)
+          .filter(
+            (pin) =>
+              (!parsed.options.kind || pin.kind === parsed.options.kind) &&
+              (type === undefined || pin.schemaCid === type),
+          );
+        const pending = pins
+          .filter((pin) => pin.status !== "ready")
+          .map(({ name, cid, status }) => ({ name, cid, status }));
+        const legacyAliases = state.aliases();
+        if (pending.length)
+          io.err(
+            `Unfinished pin operations (not usable pins): ${JSON.stringify(pending)}. Retry pin add/delete.`,
+          );
+        if (legacyAliases.length)
+          io.err(
+            "Legacy Alias metadata is preserved but is not pinned. Use the listed exact CIDs with pin add to migrate.",
+          );
         emit(
-          { items: aliases },
+          { items: listed, pending, legacyAliases },
           table(
-            ["NAME", "CID"],
-            aliases.map((alias) => [alias.name, alias.cid]),
-            "No aliases.",
-          ),
+            ["NAME", "CID", "KIND", "BUNDLE TYPE"],
+            listed.map((pin) => [
+              pin.name,
+              pin.cid,
+              pin.kind,
+              pin.typeName ?? "(no Bundle type metadata)",
+            ]),
+            "No named pins.",
+          ) +
+            (legacyAliases.length
+              ? `\nLegacy Aliases (not pinned):\n${table(
+                  ["NAME", "CID"],
+                  legacyAliases.map((alias) => [alias.name, alias.cid]),
+                  "",
+                )}`
+              : ""),
         );
         break;
       }
-      case "alias set": {
-        const result = state.setAlias(
+      case "pin add": {
+        io.err("Fetching, verifying and retaining content in Store...");
+        const result = await addPin(
+          state,
           first!,
           second!,
-          Boolean(parsed.options.replace),
+          await storeConfiguration(value("store.rpc")),
         );
-        emit(result, `${result.name} → ${result.cid}`);
+        emit(
+          result,
+          `${result.name} → ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}`,
+        );
         break;
       }
-      case "alias remove":
-        state.removeAlias(first!);
-        emit({ removed: [first] }, `Removed ${first}.`);
+      case "pin delete": {
+        const result = await deletePin(state, first!);
+        emit(
+          result,
+          `Deleted ${first}; released only its retention responsibility. No blocks deleted or GC requested.`,
+        );
         break;
+      }
+      case "pin show": {
+        const pin = state.pin(first!);
+        if (!pin)
+          throw new HostError(
+            `Pin "${first}" does not exist. Run ipab pin list.`,
+          );
+        const result = pinDetails(pin);
+        emit(
+          result,
+          `Name: ${printable(result.name)}\nCID: ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}${result.schemaCid ? `\nSchema CID: ${result.schemaCid}` : ""}\nSource: local registration (not live node verification)`,
+        );
+        break;
+      }
+      case "pin rename": {
+        const result = renamePin(state, first!, second!);
+        emit(result, `${first} → ${result.name} (${result.cid})`);
+        break;
+      }
       case "register list": {
         const associations = state.registrations();
         emit(
@@ -756,11 +854,12 @@ async function performCli(
           emit(page, "");
           break;
         }
-        const aliases = new Map<string, string>();
-        for (const alias of state.aliases())
-          if (!aliases.has(alias.cid)) aliases.set(alias.cid, alias.name);
+        const names = new Map<string, string>();
+        for (const pin of state.pins())
+          if (pin.status === "ready" && !names.has(pin.cid))
+            names.set(pin.cid, pin.name);
         const reference = (cid: string | null): string =>
-          cid === null ? "none" : abbreviated(aliases.get(cid) ?? cid, 16);
+          cid === null ? "none" : abbreviated(names.get(cid) ?? cid, 16);
         const shortId = state.shortRunId.bind(state);
         const now = Date.now();
         const rows = table(

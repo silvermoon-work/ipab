@@ -11,6 +11,10 @@ import type {
 } from "./types.js";
 
 export const schemaBlockBytes = 1024 * 1024;
+export function declaresBundleSchema(bytes: Uint8Array): boolean {
+  const value: unknown = dagCbor.decode(bytes);
+  return record(value) && Object.hasOwn(value, "entry");
+}
 export interface SchemaOptions {
   nodes?: number;
   depth?: number;

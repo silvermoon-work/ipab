@@ -248,7 +248,12 @@ export async function recoverInactive(
   factory: StoreFactory = createStore,
 ): Promise<void> {
   for (const hold of state.holds()) {
-    if (hold.recordId || (hold.pid !== null && alive(hold.pid))) continue;
+    if (
+      hold.recordId ||
+      state.isPinOwner(hold.owner) ||
+      (hold.pid !== null && alive(hold.pid))
+    )
+      continue;
     const store = factory(hold.backend);
     try {
       await store.recoverOwner(

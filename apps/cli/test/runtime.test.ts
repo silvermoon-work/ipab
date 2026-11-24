@@ -20,6 +20,7 @@ import {
 } from "../src/space.js";
 import { Ownership } from "../src/history.js";
 import { execute } from "../src/runtime.js";
+import { addPin, renamePin } from "../src/pins.js";
 import {
   app,
   cli,
@@ -231,15 +232,15 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       work.store,
       "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
     );
-    state.setAlias("document", input.root, false);
-    state.setAlias("program", root, false);
+    await addPin(state, "document", input.root, work.store.configuration);
+    await addPin(state, "program", root, work.store.configuration);
     state.setAssociation(
       input.schema,
       "program",
       ["--cid", "%", "--literal=%", "%"],
       false,
     );
-    state.setAlias("program", input.root, true);
+    renamePin(state, "program", "renamed-program");
     const result = await subprocess(
       ["--state-dir", work.stateDir, "open", "document"],
       config,
@@ -564,7 +565,7 @@ try {await ipab.output.writeFile("broken", new ReadableStream({start(c){c.error(
   it("the source CLI dispatches exec/open through the same runtime and reports Store-close failure", async () => {
     const root = await app(work.store, "process.exitCode = 0;");
     const input = await content(work.store);
-    state.setAlias("app", root, false);
+    await addPin(state, "app", root, work.store.configuration);
     state.setAssociation(input.schema, root, ["%", "--cid=%"], false);
     const explicit = await cli(work.stateDir, ["exec", "app", "--help", "--"]);
     expect(explicit.code, explicit.err).toBe(0);

@@ -13,6 +13,7 @@ import { appSchema, appSchemaCid } from "../src/space.js";
 import { appDescription, schemaAlias } from "../src/app-definition.js";
 import { object } from "../src/errors.js";
 import { cli, fixture, subprocess } from "./helpers.js";
+import { State } from "../src/state.js";
 
 const require = createRequire(import.meta.url);
 vi.mock("node:fs/promises", async () => {
@@ -300,12 +301,30 @@ describe("App-first authoring", () => {
     const firstCar = await readFile(join(project, "dist", "app.car"));
     const storeConfig = join(work.root, "store.json");
     expect(work.store.pins()).toEqual([]);
+    const cid = String(result(response.out).cid);
+    const pinned = await cli(work.stateDir, ["pin", "add", "reader", cid]);
+    expect(pinned.code, pinned.err).toBe(0);
     const executed = await subprocess(
-      ["--state-dir", work.stateDir, "exec", String(result(response.out).cid)],
+      ["--state-dir", work.stateDir, "exec", "reader"],
       storeConfig,
     );
     expect(executed.code, executed.stderr).toBe(0);
     expect(executed.stdout.toString().trim()).toBe("Bundled dependency hello");
+    expect(
+      (await cli(work.stateDir, ["pin", "rename", "reader", "my-reader"])).code,
+    ).toBe(0);
+    const again = await subprocess(
+      ["--state-dir", work.stateDir, "exec", "my-reader"],
+      storeConfig,
+    );
+    expect(again.code, again.stderr).toBe(0);
+    expect(again.stdout.toString().trim()).toBe("Bundled dependency hello");
+    const state = new State(work.stateDir);
+    expect(state.runs().every((run) => run.appCid === cid)).toBe(true);
+    state.close();
+    expect(
+      (await cli(work.stateDir, ["pin", "delete", "my-reader"])).code,
+    ).toBe(0);
     expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
     const defaultBuild = await promisify(execFile)(
       process.execPath,

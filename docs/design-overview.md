@@ -2,7 +2,7 @@
 
 ## 当前实现与规范优先级
 
-当前 `apps/cli` 实现已确认 CLI：exec/open、alias、register、config、
+当前 `apps/cli` 实现已确认 CLI：exec/open、pin、register、config、
 history、上层 App init/build，以及 Node 子进程运行时。Content
 Bundle 与 Store 已迁入 private
 成员 `@ipab/bundle`、`@ipab/ipfs-store`，包含 Kubo pin 兼容修复，
@@ -57,6 +57,29 @@ hooks／JS 配置，不执行 App 或 pin，不创建 watch／任务系统。
 CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，不改变 Builder 的纯构建接口。
 未知配置、动态外部依赖、源文件输出与覆盖都明确失败；覆盖已有普通 CAR
 仅由 --replace 授权。staging 与 CAR 临时文件都仅删除本次拥有的路径。
+
+## 具名 pin 与短名
+
+用户短名由具名 pin 统一管理，不再维护独立 Alias 与 pin 开关。
+`pin add/delete/list/show/rename` 详见 [使用说明](../README.md#具名-pin)。
+pin 不是执行或信任授权，删除只释放本记录保留，不删除 block 或执行 GC。
+支持 Bundle、独立 Schema 和 Store 可验证的普通内容；add 保存经过验证的
+类别、完整 Bundle 类型名和准确 schema CID，list/show 不联网，普通内容没有
+类型元数据。`--kind bundle|schema` 和 `--type CID|Schema短名|builtin` 过滤
+这些登记信息，按 AND 组合；App 元数据名称不是 Bundle 类型身份。
+
+具名记录使用独立稳定 owner，原后端配置与 holds 共同持久化。SQLite 的
+`named_pins` 事务先预留名称与 hold，再执行 Store retain；类型与 roots 提交后
+confirm，关闭成功才从 pending 转 ready。删除原子登记 deleting 和空 roots，
+recoverOwner/reconcile 读取持久引用，成功关闭后才移除登记／hold。
+异常保留原 owner／后端与意图，显式重复 add/delete 恢复；活跃进程不能抢占。
+rename 在单一 SQLite 事务中只改 name；ready 才能解析或改名，临时执行／历史
+恢复跳过所有 named pin owner。多个名字、运行及历史互相独立，外部节点 pin
+的名字和保留仍由 Store 协调规则保护，不由 CLI 代理 Kubo 名称。
+
+旧 aliases 表不删、不作为 pin 解析；list 单独展示未保留的迁移来源，
+用户显式 add 验证并实际保留后才可使用原名。register 和历史保存准确 CID，
+不随 pin 改名重写。只读 builtin 类型快捷名不是用户 pin，仍可离线解析。
 
 <a id="node-app-profile"></a>
 

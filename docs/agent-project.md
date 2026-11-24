@@ -66,7 +66,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   --no-import 关闭导入；CLI private，生成项目不得声明虚构 registry
   @ipab/cli 版本；使用本地链接命令。输出限项目 dist/ 内或项目外，不穿过符号链接。
   builtin:node-app.v1 离线解析完整 appSchema；register
-  set/remove 可接受此 alias，
+  set/remove 可接受此只读 builtin 快捷名，
   持久化准确 CID，不能用作任意 App 执行目标。App 定义集中在 app-definition.ts，
   name/version/entry 必填，description 默认空，author/license/icon/i18n 可选；
   profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
@@ -76,6 +76,12 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   复用 Store put 保存原始 block，不 pin／retain，不执行 App／GC 或启动 daemon；
   导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
   不打包或删除旧 staging。完整公共接口与资源路径见 README.md。
+- 用户 Alias 由具名 pin 替代；旧 aliases 表保留但不作为 pin 解析或自动迁移。
+  pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
+  原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，
+  不触发 Store 操作，不改 register/历史 CID。执行/历史恢复必须跳过 named pin
+  owner。list/show 只读本地登记；--kind 只接受 bundle/schema，普通 content
+  仍可 pin；--type 支持准确 schema CID、Schema pin 短名与 builtin，按 AND 过滤。
 
 ## Direct scripts and standard boundary
 

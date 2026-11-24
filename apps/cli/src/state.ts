@@ -41,6 +41,18 @@ export interface Hold {
   session: string | null;
   recordId: string | null;
 }
+export interface PinMetadata {
+  kind: "bundle" | "schema" | "content";
+  typeName: string | null;
+  schemaCid: string | null;
+}
+export interface NamedPin {
+  name: string;
+  cid: string;
+  owner: string;
+  status: "pending" | "ready" | "deleting";
+  metadata: PinMetadata | null;
+}
 
 export function exactCid(value: string, schema = false): string {
   let cid: CID;
@@ -54,14 +66,15 @@ export function exactCid(value: string, schema = false): string {
   return cid.toString();
 }
 
-export function aliasName(value: string): void {
-  if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(value)) syntax("Invalid alias name.");
+export function pinName(value: string): void {
+  if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(value))
+    syntax("Invalid pin name; builtin names are reserved.");
   try {
     CID.parse(value);
   } catch {
     return;
   }
-  syntax("An alias name must not itself be a CID.");
+  syntax("A pin name must not itself be a CID.");
 }
 
 function persistedHold(value: string, owner: string): Hold {
@@ -100,6 +113,7 @@ export class State {
       CREATE TABLE IF NOT EXISTS identity (id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS aliases (name TEXT PRIMARY KEY, cid TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS named_pins (name TEXT PRIMARY KEY, owner TEXT UNIQUE NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS registrations (schema_cid TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS holds (owner TEXT PRIMARY KEY, value TEXT NOT NULL);`);
@@ -166,44 +180,100 @@ export class State {
       try {
         CID.parse(value);
       } catch {
-        const row = this.db
-          .prepare("SELECT cid FROM aliases WHERE name=?")
-          .get(value);
-        if (row) return exactCid(String(row.cid), schema);
+        const pin = this.pin(value);
+        if (pin) {
+          if (pin.status !== "ready")
+            throw new HostError(
+              `Pin "${value}" is ${pin.status}; retry pin add/delete before using it.`,
+            );
+          return exactCid(pin.cid, schema);
+        }
+        if (this.db.prepare("SELECT 1 FROM aliases WHERE name=?").get(value))
+          throw new HostError(
+            `Legacy Alias "${value}" is not a pin. Read its CID from the preserved aliases table and run ipab pin add NAME CID to verify and retain it.`,
+          );
         throw new HostError(
-          `Unknown CID or alias "${value}". Run ipab alias list.`,
+          `Unknown CID or pin "${value}". Run ipab pin list.`,
         );
       }
       throw error;
     }
   }
-  setAlias(
-    name: string,
-    cid: string,
-    replace: boolean,
-  ): { name: string; cid: string } {
-    aliasName(name);
-    cid = exactCid(cid);
-    this.transaction(() => {
-      const old = this.db
-        .prepare("SELECT cid FROM aliases WHERE name=?")
-        .get(name);
-      if (old && old.cid !== cid && !replace)
-        throw new HostError(
-          `Alias "${name}" has another target; use --replace.`,
-        );
-      this.db
-        .prepare("INSERT OR REPLACE INTO aliases VALUES (?,?)")
-        .run(name, cid);
-    });
-    return { name, cid };
-  }
-  removeAlias(name: string): void {
-    aliasName(name);
-    if (!this.db.prepare("DELETE FROM aliases WHERE name=?").run(name).changes)
-      throw new HostError(
-        `Alias "${name}" does not exist. Run ipab alias list.`,
+  pins(): NamedPin[] {
+    return this.db
+      .prepare("SELECT name,owner,value FROM named_pins ORDER BY name")
+      .all()
+      .map((row) =>
+        this.readPin(String(row.name), String(row.owner), String(row.value)),
       );
+  }
+  pin(name: string): NamedPin | undefined {
+    const row = this.db
+      .prepare("SELECT owner,value FROM named_pins WHERE name=?")
+      .get(name);
+    return row
+      ? this.readPin(name, String(row.owner), String(row.value))
+      : undefined;
+  }
+  private readPin(name: string, owner: string, value: string): NamedPin {
+    const data = object(JSON.parse(value) as unknown, "named pin");
+    if (
+      data.name !== name ||
+      data.owner !== owner ||
+      typeof data.cid !== "string" ||
+      (data.status !== "pending" &&
+        data.status !== "ready" &&
+        data.status !== "deleting")
+    )
+      throw new HostError("Invalid persisted named pin; recovery is blocked.");
+    exactCid(data.cid);
+    let metadata: PinMetadata | null = null;
+    if (data.metadata !== null) {
+      const value = object(data.metadata, "pin type metadata");
+      if (value.kind === "content") {
+        if (value.typeName !== null || value.schemaCid !== null)
+          throw new HostError("Invalid persisted pin type metadata.");
+        metadata = { kind: "content", typeName: null, schemaCid: null };
+      } else {
+        if (
+          (value.kind !== "bundle" && value.kind !== "schema") ||
+          typeof value.typeName !== "string" ||
+          typeof value.schemaCid !== "string"
+        )
+          throw new HostError("Invalid persisted pin type metadata.");
+        metadata = {
+          kind: value.kind,
+          typeName: value.typeName,
+          schemaCid: exactCid(value.schemaCid, true),
+        };
+      }
+    } else if (data.status === "ready")
+      throw new HostError("Ready pin is missing type metadata.");
+    return {
+      name,
+      cid: data.cid,
+      owner,
+      status: data.status,
+      metadata,
+    };
+  }
+  savePin(pin: NamedPin): void {
+    if (
+      !this.db
+        .prepare(
+          "INSERT INTO named_pins VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value WHERE owner=excluded.owner",
+        )
+        .run(pin.name, pin.owner, JSON.stringify(pin)).changes
+    )
+      throw new HostError(`Pin name "${pin.name}" is occupied.`);
+  }
+  isPinOwner(owner: string): boolean {
+    return Boolean(
+      this.db.prepare("SELECT 1 FROM named_pins WHERE owner=?").get(owner),
+    );
+  }
+  deletePin(name: string): void {
+    this.db.prepare("DELETE FROM named_pins WHERE name=?").run(name);
   }
   registrations(): Association[] {
     return this.db

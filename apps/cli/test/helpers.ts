@@ -7,7 +7,7 @@ import { encodeSchema, canonicalJson, type JsonSchema } from "@ipab/bundle";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
 import { appSchema } from "../src/space.js";
-import type { RunRecord } from "../src/state.js";
+import type { RunRecord, State } from "../src/state.js";
 import { runCli, type IO } from "../src/cli.js";
 
 export async function fixture(): Promise<{
@@ -120,6 +120,16 @@ export function record(
     retention: { owned: false, state: "none" },
     ...overrides,
   };
+}
+
+export function seedDisplayPin(state: State, name: string, cid: string): void {
+  state.savePin({
+    name,
+    cid,
+    owner: `display-fixture:${name}`,
+    status: "ready",
+    metadata: { kind: "content", typeName: null, schemaCid: null },
+  });
 }
 
 export async function cli(

@@ -3,33 +3,53 @@
 ## 当前实现与规范优先级
 
 当前 `apps/ipab` 实现已确认 CLI：exec/open、alias、register、config、
-history，以及 Node 子进程运行时。Content Bundle 与 Store 已迁入 private
+history、上层 App init/build，以及 Node 子进程运行时。Content
+Bundle 与 Store 已迁入 private
 成员 `@ipab/bundle`、`@ipab/ipfs-store`，包含 Kubo pin 兼容修复，
 不包含 npm 交付流程。CLI 的用户确认规范和后续
 Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临时 Open With。
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
-Content Bundle 校验存储完整性、路径、`.bundle.yaml`、入口内容和独立 DAG-CBOR
-Schema block。其他资源及子 Bundle 的业务语义、
+Content Bundle 校验存储完整性、路径、`.bundle.yaml`
+完整类型定义、默认值和入口内容。
+其他资源及子 Bundle 的业务语义、
 引用格式与依赖校验完全交给 App，不通过 `x-content-ref` 递归验证。当前协议详见
 [Bundle runtime](../packages/bundle/README.md)。旧 Schema Bundle 目录及 builtin
-profile 已移除，无兼容或注册表自动迁移。
+注册键已移除，无兼容或注册表自动迁移；当前 `builtin:node-app.v1`
+只是本地完整类型定义的快捷解析；register set/remove 可接受它，
+但注册状态永远保存准确 CID，builtin 字符串不成为协议身份。
 
-普通 entry 的 `schemaCid` 指向单个自包含 JSON Schema 的
-CIDv1/DAG-CBOR/SHA-256 block；准确 block CID 是 register 键。
-Schema 对象直接编码为规范 DAG-CBOR，不保存 JSON 字符串或 UnixFS 包装；
-编码后最多 1 MiB（含边界），超限直接失败，不分块。没有 descriptor 或 main 索引。
-`$defs` 和本地 JSON Pointer `$ref` 用于单文档内复用入口类型定义；
-外部引用、anchor、嵌套 $id 和 x-content-ref 不受支持。
-CAR 包含独立 Schema block；manifest 中的 CID 字符串不是 IPLD link，
-保留 UnixFS 根时必须另行保留 Schema CID，CLI owner 对读取的 block 分别 retain。
+.bundle.yaml 本身是类型定义：必填 name、缺省为空字符串的 description，
+以及必填 entry: { path, schema, contentType, defaultValue }。路径、Schema、格式
+是固定契约；默认数据用于初始化且须通过校验。完整定义归一化后直接编码为
+CIDv1/DAG-CBOR/SHA-256 block，准确 CID 是 register 键，编码后最多 1 MiB。
+缺省描述与显式空串归一化为相同类型 CID；名称、描述、默认数据等变化影响该 CID，
+实际入口数据变化不影响它。原始 YAML 排版仍参与内容根 CID。
+$defs 与本地 JSON Pointer $ref 只复用 entry.schema 内的类型定义。
+构建和打开内容根无需读取外部 Schema；保留内容根即可从文件再生类型 block。
 
 当前最小结构方言及 anyOf 结构匹配、入口校验、
 共享预算、确定性 Builder 规则以上述 runtime 文档为准。`x-content-ref` 不再支持，
 含此关键字的 Schema 必须更新并按新 CID 重新注册。统一 runtime 提供 encodeSchema，
 private Bundle Builder 支持 repeatable VFS、独立 Node 本地适配器和固定
 UnixFS/CAR；不上传或 pin，已移除 Schema Bundle Builder。
+CLI 的 bundle init/build/inspect 覆盖初始化、两种 CAR 构建和检查；
+build
+--schema-only 复用同一命令，输出 dist/schema.car，完整构建输出 dist/bundle.car。
+根 .bundle-ignore 默认 /dist/，不按 CAR 扩展名一概排除；源码不被覆盖，产物替换
+须显式 --replace，失败只回收本次临时文件。完整离线示例见 README.md。
+
+根 `ipab init NAME [DIR]` 和 `ipab build [DIR]` 是 App-first 上层，不改变
+上述通用工具的编译自由。init 创建普通 private TypeScript npm 项目，
+默认 src/main.ts、严格 tsconfig 与数据文件 ipab.json，无隐式安装。
+build 显式执行项目本地严格 tsc（入口必须参与检查），再由 CLI 自带 esbuild
+生成自包含 Node CommonJS，使用全新自有 staging 中的准确 App 定义、
+app.json、resources/app.cjs 与显式 assets 文件，最后直接复用内部
+Bundle Builder 生成默认 dist/app.car／CID。不调用自身 CLI，不执行任意 npm
+hooks／JS 配置，不执行 App 或上传／pin，不创建 watch／任务系统。
+未知配置、动态外部依赖、源文件输出与覆盖都明确失败；覆盖已有普通 CAR
+仅由 --replace 授权。staging 与 CAR 临时文件都仅删除本次拥有的路径。
 
 <a id="node-app-profile"></a>
 
@@ -39,45 +59,89 @@ App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化
 不是直接把任意 `.bundle.yaml` 文件的存在当作有效 App：
 
 ```yaml
+name: IPAB Node App
+description: Self-contained Node CommonJS application and declarative metadata.
 entry:
   path: app.json
-  schemaCid: bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm
   contentType: application/json
+  schema:
+    $id: urn:ipab:node-app.v1
+    type: object
+    additionalProperties: false
+    required: [name, version, entry]
+    properties:
+      name:
+        type: string
+      version:
+        type: string
+      description:
+        type: string
+      entry:
+        type: string
+      author:
+        type: object
+        additionalProperties: false
+        required: [name]
+        properties:
+          name:
+            type: string
+          email:
+            type: string
+      license:
+        type: string
+      icon:
+        type: string
+      i18n:
+        type: object
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+  defaultValue:
+    name: Untitled App
+    version: 0.0.0
+    description: ""
+    entry: resources/app.cjs
 ```
 
 `app.json` 的最小形状（不允许其他字段）：
 
 ```json
 {
-  "profile": "ipab.node.v1",
-  "runtime": "node",
+  "name": "Untitled App",
+  "version": "0.0.0",
+  "description": "",
   "entry": "resources/app.cjs"
 }
 ```
 
-下述 Schema 通过 encodeSchema 直接生成单个 DAG-CBOR block；
-准确 CID 为 `bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm`。
-CLI runtime 只保存 Schema 定义与固定 CID，不在启动时构造 VFS/CAR；
-测试重新编码并验证该身份。创建 App Bundle 时须存储并保留此 Schema block。
+上述完整定义通过 encodeSchema 生成单个 DAG-CBOR block；
+准确 CID 为 `bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
+CLI 的 app-definition.ts 集中保存完整定义与固定 CID，authoring 重新编码核对身份；
+runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
+离线映射到此完整定义／CID，
+不是另一套协议身份，也不能作为任意 App 执行目标。
 
-```json
-{
-  "$id": "urn:ipab:node-app.v1",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["profile", "runtime", "entry"],
-  "properties": {
-    "profile": { "const": "ipab.node.v1" },
-    "runtime": { "const": "node" },
-    "entry": { "type": "string" }
-  }
-}
-```
+app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
+实际 App 元数据变动不修改共享类型 CID。description 缺省为空，
+author{name,email?}、license、icon 和 i18n 可选。专用 App 校验要求非空白名称、
+准确 SemVer 2.0、简单 email、Intl 接受的语言 tag（规范化重复也失败），
+翻译对象仅 name/description 字符串，缺字段逐一回退 base。无语言选择 UI。
+icon 必须是 Bundle 根相对 resources/ 安全普通文件并存在。
+license 只声明，不控制读／复制／执行，不实现 DRM；CAS 不消除权限或许可证责任。
+具体数据配置、长度限制及资源选择见 README.md。原 profile/runtime 两字段已删除，
+准确完整类型 CID 唯一确定 Node 执行合约；旧类型包须重建和显式更新注册，
+不自动迁移，也不将项目元数据写入共享类型定义。
 
-Schema block 必须完整可读且 CID 准确。宿主 runtime 另行强制 entry
+完整类型定义必须可读且派生 CID 准确。宿主 runtime 另行强制 app.json 的 entry
 为安全 `resources/` 下的 `.cjs` 相对路径，不使用方言不支持的 pattern。entry 是
 普通 JS 文件，最大 8 MiB；程序是自包含 CommonJS bundle，可使用普通 Node
-builtins，不自动安装外部依赖。作者在外部构建程序；Bundle Builder 不编译 JS。
+builtins，不自动安装外部依赖。作者可用上层 ipab build，或在外部构建程序；
+底层 Bundle Builder 和 bundle build 不编译 JS。
 宿主先完整校验内容和 App profile，再将唯一 JS entry materialize 到本次
 状态目录的私有运行目录，启动 Node bootstrap，设置普通
 `process.argv = [node, materializedEntry, ...actualArguments]` 后加载 entry。
@@ -190,9 +254,9 @@ callback 在 Store participant mutex 内重新读持久根，不捕获旧数组�
 
 下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
 其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
-和“迁移公共库”均已被上述实现及确认决定取代。单 block DAG-CBOR 和 schemaCid
-已恢复，但下文完整方言、旧外部 $ref 及 content
-refs 仍是历史协议，不用于当前构建。
+和“迁移公共库”均已被上述实现及确认决定取代。当前仍用单 block DAG-CBOR，
+但 .bundle.yaml 已内嵌完整类型定义；下文 schemaCid manifest、完整方言、
+旧外部 $ref 及 content refs 均是历史协议，不用于当前构建。
 
 ## 历史设计草案（实现前）
 

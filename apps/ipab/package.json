@@ -18,16 +18,20 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
+    "esbuild": "catalog:",
+    "@ipab/bundle-builder": "workspace:*",
+    "@ipld/car": "catalog:",
     "@ipld/dag-pb": "catalog:",
     "@ipab/bundle": "workspace:*",
     "@ipab/ipfs-store": "workspace:*",
     "ipfs-unixfs": "catalog:",
     "ipfs-unixfs-importer": "catalog:",
     "multiformats": "catalog:",
-    "string-width": "catalog:"
+    "string-width": "catalog:",
+    "ignore": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
-    "@ipab/bundle-builder": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",

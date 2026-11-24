@@ -8,6 +8,7 @@ import type { CID } from "multiformats/cid";
 import { canonicalJson, encodeSchema, openBundle } from "@ipab/bundle";
 import {
   encodeBundleCar,
+  encodeSchemaCar,
   fileTree,
   listTree,
   memoryFile,
@@ -23,22 +24,22 @@ import type {
 } from "../src/index.js";
 
 const text = (value: string) => new TextEncoder().encode(value);
-const schema = await encodeSchema({ type: "object" });
-const unusedSchema = await encodeSchema({ type: "integer" });
+const definition = {
+  name: "Builder",
+  description: "",
+  entry: {
+    path: "data.json",
+    schema: { type: "object" },
+    contentType: "application/json",
+    defaultValue: {},
+  },
+};
+const schema = await encodeSchema(definition);
 const controls = new Map([
-  [
-    ".bundle.yaml",
-    canonicalJson({
-      entry: {
-        path: "data.json",
-        schemaCid: schema.cid.toString(),
-        contentType: "application/json",
-      },
-    }),
-  ],
+  [".bundle.yaml", canonicalJson(definition)],
   ["data.json", text("{}")],
 ]);
-const options: BundleCarOptions = { schemaBlocks: [schema] };
+const options: BundleCarOptions = {};
 async function consume(
   stream: ReadableStream<Uint8Array>,
 ): Promise<Uint8Array> {
@@ -99,9 +100,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     await first.close();
     const second = await encodeBundleCar(
       memoryTree(new Map([...controls].reverse())),
-      {
-        schemaBlocks: [unusedSchema, schema, schema],
-      },
+      options,
     );
     expect(second.cid.equals(root)).toBe(true);
     expect(await consume(second.stream)).toEqual(bytes);
@@ -120,7 +119,6 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         .sort(),
     );
     expect(decoded.blocks.get(schema.cid.toString())).toEqual(schema.bytes);
-    expect(decoded.blocks.has(unusedSchema.cid.toString())).toBe(false);
     expect((await openBundle(root, decoded)).schemaKey).toBe(
       schema.cid.toString(),
     );
@@ -130,10 +128,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         .Links.every((link) => link.Hash.code !== 0x71),
     ).toBe(true);
     expect(root.toString()).toBe(
-      "bafybeifwcpa4ny2o4hulh3fn3mx2mddqmlhw3r3uox5qrt4u43km46ibqq",
+      "bafybeifyrqxyanduvnsl7zthvpqdm7lbfb236wc2p4blopvejhi4ud7rom",
     );
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(
-      "d4aa07f4967308f88ab9279faad646a1c897712df17a8a4a99e59c70279b94de",
+      "95bd6412a18df5bd3d6fc9ac18a0e0c3657a33be4b39a2c2d8fdd593affc4757",
     );
   });
   it("fixes 256KiB raw leaves and 174-child balanced layout", async () => {
@@ -150,10 +148,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     const encoded = await encodeBundleCar(input, options);
     const archive = await consume(encoded.stream);
     expect(encoded.cid.toString()).toBe(
-      "bafybeihxl36ivzebj7uxufjokjamwrjk6ync5vllywjmlmyjk5ae46uvly",
+      "bafybeic4icjgtqe2oww5rfeqteiy47nju37hzm7nribtyatuhwehbxvffe",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "69038e965abeff4ec6fde13e655b05b6da2ca5ecb2b7940ed47a1051535a0b3d",
+      "6f5d62e9215676417c8cd1e999e4b65281194ac7bfb3f1818103dcad2e5c49ee",
     );
     const decoded = await decode(archive);
     const bundle = await openBundle(encoded.cid, decoded);
@@ -209,15 +207,15 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     );
     const archive = await consume(output.stream);
     expect(output.cid.toString()).toBe(
-      "bafybeigogk3lzouhepqd2ighuecqpkausmolad7oejusvtekqollmqqv34",
+      "bafybeigjmnh6eglsojqexzo2fc7ljetqjv4ec3xnfyxtrnyislnbbetrtm",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "da9f88acf8f875a314efc376d8e1d73253073b88a768900408a1a6eab55cf5df",
+      "ec8907af5c5ceeba9403880f03c3cde1b60d3b439831cee14a26cb08a5e1e222",
     );
   });
   it("does not normalize manifest or attachment bytes", async () => {
     const manifest = text(
-      `entry:\r\n  path: data.json\r\n  schemaCid: ${schema.cid.toString()}\r\n  contentType: application/json\r\n`,
+      "name: Builder\r\nentry:\r\n  path: data.json\r\n  schema:\r\n    type: object\r\n  contentType: application/json\r\n  defaultValue: {}\r\n",
     );
     const encoded = await encodeBundleCar(
       memoryTree(
@@ -316,18 +314,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       ),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
   });
-  it("requires the exact schema block and rejects corrupted bytes rather than trusting supplied metadata", async () => {
-    await expect(encodeBundleCar(memoryTree(controls))).rejects.toMatchObject({
-      code: "CONTENT_UNAVAILABLE",
-    });
-    await expect(
-      encodeBundleCar(memoryTree(controls), { schemaBlocks: [unusedSchema] }),
-    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        schemaBlocks: [{ ...schema, bytes: Uint8Array.of(255) }],
-      }),
-    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
+  it("constructs the schema block from the definition and rejects invalid inputs", async () => {
+    const encoded = await encodeBundleCar(memoryTree(controls));
+    expect(encoded.schema.cid.equals(schema.cid)).toBe(true);
+    await encoded.close();
     await expect(encodeBundleCar(memoryTree(new Map()))).rejects.toMatchObject({
       code: "MANIFEST_INVALID",
     });
@@ -341,8 +331,63 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       }),
     ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
   });
+  it("encodes exactly one complete type block as a standalone CAR with bounded/cancellable output", async () => {
+    const encoded = await encodeSchemaCar(definition);
+    const source = await decode(await consume(encoded.stream));
+    expect(encoded.cid.equals(source.root)).toBe(true);
+    expect(source.root.equals(schema.cid)).toBe(true);
+    expect(source.order).toHaveLength(1);
+    expect(source.blocks.get(schema.cid.toString())).toEqual(schema.bytes);
+    expect(encoded.retainedBytes).toBe(0);
+    await encoded.close();
+    for (const limits of [{ nodes: 1 }, { bytes: 1 }])
+      await expect(
+        encodeSchemaCar(definition, { limits }),
+      ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    const abort = new AbortController();
+    const cancelled = await encodeSchemaCar(definition, {
+      signal: abort.signal,
+    });
+    abort.abort(new Error("cancelled"));
+    await expect(consume(cancelled.stream)).rejects.toThrow("cancelled");
+    expect(cancelled.retainedBytes).toBe(0);
+    await expect(
+      encodeSchemaCar(definition, { signal: abort.signal }),
+    ).rejects.toThrow("cancelled");
+    const unused = await encodeSchemaCar(definition);
+    await unused.stream.cancel();
+    expect(unused.retainedBytes).toBe(0);
+    const closed = await encodeSchemaCar(definition);
+    await closed.close();
+    await expect(consume(closed.stream)).rejects.toMatchObject({
+      code: "ABORTED",
+    });
+  });
 });
 describe("repeatable VFS and explicit local adapter", () => {
+  it("excludes directories before visiting their symlinks while retaining selected files", async () => {
+    const root = await directory();
+    await mkdir(join(root, "ignored"));
+    await mkdir(join(root, "selected"));
+    await writeFile(join(root, "selected", "file"), "keep");
+    await writeFile(join(root, "selected", "drop"), "exclude");
+    await symlink(
+      join(root, "selected"),
+      join(root, "ignored", "linked"),
+      "junction",
+    );
+    const tree = await filesystemTree(root, {
+      exclude: (path, directory) =>
+        (path === "ignored" && directory) || path === "selected/drop",
+    });
+    expect(await listTree(tree, "")).toEqual([
+      { name: "selected", kind: "directory" },
+    ]);
+    expect(await listTree(tree, "selected")).toEqual([
+      { name: "file", kind: "file" },
+    ]);
+    expect(await readBytes(tree, "selected/file", 100)).toEqual(text("keep"));
+  });
   it("owns memory bytes, returns fresh streams and safely lists nested trees", async () => {
     const owned = Uint8Array.of(1, 2);
     const tree = memoryTree(

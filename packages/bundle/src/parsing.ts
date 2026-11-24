@@ -1,5 +1,4 @@
 import { isMap, isSeq, parseAllDocuments } from "yaml";
-import { CID } from "multiformats/cid";
 import { ContentBundleError } from "./errors.js";
 import type { BundleManifest, ContentType } from "./types.js";
 
@@ -268,52 +267,79 @@ export function parseData(
   }
 }
 
+export function normalizeBundleManifest(value: unknown): BundleManifest {
+  if (
+    !record(value) ||
+    Object.keys(value).some(
+      (key) => !["name", "description", "entry"].includes(key),
+    ) ||
+    typeof value.name !== "string" ||
+    !value.name.trim() ||
+    (value.description !== undefined &&
+      typeof value.description !== "string") ||
+    !record(value.entry) ||
+    Object.keys(value.entry).some(
+      (key) => !["path", "schema", "contentType", "defaultValue"].includes(key),
+    )
+  )
+    throw new Error(
+      "Expected name, optional description and a complete entry definition.",
+    );
+  const { path, schema, contentType, defaultValue } = value.entry;
+  if (
+    typeof path !== "string" ||
+    (typeof schema !== "boolean" && !record(schema)) ||
+    !Object.hasOwn(value.entry, "defaultValue")
+  )
+    throw new Error(
+      "Entry requires path, schema, contentType and defaultValue.",
+    );
+  safePath(path);
+  if (
+    [".bundle.yaml", ".bundle-ignore"].some(
+      (control) => path === control || path.startsWith(`${control}/`),
+    )
+  )
+    throw new Error("Entry path conflicts with a bundle control file.");
+  if (
+    contentType !== "application/json" &&
+    contentType !== "application/yaml" &&
+    contentType !== "application/jsonl"
+  )
+    throw new Error("Unsupported content type.");
+  if (contentType === "application/jsonl" && !Array.isArray(defaultValue))
+    throw new Error("JSONL defaultValue must be an array.");
+  return Object.freeze({
+    name: value.name,
+    description: value.description ?? "",
+    entry: Object.freeze({
+      path,
+      schema,
+      contentType,
+      defaultValue,
+    } satisfies BundleManifest["entry"]),
+  });
+}
+
 export function parseBundleManifest(
   bytes: Uint8Array,
-  maximum = 64 * 1024,
+  maximum = 64 * 1024 * 1024,
   charge: () => void = () => {},
 ): BundleManifest {
   if (bytes.byteLength > maximum)
     throw new ContentBundleError(
       "LIMIT_EXCEEDED",
-      "Bundle manifest exceeds 64 KiB.",
+      "Bundle manifest exceeds its parsing byte limit.",
     );
   try {
     const value = parseData(bytes, "application/yaml", 100_000, 64, charge);
-    if (
-      !record(value) ||
-      Object.keys(value).some((key) => key !== "entry") ||
-      !record(value.entry) ||
-      Object.keys(value.entry).some(
-        (key) => !["path", "schemaCid", "contentType"].includes(key),
-      )
-    )
-      throw new Error("Expected only an entry descriptor.");
-    const { path, schemaCid, contentType } = value.entry;
-    if (typeof path !== "string" || typeof schemaCid !== "string")
-      throw new Error("Invalid entry fields.");
-    const cid = CID.parse(schemaCid);
-    if (cid.version !== 1 || cid.code !== 0x71 || cid.multihash.code !== 0x12)
-      throw new Error("Schema must be a CIDv1 DAG-CBOR SHA-256 block.");
-    if (
-      contentType !== "application/json" &&
-      contentType !== "application/yaml" &&
-      contentType !== "application/jsonl"
-    )
-      throw new Error("Unsupported content type.");
-    return Object.freeze({
-      entry: Object.freeze({
-        path: safePath(path),
-        schemaCid: cid.toString(),
-        contentType,
-      }),
-    });
+    return normalizeBundleManifest(value);
   } catch (cause) {
     if (cause instanceof ContentBundleError && cause.code === "LIMIT_EXCEEDED")
       throw cause;
     throw new ContentBundleError(
       "MANIFEST_INVALID",
-      "Invalid .bundle.yaml.",
+      `Invalid .bundle.yaml: ${cause instanceof Error ? cause.message : "invalid data"}`,
       ".bundle.yaml",
       "",
       [],

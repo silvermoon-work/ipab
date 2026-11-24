@@ -3,7 +3,12 @@ import type { UnixfsNode } from "@ipab/ipfs-store";
 import { CID } from "multiformats/cid";
 import { ContentBundleError } from "./errors.js";
 import { parseBundleManifest, parseData, safePath } from "./parsing.js";
-import { decodeSchema, schemaBlockBytes, validateValue } from "./schema.js";
+import {
+  decodeSchema,
+  encodeSchema,
+  schemaBlockBytes,
+  validateValue,
+} from "./schema.js";
 import type {
   BundleLimits,
   ContentBundle,
@@ -20,7 +25,7 @@ export const bundleLimits: Readonly<BundleLimits> = Object.freeze({
   depth: 64,
   jsonDepth: 64,
   validationDepth: 64,
-  manifestBytes: 64 * 1024,
+  manifestBytes: 64 * 1024 * 1024,
   schemaBytes: schemaBlockBytes,
   documentBytes: 8 * 1024 * 1024,
   nodes: 100_000,
@@ -321,31 +326,18 @@ async function operation(
       limits.manifestBytes,
       charge,
     );
-    const schemaCid = CID.parse(manifest.entry.schemaCid);
-    if (expected && !schemaCid.equals(expected.cid))
+    const schema = await encodeSchema(manifest, {
+      nodes: limits.nodes,
+      depth: limits.validationDepth,
+      jsonDepth: limits.jsonDepth,
+      schemaBytes: limits.schemaBytes,
+      charge,
+    });
+    if (expected && !schema.cid.equals(expected.cid))
       throw new ContentBundleError(
         "SCHEMA_INVALID",
         "Schema CID differs from the explicit validator.",
       );
-    let schema: SchemaBlock;
-    try {
-      const bytes = await store.block.get(schemaCid.toString(), request);
-      parsed += bytes.byteLength;
-      if (parsed > limits.parsingBytes)
-        throw new ContentBundleError(
-          "LIMIT_EXCEEDED",
-          "Parsing byte budget exceeded.",
-        );
-      schema = await decodeSchema(schemaCid, bytes, {
-        nodes: limits.nodes,
-        depth: limits.validationDepth,
-        jsonDepth: limits.jsonDepth,
-        schemaBytes: limits.schemaBytes,
-        charge,
-      });
-    } catch (cause) {
-      throw contextual(cause, schemaCid.toString(), "", [], options.signal);
-    }
     const path = manifest.entry.path;
     try {
       const value = parseData(
@@ -365,7 +357,7 @@ async function operation(
         return CID.decode(Uint8Array.from(cid.bytes));
       },
       manifest,
-      schemaKey: schemaCid.toString(),
+      schemaKey: schema.cid.toString(),
       schema,
       readFile: reader(cid, files, options, limits),
     });

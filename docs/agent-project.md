@@ -42,14 +42,37 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   根 `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
 - 运行时／CLI 边界、准确 App Schema 和保留策略见 docs/design-overview.md
   与 README.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon GC。
-- 当前 Bundle 协议见 packages/bundle/README.md：单个自包含 JSON Schema 直接
-  编码为 CIDv1/DAG-CBOR/SHA-256 block；编码后最多 1 MiB，超限不分块。
-  manifest 使用 entry.schemaCid，$defs 和本地 JSON Pointer $ref 在单文档内封闭。
+- 当前 Bundle 协议见 packages/bundle/README.md：.bundle.yaml 本身是完整类型定义，
+  包含必填 name、缺省为空的 description，以及 entry 的 path/schema/contentType/
+  defaultValue；默认数据须符合入口 Schema，固定路径不得碰撞控制文件。
+  完整归一化定义编码为 CIDv1/DAG-CBOR/SHA-256 block，最多 1 MiB，不分块。
+  $defs 和本地 JSON Pointer $ref 在 entry.schema 文档内封闭。
   Schema 只约束入口数据，不约束其他资源；不支持 x-content-ref 或递归内容
   依赖校验，业务依赖交给 App。全部资源仍须通过存储完整性与路径检查。
-  Builder 固定 UnixFS/CAR 参数，并将准确 Schema block 纳入 CAR，不 graft 目录。
-  manifest 的 CID 字符串不是 IPLD link，保留 Bundle 根时还须单独保留 Schema
-  CID。
+  Builder 固定 UnixFS/CAR 参数，直接从定义计算类型 block 并纳入内容 CAR；
+  不 graft 目录、不读取外部 Schema，保留内容根即可再生类型 block。
+  CLI bundle init/build/inspect 支持本地定义、单根 CAR 和 CID；build
+  --schema-only
+  生成单 block 类型 CAR。两种构建共用 bundle.outputDir，默认根 dist；
+  .bundle-ignore 使用 gitignore 风格且自身不打包，初始化写入 /dist/。
+  本次输出与活跃默认输出目录不能成为输入，忽略定义/入口须失败；
+  只清理自身临时文件，产物替换须 --replace，不覆盖源码或非普通文件。
+- App-first 根 init NAME [DIR] 创建普通 private TypeScript npm package；
+  根 build [DIR] 严格执行项目本地 tsc、esbuild self-contained Node CJS、
+  新建自有 staging、再调用内部通用 Bundle Builder 输出默认 dist/app.car。
+  ipab.json 仅声明 src/ 下的 .ts 入口、明确 assets/ 非隐藏资源文件和 app 元数据覆盖；
+  入口必须被 tsconfig 实际检查。只允许 Node builtin 外置，不安装依赖或执行 npm
+  hooks／JS 配置／App，不上传或 pin。CLI private，生成项目不得声明虚构 registry
+  @ipab/cli 版本；使用本地链接命令。输出限项目 dist/ 内或项目外，不穿过符号链接。
+  builtin:node-app.v1 离线解析完整 appSchema；register
+  set/remove 可接受此 alias，
+  持久化准确 CID，不能用作任意 App 执行目标。App 定义集中在 app-definition.ts，
+  name/version/entry 必填，description 默认空，author/license/icon/i18n 可选；
+  profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
+  SemVer／Intl locale tag／非空白／icon 存在检查在 App 专用层，license 只声明，
+  不提供 DRM 或控制读写执行。准确新 CID 和有意迁移说明见 README.md。
+  下层 bundle init/build/inspect 永不编译；失败只清理本次 staging／临时 CAR，
+  不打包或删除旧 staging。完整公共接口与资源路径见 README.md。
 
 ## Direct scripts and standard boundary
 

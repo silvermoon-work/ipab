@@ -61,7 +61,7 @@ describe("real UnixFS and Node subprocess runtime", () => {
     expect(encoded.cid.equals(appSchemaCid)).toBe(true);
   });
 
-  it("retains the standalone schema block independently of the content directory root", async () => {
+  it("derives the complete type from the retained directory without fetching an external schema", async () => {
     const input = await content(work.store);
     const owner = await Ownership.create(
       state,
@@ -71,13 +71,9 @@ describe("real UnixFS and Node subprocess runtime", () => {
     );
     try {
       const bundle = await validatedBundle(input.root, work.store, owner);
-      expect(bundle.manifest.entry.schemaCid).toBe(input.schema);
-      expect(state.hold(owner.owner)?.roots).toEqual(
-        expect.arrayContaining([input.root, input.schema]),
-      );
-      expect(await work.store.block.get(input.schema)).toEqual(
-        bundle.schema.bytes,
-      );
+      expect(bundle.schemaKey).toBe(input.schema);
+      expect(state.hold(owner.owner)?.roots).toContain(input.root);
+      expect(state.hold(owner.owner)?.roots).not.toContain(input.schema);
     } finally {
       await owner.release();
     }
@@ -171,8 +167,9 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
           ),
         ) as unknown,
       ).toEqual({
-        profile: "ipab.node.v1",
-        runtime: "node",
+        name: "Fixture App",
+        version: "0.0.0",
+        description: "",
         entry: "resources/app.cjs",
       });
     const badApp = await app(
@@ -264,19 +261,11 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
   it.each(["other/app.cjs", "resources/app.js"])(
     "enforces Node entry paths outside the structural schema: %s",
     async (entry) => {
-      const schema = await encodeSchema(appSchema);
-      await work.store.put(schema.cid, schema.bytes);
       const root = await importFiles(work.store, {
-        ".bundle.yaml": JSON.stringify({
-          entry: {
-            path: "app.json",
-            schemaCid: schema.cid.toString(),
-            contentType: "application/json",
-          },
-        }),
+        ".bundle.yaml": JSON.stringify(appSchema),
         "app.json": JSON.stringify({
-          profile: "ipab.node.v1",
-          runtime: "node",
+          name: "Fixture App",
+          version: "0.0.0",
           entry,
         }),
         [entry]: "throw new Error('must not execute');",
@@ -296,7 +285,87 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       }
     },
   );
-
+  it("validates concrete App metadata without changing type identity or enforcing licenses", async () => {
+    const metadata = {
+      name: "Reader",
+      version: "1.2.3-rc.0+build.1",
+      description: "Base description",
+      entry: "resources/app.cjs",
+      author: { name: "Author", email: "author@example.com" },
+      license: "Proprietary; declarative only",
+      icon: "resources/icon.svg",
+      i18n: {
+        "zh-CN": { name: "阅读器" },
+        en: { description: "English description" },
+      },
+    };
+    const files = {
+      ".bundle.yaml": JSON.stringify(appSchema),
+      "resources/app.cjs": 'process.stdout.write("licensed app still runs");',
+      "resources/icon.svg": "<svg/>",
+    };
+    const root = await importFiles(work.store, {
+      ...files,
+      "app.json": JSON.stringify(metadata),
+    });
+    const other = await importFiles(work.store, {
+      ...files,
+      "app.json": JSON.stringify({
+        ...metadata,
+        name: "Another App",
+        version: "2.0.0",
+      }),
+    });
+    expect(other).not.toBe(root);
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "metadata-validation",
+      null,
+    );
+    try {
+      for (const cid of [root, other]) {
+        expect((await validatedBundle(cid, work.store, owner)).schemaKey).toBe(
+          appSchemaCid.toString(),
+        );
+        expect((await loadApp(cid, work.store, owner)).path).toBe(
+          "resources/app.cjs",
+        );
+      }
+      for (const overrides of [
+        { name: "  " },
+        { version: "01.2.3" },
+        { version: "1.2.3-01" },
+        { version: "1.2.3+bad..id" },
+        { author: { name: "" } },
+        { author: { name: "A", email: "not-an-email" } },
+        { license: "" },
+        { icon: "../icon.svg" },
+        { icon: "app.json" },
+        { icon: "resources/missing.svg" },
+        { i18n: { not_a_tag: { name: "Name" } } },
+        { i18n: { en: { name: "" } } },
+        { i18n: { en: { icon: "x" } } },
+        { i18n: { en: { description: 1 } } },
+        { i18n: { "en-US": {}, "en-us": {} } },
+        { profile: "ipab.node.v1", runtime: "node" },
+      ]) {
+        const invalid = await importFiles(work.store, {
+          ...files,
+          "app.json": JSON.stringify({ ...metadata, ...overrides }),
+        });
+        await expect(loadApp(invalid, work.store, owner)).rejects.toThrow();
+      }
+    } finally {
+      await owner.release();
+    }
+    const run = await subprocess(
+      ["--state-dir", work.stateDir, "exec", root],
+      config,
+    );
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout.toString()).toBe("licensed app still runs");
+  }, 30000);
   it("empty success finalizes an empty UnixFS directory; failed app preserves its exit without partial output", async () => {
     const empty = await app(work.store, "process.stdout.write('plain');");
     const good = await subprocess(

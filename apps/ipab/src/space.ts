@@ -5,23 +5,10 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import type { IpfsStore } from "@ipab/ipfs-store";
 import { openBundle, type ContentBundle } from "@ipab/bundle";
-import { HostError, message, object } from "./errors.js";
+import { HostError, message } from "./errors.js";
 import type { Ownership } from "./history.js";
-
-export const appSchema = {
-  $id: "urn:ipab:node-app.v1",
-  type: "object",
-  additionalProperties: false,
-  required: ["profile", "runtime", "entry"],
-  properties: {
-    profile: { const: "ipab.node.v1" },
-    runtime: { const: "node" },
-    entry: { type: "string" },
-  },
-} as const;
-export const appSchemaCid = CID.parse(
-  "bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm",
-);
+import { appDescription, appSchemaCid } from "./app-definition.js";
+export { appSchema, appSchemaCid } from "./app-definition.js";
 export const CHUNK_BYTES = 64 * 1024;
 export const OUTPUT_BYTES = 64 * 1024 * 1024;
 export const MAX_PATHS = 4096;
@@ -117,12 +104,12 @@ export async function loadApp(
     bundle.manifest.entry.contentType !== "application/json"
   )
     throw new HostError(
-      "App must be an ipab.node.v1 executable Content Bundle using the documented App Schema CID.",
+      "App must use the documented exact builtin Node App type CID.",
       1,
       "APP_PROFILE_INVALID",
       "validation",
     );
-  const description = object(
+  const description = appDescription(
     JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
         await bytes(
@@ -131,19 +118,16 @@ export async function loadApp(
         ),
       ),
     ) as unknown,
-    "App description",
   );
-  if (
-    description.profile !== "ipab.node.v1" ||
-    description.runtime !== "node" ||
-    typeof description.entry !== "string"
-  )
-    throw new HostError(
-      "Invalid Node App description.",
-      1,
-      "APP_PROFILE_INVALID",
-      "validation",
-    );
+  if (description.icon !== undefined) {
+    const icon = relativePath(description.icon);
+    if (!icon.startsWith("resources/"))
+      throw new HostError(
+        "App icon must be a Bundle-root-relative resources/ file.",
+      );
+    const stream = await bundle.readFile(icon);
+    await stream.cancel();
+  }
   const path = relativePath(description.entry);
   if (!path.startsWith("resources/") || !path.endsWith(".cjs"))
     throw new HostError(

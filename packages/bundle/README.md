@@ -1,143 +1,147 @@
 # Bundle runtime
 
-`@ipab/bundle` is the private runtime for immutable UnixFS Content Bundles and
-self-contained, single-block schemas. Callers own the block resolver/Store.
-There is no upload, pinning, network schema resolution or Schema Bundle profile.
+`@ipab/bundle` validates immutable UnixFS Content Bundles and their complete
+single-block type definitions. Callers own the block resolver/Store. There is no
+upload, pinning, network schema resolution or Schema Bundle directory.
 
-## Manifest
+## One definition
 
-`.bundle.yaml` is UTF-8 single-document YAML (JSON-style YAML is legal), with
-exactly these three entry fields:
+The root `.bundle.yaml` is the Bundle type definition, not a pointer to an
+external Schema. JSON-style YAML is legal:
 
 ```yaml
+name: Note
+description: ""
 entry:
-  path: data/events.jsonl
-  contentType: application/jsonl
-  schemaCid: "<CIDv1 DAG-CBOR SHA-256 schema block>"
+  path: data.json
+  schema:
+    type: object
+    required: [title]
+    properties:
+      title:
+        type: string
+  contentType: application/json
+  defaultValue:
+    title: Untitled
 ```
 
-`path` identifies an existing safe relative file. `schemaCid` identifies one
-schema block, not a UnixFS file/directory, external URI or builtin profile. The
-exact block CID is the Schema-to-App registration key.
+`name` is a required nonblank string. `description` is an optional string;
+missing descriptions normalize to `""`, while null is rejected. `entry` and all
+its four fields are required; other fields are rejected.
 
-JSON and YAML decode to one JSON-compatible value; JSONL decodes the complete
-ordered array, including an empty file as `[]`. CRLF and terminal newlines are
-accepted; blank internal lines are not. Duplicate keys, invalid
+- `path` is a safe relative file path from the Bundle root, not a mutable
+  initialization suggestion. It cannot collide with `.bundle.yaml` or
+  `.bundle-ignore` control paths.
+- `schema` is the self-contained structural JSON Schema for entry data only.
+- `contentType` is exactly `application/json`, `application/yaml` or
+  `application/jsonl`.
+- `defaultValue` is logical JSON-compatible initialization data, not file text.
+  It must satisfy `schema`; JSONL requires an array.
+
+The complete normalized definition is directly encoded as canonical DAG-CBOR
+with a CIDv1/DAG-CBOR/SHA-256 identity. That CID is the Schema-to-App
+registration key. The block contains the definition object, not a JSON string or
+UnixFS wrapper. `encodeSchema` now takes this complete definition, not a bare
+JSON Schema. `openSchema` requires the same complete profile.
+
+**The encoded type block must be at most 1 MiB (1,048,576 bytes), inclusive.**
+This is a project protocol ceiling, not a universal IPFS backend claim. There is
+no chunking fallback. `schemaBytes` can lower but cannot bypass the ceiling.
+Source definition text is bounded by operation parsing/manifest budgets, not the
+obsolete 64 KiB pointer-manifest limit.
+
+Name, description, schema, fixed path/format and default data all affect type
+identity. Omitted/empty descriptions, object field order, YAML comments and
+source formatting do not. Actual entry data is not part of this type CID. The
+UnixFS root still includes original `.bundle.yaml` bytes, so editing
+comments/formatting can change the content root while preserving type identity.
+
+## Entry validation and opaque resources
+
+JSON/YAML decode to one JSON-compatible value. JSONL decodes the complete
+ordered array, including an empty file as `[]`; CRLF and terminal newlines are
+accepted, blank internal lines are not. Duplicate keys, invalid
 UTF-8/surrogates, nonfinite numbers and unsafe integers are rejected. Files are
-never changed by the loader. Only entry data is parsed and validated against the
-schema. Other resources and nested Bundles remain opaque, but their paths and
-complete underlying storage DAG are verified.
+not rewritten.
 
-## Single-block schema
+The loader verifies the complete selected storage DAG and paths, parses the
+definition, validates default data and validates the actual entry. Resources and
+nested Bundles remain opaque: no business parsing or recursive contracts.
+Strings do not trigger reads; reference interpretation belongs to the App.
 
-Author one self-contained JSON Schema object (or boolean schema). `encodeSchema`
-validates the structural profile and encodes the JSON value directly as
-canonical DAG-CBOR, then computes a CIDv1/DAG-CBOR/SHA-256 identity. The block
-contains the schema itself, not a JSON string, UTF-8 file wrapper, descriptor or
-UnixFS DAG. Object field order and source formatting do not affect identity.
-Array order, annotations and values do. No conversion rewrites the entry data.
+Type identity is reproducible from the retained `.bundle.yaml`; opening a
+content root never requests an external Schema block. A separately distributed
+type CID still requires its block to be available when explicitly loaded by CID.
 
-**Encoded schema blocks must be at most 1 MiB (1,048,576 bytes).** The inclusive
-limit is checked after DAG-CBOR encoding and before accepting loaded schemas. It
-is a project protocol limit, not a claim about every IPFS backend. There is no
-chunking or multi-block fallback. `schemaBytes` can lower the limit; increasing
-it cannot bypass this hard ceiling. Store/operation byte limits may be stricter.
+## Structural dialect
 
-The minimal structural dialect supports:
+This is a minimal structural profile, not full JSON Schema 2020-12:
 
 - single-name `type`: null, boolean, string, number, integer, object, array;
 - `enum`, `const`, `properties`, unique `required`, `additionalProperties`
-  (boolean or schema, default true);
-- homogeneous `items` (boolean or schema, default unconstrained);
-- `anyOf`: at least one matching structural branch;
-- `title`, `description`, an optional absolute root `$id`;
-- `$defs` and local JSON Pointer `$ref`, including `#` for the root.
+  (boolean/schema, default true);
+- homogeneous `items` (boolean/schema, default unconstrained);
+- `anyOf` with at least one matching structural branch;
+- `title`, `description`, optional absolute root `$id`;
+- `$defs` and local JSON Pointer `$ref`, including `#`.
 
-```json
-{
-  "type": "array",
-  "$defs": {
-    "event": {
-      "type": "object",
-      "required": ["name"],
-      "properties": { "name": { "type": "string" } }
-    }
-  },
-  "items": { "$ref": "#/$defs/event" }
-}
-```
-
-References must identify actual schema nodes in the same document. Pointer
-tokens use `~0`/`~1` escaping; URI percent encoding, anchors, external/relative
+References identify actual schema nodes in the same entry schema document.
+Tokens use `~0`/`~1`; percent-encoded references, anchors, external/relative
 references and nested `$id` are not supported. All definitions, including unused
-ones, are checked. Productive recursive types may descend through data children;
-same-data `$ref`/anyOf cycles are rejected.
+ones, are checked. Productive data recursion is allowed; same-data
+reference/anyOf cycles are rejected.
 
-This is a minimal structural profile, not full JSON Schema 2020-12 support.
 Unknown keywords are rejected, including `$schema`, pattern, scalar constraints,
 tuples, oneOf/allOf, examples/default and `x-content-ref`. Property names and
 enum/const data are not schema nodes. CBOR byte strings and IPLD links are not
-JSON schema values; schemas cannot hide external block dependencies.
-
-## Entry-only contract and retention
-
-Schemas describe entry types, not the whole resource tree. `$ref` only reuses
-local schema definitions; strings never trigger resource reads or child Bundle
-validation. Applications define dependency formats and reference syntax, and
-read and validate resources themselves.
-
-The manifest contains a CID **string**, not an IPLD link. Retaining the UnixFS
-root alone therefore does not retain the schema block. Callers must also retain
-the schema CID; the CLI's operation owner retains every requested block. The
-Bundle builder includes the exact schema block as an additional CAR block,
-without adding it to the UnixFS tree or changing its CID.
+JSON-compatible type-definition data.
 
 ## API
 
 ```ts
-import { encodeSchema, openBundle } from "@ipab/bundle";
+import { encodeSchema, openBundle, parseBundleManifest } from "@ipab/bundle";
 
-const schema = await encodeSchema({ type: "object" });
-// Explicitly store/retain schema.cid and schema.bytes through the caller's Store.
+const definition = parseBundleManifest(sourceYamlBytes);
+const type = await encodeSchema(definition);
 const bundle = await openBundle(rootCid, {
   resolveCid: (cid, request) => store.block.get(cid.toString(), request),
 });
 const stream = await bundle.readFile(bundle.manifest.entry.path);
 ```
 
-- `encodeSchema(value, options?)`: validate and return a `SchemaBlock` with
-  `cid`, canonical `bytes`, `schema` and local-pointer `definitions`.
-- `openSchema(cid, options)`: load, verify CID/hash, limits, canonical encoding
-  and the complete structural profile of one schema block.
-- `inspectSchema(value, options?)`: pure structural/closed-reference check.
-- `openBundle(root, options)`: verify storage, paths, manifest, schema block and
-  entry before success. Returns `kind: "content"`, `schemaKey`, `schema`,
-  `manifest`, `cid` and `readFile`; no dependency business validation.
-- `validateContentBundle(root, schemaBlock, options)`: also require the
-  manifest's CID to match the explicit validator; always load and verify the
-  actual block.
-- `canonicalJson`, `parseData`, `parseBundleManifest`, `safePath`,
-  `bundleLimits`, `resolveBundleLimits`, `schemaBlockBytes`.
+- `parseBundleManifest(bytes, maximum?, charge?)`: parse/normalize the complete
+  YAML definition and check its shape. Full schema/default checking happens
+  through `inspectBundleSchema`/`encodeSchema`/opening.
+- `inspectBundleSchema(value, options?)`: check complete definition, all schema
+  references and default data.
+- `encodeSchema(value, options?)`: return `SchemaBlock` with exact `cid`,
+  canonical `bytes`, normalized `manifest`, entry `schema` and pointer index.
+- `openSchema(cid, options)`: verify hash, codec, budgets, canonical normalized
+  encoding and the complete profile of one type block.
+- `inspectSchema(value, options?)`: pure low-level entry-schema dialect check;
+  it does not encode or publish a standalone type.
+- `openBundle(root, options)`: verify storage, definition, defaults and entry;
+  return `kind: "content"`, `manifest`, `schemaKey`, `schema`, `cid`,
+  `readFile`.
+- `validateContentBundle(root, schemaBlock, options)`: also require the derived
+  type CID to match the explicit validator; never trust its mutable metadata.
+- `canonicalJson`, `parseData`, `safePath`, `bundleLimits`,
+  `resolveBundleLimits`, `schemaBlockBytes`.
 
-`readFile` returns original bytes with backpressure/cancellation. The opening
-signal does not bind future streams; reads have their own signal. There is no
-bundle `close`, implicit permanent cache or resolver/Store ownership transfer.
-Missing blocks after opening still make later reads fail.
+Future `readFile` streams have independent signals, unchanged bytes and
+backpressure/cancellation. Missing blocks still fail after opening. No permanent
+cache, bundle `close`, or resolver ownership transfer is implied.
 
-Errors preserve `code`, `path`, JSON Pointer `pointer`, `referenceChain`,
-`cause`: MANIFEST_INVALID, SCHEMA_INVALID, REFERENCE_INVALID, PATH_INVALID,
-CONTENT_INVALID, CONTENT_UNAVAILABLE, LIMIT_EXCEEDED, OPTIONS_INVALID, ABORTED.
-
-Defaults apply to the whole operation: 64 MiB unique blocks, 16,384 blocks, 2
-MiB/block; 64 MiB parsing; 64 KiB manifest; 1 MiB/schema block; 8 MiB/data file;
-2,048 files and 100,000 work nodes. Tree, JSON and validation depths are
-independently 64. Overrides must be known positive safe integers.
+Defaults: whole-operation 64 MiB unique blocks/parsing, 16,384 blocks, 2
+MiB/block, 2,048 files, 100,000 work nodes; JSON/tree/validation depths 64; 8
+MiB/entry file. The type block ceiling is 1 MiB. Overrides must be known
+positive safe integers. Errors preserve code, path, pointer, reference chain and
+cause.
 
 ## Breaking change
 
-`entry.schema: /schema`, the builtin key, Schema Bundle descriptors/full-ID
-indexes, `openSchemaBundle`, `inspectSchemaBundle`, `embeddedSchemas`, the
-`schemas`/`descriptorBytes` budgets and the dedicated Schema Bundle builder
-workspace have been removed. Rebuild schemas as single blocks, update manifests
-and re-register their new CIDs. No automatic registration migration is provided.
-`x-content-ref` and recursive business dependency validation remain removed.
+The old `{ entry: { path, schemaCid, contentType } }` pointer manifest and bare
+Schema block profile are removed. Update definitions, rebuild Content/App
+Bundles, and register their new type CIDs. There is no automatic migration.
+Schema Bundle directories, builtin keys, the dedicated Schema Builder and
+`x-content-ref` remain removed.

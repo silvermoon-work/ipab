@@ -10,6 +10,7 @@ allowBuilds:
   esbuild: true
 
 catalog:
+  esbuild: 0.28.2
   "@ipld/dag-pb": 4.2.0
   "@helia/http": 3.0.4
   "@helia/unixfs": 8.0.9
@@ -27,6 +28,7 @@ catalog:
   ipfs-unixfs-importer: 17.1.1
   multiformats: 14.0.5
   string-width: 8.2.1
+  ignore: 7.0.16
   "@eslint/js": 10.0.1
   "@types/node": 26.6.6
   "@vitest/coverage-v8": 5.1.0

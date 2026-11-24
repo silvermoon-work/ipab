@@ -20,8 +20,10 @@ export function syntax(message: string): never {
 }
 
 export function message(error: unknown): string {
-  const text =
+  let text =
     error instanceof Error ? error.message : "Unknown operation failure.";
+  if (error instanceof ContentBundleError)
+    text += `${error.path ? ` [${error.path}]` : ""}${error.pointer ? ` at ${error.pointer}` : ""}`;
   return text.replace(/https?:\/\/[^\s"']+/g, (value) => {
     try {
       const url = new URL(value);
@@ -41,3 +43,4 @@ export function object(value: unknown, label: string): Record<string, unknown> {
     throw new HostError(`Invalid ${label}.`);
   return value as Record<string, unknown>;
 }
+import { ContentBundleError } from "@ipab/bundle";

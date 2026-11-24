@@ -11,7 +11,12 @@ export {
   canonicalJson,
   safePath,
 } from "./parsing.js";
-export { inspectSchema, encodeSchema, schemaBlockBytes } from "./schema.js";
+export {
+  inspectSchema,
+  inspectBundleSchema,
+  encodeSchema,
+  schemaBlockBytes,
+} from "./schema.js";
 export type { SchemaOptions } from "./schema.js";
 export { ContentBundleError } from "./errors.js";
 export type {

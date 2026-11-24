@@ -10,6 +10,7 @@ import { fixedSize } from "ipfs-unixfs-importer/chunker";
 import { balanced } from "ipfs-unixfs-importer/layout";
 import {
   ContentBundleError,
+  encodeSchema,
   openBundle,
   resolveBundleLimits,
 } from "@ipab/bundle";
@@ -19,10 +20,10 @@ import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 
 export interface BundleCarOptions extends ReadOptions {
   readonly limits?: Partial<BundleLimits>;
-  readonly schemaBlocks?: readonly SchemaBlock[];
 }
 export interface EncodedBundleCar {
   readonly cid: CID;
+  readonly schema: SchemaBlock;
   readonly stream: ReadableStream<Uint8Array>;
   readonly retainedBytes: number;
   close(): Promise<void>;
@@ -172,9 +173,8 @@ export async function encodeBundleCar(
         "MANIFEST_INVALID",
         "Bundle requires a nonempty file tree.",
       );
-    for (const schema of options.schemaBlocks ?? [])
-      await put(schema.cid, schema.bytes);
     const bundle = await openBundle(root, { resolveCid: get, signal, limits });
+    await put(bundle.schema.cid, bundle.schema.bytes);
     const reached = new Map<string, { cid: CID; bytes: Uint8Array }>();
     const reach = async (cid: CID, depth: number): Promise<void> => {
       const key = cid.toV1().toString();
@@ -253,6 +253,7 @@ export async function encodeBundleCar(
         return CID.decode(Uint8Array.from(rootBytes));
       },
       stream,
+      schema: bundle.schema,
       get retainedBytes() {
         return retained;
       },
@@ -262,4 +263,80 @@ export async function encodeBundleCar(
     close();
     throw cause;
   }
+}
+
+export async function encodeSchemaCar(
+  definition: unknown,
+  options: BundleCarOptions = {},
+): Promise<EncodedBundleCar> {
+  const limits = resolveBundleLimits(options.limits);
+  let nodes = 0;
+  const schema = await encodeSchema(definition, {
+    schemaBytes: limits.schemaBytes,
+    nodes: limits.nodes,
+    depth: limits.validationDepth,
+    jsonDepth: limits.jsonDepth,
+    charge() {
+      options.signal?.throwIfAborted();
+      if (++nodes > limits.nodes)
+        throw new ContentBundleError(
+          "LIMIT_EXCEEDED",
+          "Schema work budget exceeded.",
+        );
+    },
+  });
+  const block = { cid: schema.cid, bytes: schema.bytes };
+  if (
+    block.bytes.length >
+    Math.min(limits.blockBytes, limits.bytes, limits.parsingBytes)
+  )
+    throw new ContentBundleError(
+      "LIMIT_EXCEEDED",
+      "Schema CAR exceeds byte budget.",
+    );
+  const writer = createWriter(
+    new ArrayBuffer(headerLength({ roots: [block.cid] }) + blockLength(block)),
+    {
+      roots: [block.cid],
+    },
+  );
+  writer.write(block);
+  const lifetime = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, lifetime.signal])
+    : lifetime.signal;
+  let bytes = writer.close();
+  const release = () => {
+    bytes = new Uint8Array();
+    lifetime.abort(new ContentBundleError("ABORTED", "CAR output closed."));
+    return Promise.resolve();
+  };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          signal.throwIfAborted();
+          controller.enqueue(bytes);
+          await release();
+          controller.close();
+        } catch (cause) {
+          await release();
+          controller.error(cause);
+        }
+      },
+      cancel: release,
+    },
+    { highWaterMark: 0 },
+  );
+  return Object.freeze({
+    get cid() {
+      return schema.cid;
+    },
+    schema,
+    stream,
+    get retainedBytes() {
+      return bytes.length;
+    },
+    close: release,
+  });
 }

@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { randomUUID } from "node:crypto";
+import type { CID } from "multiformats/cid";
 import stringWidth from "string-width";
 import {
   configKey,
@@ -23,6 +24,9 @@ import {
 import { execute } from "./runtime.js";
 import { validatedBundle } from "./space.js";
 import { State, type RunRecord } from "./state.js";
+import { buildBundle, initBundle, inspectBundle } from "./authoring.js";
+import { buildApp, initApp } from "./app-authoring.js";
+import { schemaAlias } from "./app-definition.js";
 
 export interface IO {
   out(text: string): void;
@@ -57,6 +61,12 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
+  init: "init NAME [DIR]",
+  build: "build [DIR] [-o FILE | --output FILE] [--replace]",
+  "bundle init": "bundle init TYPE DIR",
+  "bundle build":
+    "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace]",
+  "bundle inspect": "bundle inspect SOURCE",
   exec: "exec APP [APP_ARGS...]",
   open: "open CONTENT",
   "alias list": "alias list",
@@ -78,20 +88,52 @@ export function help(path = ""): string {
   if (!path)
     return `IPAB — execute Apps and open content with an explicit IPFS context.
 Usage: ipab [--state-dir PATH] [--store-rpc URL] [--json] COMMAND
-Commands: exec, open, alias, register, config, history
-Examples: ipab exec APP --help
+Commands: init, build, bundle, exec, open, alias, register, config, history
+Examples: ipab init hello
+          ipab build hello
+          ipab exec APP --help
           ipab register set SCHEMA APP
           ipab --json history list
---json is management-only. --version prints the version.
+--json returns management/development metadata, never App stdio. --version prints the version.
 All nodes accept -h/--help. Global options precede COMMAND.
 See README.md and docs/design-overview.md. Node Apps are NOT sandboxed.`;
   const usage = commands[path];
+  if (path === "init" || path === "build")
+    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
+Examples: ipab init hello
+          ipab init hello .\\projects\\hello
+          ipab --json build hello --replace
+init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
+Install the generated package's dependencies explicitly; use a locally linked ipab.
+build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
+ipab.json selects src/main.ts and explicit assets/ files; default output is dist/app.car.
+--output FILE selects a .car destination; --replace replaces only a regular artifact.
+No npm hooks, installs, execution, uploads or pins. --json emits result metadata.
+Global flags precede COMMAND. Use -h/--help for help.`;
+  if (usage && path.startsWith("bundle ")) {
+    const examples =
+      path === "bundle init"
+        ? "ipab bundle init types\\dist\\schema.car note"
+        : path === "bundle build"
+          ? "ipab bundle build note\n         ipab bundle build types\\.bundle.yaml --schema-only"
+          : "ipab bundle inspect note\\dist\\bundle.car";
+    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
+Example: ${examples}
+Global flags precede COMMAND: --state-dir PATH, --store-rpc URL, --json.
+TYPE is a complete definition file, type CAR, exact type CID or builtin:node-app.v1; local sources need no Store.
+build --schema-only validates defaults and emits dist/schema.car; full build emits dist/bundle.car.
+--output FILE overrides the destination; --replace authorizes replacing an artifact, never source.
+init writes .bundle.yaml, .bundle-ignore (/dist/) and the default entry into a new/empty directory.
+inspect reads a folder, definition, CAR or CID; no App execution, uploads, imports or pins.
+Use -h/--help for help.`;
+  }
   if (usage)
     return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
 Example: ipab ${path === "exec" ? "exec APP --cid CID" : path === "open" ? "open CONTENT" : usage}
-Use -h/--help for help. Global flags: --state-dir PATH, --store-rpc URL, --json (management only).
+Use -h/--help for help. Global flags: --state-dir PATH, --store-rpc URL, --json (metadata only).
 exec: everything after APP is verbatim argv; stdio is inherited.
 history filters: AND, endedAt in [since,until), RFC3339 with timezone.
+register set/remove SCHEMA accepts builtin:node-app.v1 offline and stores its exact type CID.
 history remove: explicit IDs OR filters; non-TTY requires --yes; no GC guarantee.`;
   const leaves = Object.keys(commands).filter((key) =>
     key.startsWith(`${path} `),
@@ -317,15 +359,16 @@ export function parse(argv: readonly string[]): Parsed {
     result.positional = tokens;
     return result;
   }
-  if (group !== "open") {
-    if (!["alias", "register", "config", "history"].includes(group))
+  if (!["open", "init", "build"].includes(group)) {
+    if (!["bundle", "alias", "register", "config", "history"].includes(group))
       syntax(`Unknown command "${group}".`);
     if (!tokens.length || tokens[0] === "-h" || tokens[0] === "--help") {
       result.help = true;
       return result;
     }
     result.path = `${group} ${tokens.shift()!}`;
-  } else if (flags.json) syntax("--json is not supported for exec/open.");
+  } else if (group === "open" && flags.json)
+    syntax("--json is not supported for exec/open.");
   if (!commands[result.path]) syntax(`Unknown command "${result.path}".`);
   const separator = result.path === "register set" ? tokens.indexOf("--") : -1;
   if (separator >= 0) result.template = tokens.splice(separator + 1);
@@ -335,21 +378,27 @@ export function parse(argv: readonly string[]): Parsed {
     return result;
   }
   const booleans =
-    result.path === "alias set" || result.path === "register set"
-      ? ["replace"]
-      : result.path === "history remove"
-        ? ["yes"]
-        : [];
+    result.path === "bundle build"
+      ? ["replace", "schema-only"]
+      : result.path === "build"
+        ? ["replace"]
+        : result.path === "alias set" || result.path === "register set"
+          ? ["replace"]
+          : result.path === "history remove"
+            ? ["yes"]
+            : [];
   const values =
-    result.path === "history list"
-      ? ["app", "status", "since", "until", "limit", "before"]
-      : result.path === "history remove"
-        ? ["app", "status", "since", "until"]
-        : [];
+    result.path === "bundle build" || result.path === "build"
+      ? ["output"]
+      : result.path === "history list"
+        ? ["app", "status", "since", "until", "limit", "before"]
+        : result.path === "history remove"
+          ? ["app", "status", "since", "until"]
+          : [];
   while (tokens.length) {
     const value = tokens.shift()!;
-    if (value.startsWith("--")) {
-      const option = value.slice(2);
+    if (value.startsWith("--") || value === "-o") {
+      const option = value === "-o" ? "output" : value.slice(2);
       if (Object.hasOwn(result.options, option))
         syntax(`Duplicate option ${value}.`);
       if (booleans.includes(option)) result.options[option] = true;
@@ -361,6 +410,11 @@ export function parse(argv: readonly string[]): Parsed {
     } else result.positional.push(value);
   }
   const counts: Record<string, [number, number]> = {
+    init: [1, 2],
+    build: [0, 1],
+    "bundle init": [2, 2],
+    "bundle build": [1, 1],
+    "bundle inspect": [1, 1],
     open: [1, 1],
     "alias list": [0, 0],
     "alias set": [2, 2],
@@ -402,6 +456,8 @@ export function parse(argv: readonly string[]): Parsed {
   }
   if (typeof result.options.limit === "string")
     parseValue("history.limit", result.options.limit, true);
+  if (result.options.output === "-")
+    syntax("CAR output requires a file path; binary stdout is not supported.");
   return result;
 }
 
@@ -437,6 +493,115 @@ async function performCli(
       ? filters(state, parsed.options)
       : {};
     switch (parsed.path) {
+      case "init":
+      case "build":
+      case "bundle init":
+      case "bundle build":
+      case "bundle inspect": {
+        const controller = new AbortController();
+        let cancelled = 0;
+        const interrupt = () => {
+          cancelled = 130;
+          controller.abort(new Error("Interrupted."));
+        };
+        const terminate = () => {
+          cancelled = 143;
+          controller.abort(new Error("Terminated."));
+        };
+        process.once("SIGINT", interrupt);
+        process.once("SIGTERM", terminate);
+        try {
+          let pendingStore: Promise<IpfsStore> | undefined;
+          const request = {
+            signal: controller.signal,
+            resolveCid: async (cid: CID, options: { signal?: AbortSignal }) => {
+              pendingStore ??= storeConfiguration(value("store.rpc")).then(
+                (configuration) => {
+                  store = new IpfsStore(configuration);
+                  return store;
+                },
+              );
+              return (await pendingStore).block.get(cid.toString(), options);
+            },
+          };
+          if (parsed.path === "bundle build" || parsed.path === "build")
+            io.err(
+              parsed.path === "build"
+                ? "Typechecking, bundling and building App..."
+                : "Validating and building bundle...",
+            );
+          const result =
+            parsed.path === "init"
+              ? await initApp(first!, second, request)
+              : parsed.path === "build"
+                ? await buildApp(first, {
+                    ...request,
+                    replace: Boolean(parsed.options.replace),
+                    ...(typeof parsed.options.output === "string"
+                      ? { output: parsed.options.output }
+                      : {}),
+                    outputDir: String(value("bundle.outputDir")),
+                  })
+                : parsed.path === "bundle init"
+                  ? await initBundle(first!, second!, request)
+                  : parsed.path === "bundle build"
+                    ? await buildBundle(first!, {
+                        ...request,
+                        schemaOnly: Boolean(parsed.options["schema-only"]),
+                        replace: Boolean(parsed.options.replace),
+                        ...(typeof parsed.options.output === "string"
+                          ? { output: parsed.options.output }
+                          : {}),
+                        outputDir: String(value("bundle.outputDir")),
+                      })
+                    : await inspectBundle(first!, request);
+          const closing = store;
+          store = undefined;
+          await closeStore(closing, undefined);
+          state.close();
+          state = undefined;
+          controller.signal.throwIfAborted();
+          if ("output" in result)
+            emit(
+              result,
+              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}`,
+            );
+          else if (result.kind === "app-init") {
+            emit(
+              result,
+              `Created App project: ${result.directory}\nSchema CID: ${result.schemaCid}`,
+            );
+            io.err(
+              `Next: install declared dependencies in ${JSON.stringify(result.directory)}; then ipab build ${JSON.stringify(result.directory)} (requires locally linked ipab).`,
+            );
+          } else if ("directory" in result) {
+            emit(
+              result,
+              `Created: ${result.directory}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})`,
+            );
+            io.err(
+              `Next: ipab bundle build ${JSON.stringify(result.directory)}`,
+            );
+          } else
+            emit(
+              result,
+              `Kind: ${result.kind}\nName: ${printable(result.name)}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})\nValidation: passed`,
+            );
+        } catch (cause) {
+          if (cancelled)
+            throw new HostError(
+              message(cause),
+              cancelled,
+              "ABORTED",
+              "authoring",
+            );
+          throw cause;
+        } finally {
+          process.removeListener("SIGINT", interrupt);
+          process.removeListener("SIGTERM", terminate);
+        }
+        break;
+      }
       case "alias list": {
         const aliases = state.aliases();
         emit(
@@ -480,7 +645,7 @@ async function performCli(
       }
       case "register set": {
         const association = state.setAssociation(
-          first!,
+          schemaAlias(first!),
           second!,
           parsed.template ?? ["%"],
           Boolean(parsed.options.replace),
@@ -492,7 +657,7 @@ async function performCli(
         break;
       }
       case "register remove": {
-        const removed = state.removeAssociation(first!);
+        const removed = state.removeAssociation(schemaAlias(first!));
         emit({ removed: [removed] }, `Removed association for ${removed}.`);
         break;
       }

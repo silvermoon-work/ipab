@@ -5,7 +5,11 @@ import type { StoreConfiguration } from "@ipab/ipfs-store";
 import { HostError, object, syntax } from "./errors.js";
 
 export type ConfigKey =
-  "store.rpc" | "history.enabled" | "history.limit" | "output.retention";
+  | "store.rpc"
+  | "history.enabled"
+  | "history.limit"
+  | "output.retention"
+  | "bundle.outputDir";
 export type ConfigValue = string | boolean | number | null;
 export type Source = "flag" | "env" | "user" | "default";
 export interface GlobalOptions {
@@ -23,12 +27,14 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "history.enabled": true,
   "history.limit": 20,
   "output.retention": "history",
+  "bundle.outputDir": "dist",
 };
 const environments: Record<ConfigKey, string> = {
   "store.rpc": "IPAB_STORE_RPC",
   "history.enabled": "IPAB_HISTORY_ENABLED",
   "history.limit": "IPAB_HISTORY_LIMIT",
   "output.retention": "IPAB_OUTPUT_RETENTION",
+  "bundle.outputDir": "IPAB_BUNDLE_OUTPUT_DIR",
 };
 
 export function configKey(key: string): ConfigKey {
@@ -74,6 +80,13 @@ export function parseValue(
     if (key === "store.rpc" && value === "default") return null;
   }
   if (key === "store.rpc" && value === null) return null;
+  if (
+    key === "bundle.outputDir" &&
+    typeof value === "string" &&
+    value.trim() &&
+    !value.includes("\0")
+  )
+    return value;
   if (key === "store.rpc" && typeof value === "string") return publicUrl(value);
   if (key === "history.enabled" && typeof value === "boolean") return value;
   if (
@@ -93,7 +106,9 @@ export function parseValue(
           ? "a positive safe integer"
           : key === "output.retention"
             ? "history or none"
-            : "a public HTTP(S) URL or default"
+            : key === "bundle.outputDir"
+              ? "a nonempty directory path"
+              : "a public HTTP(S) URL or default"
     }.`,
   );
 }

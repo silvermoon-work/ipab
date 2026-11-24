@@ -60,24 +60,164 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 ```
 
 - 全局 `--state-dir PATH`、`--store-rpc URL`、`--json` 必须在子命令之前。
-  `--json` 只适用于管理命令，不能包装 exec/open 的应用 stdout。
+  `--json` 适用于管理／开发命令的结果元数据，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
 - `open CONTENT`
-  校验存储完整性、路径、manifest、独立 Schema block 和入口数据，读取
-  `entry.schemaCid` 的准确 CID，使用保存的
+  校验存储完整性、路径、完整类型定义和入口数据，从 `.bundle.yaml`
+  计算准确类型 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
   `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
   只替换整个参数，不展开 shell 字符串。其他资源与子 Bundle 不接受宿主的业务校验，
   引用格式、依赖读取与验证由 App 自行处理。
 - `register set` 的 Schema 必须是 CIDv1/DAG-CBOR/SHA-256 block CID；
-  不接受 UnixFS 目录 CID 或旧 builtin 注册键。
+  也接受离线内置类型 alias
+  `builtin:node-app.v1`，set/remove 都解析并保存准确 CID。
+  不接受 UnixFS 目录 CID 或旧 builtin 注册键；builtin 不是 App 执行目标。
 - `alias list/set/remove` 只维护准确 CID 引用，不构成 alias 链，不 pin 或执行。
   `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
   `--replace`；
   相同值幂等成功。Alias 的后续修改不影响关联或历史。
 - 根及分组无参数显示帮助；所有节点支持 `-h/--help`。缺少叶子参数退出 2，
   不交互补参。管理操作成功 0、操作失败 1、语法失败 2；应用非零退出码保留。
+
+## App 开发（上层 Node profile）
+
+根 `init`／`build` 面向 App；`bundle` 分组仍是不会编译代码的底层工具。
+使用已构建并链接到全局的本地 `ipab`（CLI private，未发布到 npm）：
+
+```powershell
+ipab init hello
+Set-Location .\hello
+npm install
+npm run typecheck
+ipab --json build
+# 修改后重新构建已有产物：
+ipab build --replace
+```
+
+`init NAME [DIR]` 创建普通 private TypeScript npm package；NAME 为不带 scope
+的小写 npm 包名，省略 DIR 时创建 NAME 目录。目标必须不存在或为空，没有覆盖
+源码的 force 选项。生成 `package.json`、严格 `tsconfig.json`、`src/main.ts`、
+`ipab.json` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
+`ipab build`，不声明不存在的 registry `@ipab/cli` 版本。
+项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
+编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
+
+`build [DIR] [-o FILE | --output FILE] [--replace]` 默认使用当前项目，
+读取数据配置（不加载 JS 配置、npm lifecycle hooks 或用户插件）：
+
+```json
+{
+  "entry": "src/main.ts",
+  "resources": ["assets/message.txt"],
+  "app": {
+    "name": "Hello App",
+    "icon": "resources/assets/message.txt",
+    "i18n": { "zh-CN": { "name": "你好应用" } }
+  }
+}
+```
+
+- 入口必须是 `src/` 下的 `.ts` 文件，并实际包含于项目 `tsconfig.json`。
+  显式执行项目 `node_modules/typescript/bin/tsc`，强制严格检查与 noEmit，
+  不允许 noCheck 跳过检查；缺依赖时失败并提示显式安装，不回退全局 tsc。
+- 检查成功后 esbuild bundling=true/platform=node/format=cjs，生成唯一
+  `resources/app.cjs`（最多 8 MiB），静态 npm 依赖纳入程序，只允许 Node
+  builtins 外置；动态／间接 require/import、不兼容的 top-level
+  await 等明确失败。
+  程序不在构建时执行。
+- resources 默认为空，只接受 `assets/` 下明确列出的非隐藏普通文件，
+  无 glob、目录扫描或符号链接。资源在 Bundle 内为
+  `resources/assets/message.txt`。不自动打包源码、node_modules、配置、
+  `.env` 或未选中的资源；应用通过自己的 App CID 和 Space context 读取资源，
+  不依赖 materialized 程序旁的本地文件。
+- 每次使用全新唯一自有 staging，写入完整内置 `.bundle.yaml` 和默认 `app.json`，
+  再复用 Bundle Builder 固化 CAR／CID。失败不打包旧程序或旧资源，
+  只清理本次 staging，不清空 `dist`、旧 staging 或 Store。
+- 默认 `dist/app.car`；沿用 `bundle.outputDir` 配置及其环境覆盖，
+  但 App 输出必须在项目 `dist/` 内或项目外且扩展名为 `.car`，不得穿过符号链接。
+  `--output` 相对当前工作目录解析。已有普通 CAR 需 `--replace`，
+  类型检查／编译／资源失败保留原产物；不能用 replace 覆盖源码。
+- `--json` 输出单个含 kind=`app-bundle`、cid、schemaCid、output、bytes 的结果，
+  诊断／进度在 stderr。没有自动执行、导入、上传、pin、watch 或另一个任务系统。
+
+### App 元数据与内置类型
+
+`app.json` 的 `name`、`version`、`entry` 必填；description 缺省为 `""`。
+App 名称不为空白，版本使用准确 SemVer 2.0（支持 prerelease/build，不接受范围或
+数字标识的多余前导零）。可选 author 为 `{name, email?}`，name 不为空白，
+email 使用简单 `name@domain.tld` 检查；可选 license 是非空白声明文本，
+**不控制读取、复制或执行，不提供 DRM**。
+icon 是 Bundle 根相对的 `resources/` 普通文件路径，loader 验证安全路径和存在性，
+不承诺 MIME／图像解码。App build 的 icon 必须引用已选中的
+`resources/assets/` 文件。
+
+可选 i18n 是由 Node Intl 接受的 BCP47 locale tag 到 `{name?, description?}`
+的映射，拒绝无效或规范化重复的语言 tag、未知字段与非字符串翻译；
+翻译名也不得为空白。语义为选中语言的字段分别覆盖 base name/description，
+缺少翻译／字段回退 base，不实现语言选择 UI，也不隐式按前缀选择其他语言。
+name／author name／email／license／icon／version 的文本上限为 1024 字符。
+
+构建从普通 `package.json`
+的 name/version/description/author/license 复制元数据，
+`ipab.json.app` 可覆盖这些字段并添加 icon/i18n；不可覆盖编译程序 entry。
+生成的 config 默认 app={}，描述未提供时为空。`.bundle.yaml` 的 name/description
+命名共享 Node App 类型，不是单个 App；单个 App 元数据变化会改变内容根 CID，
+不会改变共享类型 CID。
+
+离线 alias `builtin:node-app.v1` 对应完整定义和 canonical DAG-CBOR CID：
+`bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
+alias 可用于 bundle init/inspect 与 register set/remove；状态只保存 CID。
+这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
+profile/runtime 字段现在被拒绝。旧包应重建并显式更新 alias/register，不自动迁移。
+Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
+
+## Bundle 开发（底层）
+
+目录根 `.bundle.yaml` 本身就是完整类型定义，包含必填 `name`、
+缺省为空字符串的 `description` 和
+`entry: { path, schema, contentType, defaultValue }`。入口路径和格式是固定契约，
+默认数据必须符合入口 Schema。完整定义的 canonical DAG-CBOR CID 用于注册；
+实际数据修改不改变类型 CID。
+
+从仓库根体验以下离线闭环（`ipab` 也可以替换为
+`node .\apps\ipab\dist\main.js`）：
+
+```powershell
+ipab bundle build .\examples\note-type\.bundle.yaml --schema-only
+ipab bundle init .\examples\note-type\dist\schema.car .\my-note
+ipab bundle build .\my-note
+ipab --json bundle inspect .\my-note\dist\bundle.car
+```
+
+- `bundle build SOURCE` 校验实际入口，产出默认 `dist/bundle.car`；
+  `--schema-only` 只读取完整定义并校验默认值，产出单 block `dist/schema.car`
+  和准确类型 CID，不要求实际入口存在。SOURCE 此时也可为定义文件。
+- `bundle init TYPE DIR` 接受类型 CID、完整定义文件或 `.car` 类型产物，
+  创建定义、默认数据和 `.bundle-ignore`。DIR 必须不存在或为空，不覆盖源码；
+  这不保证 App 已具备可执行资源。
+  `TYPE=builtin:node-app.v1` 是完整本地 Node App 定义的便捷解析，无需 Store：
+  `ipab bundle init builtin:node-app.v1 .\raw-app`。它保留原始完整定义和准确
+  App Schema CID，只生成描述／默认入口，不编译或生成可执行程序；
+  register 可解析此 alias，但实际注册身份仍是 CID，不是 builtin 字符串。
+- `bundle inspect SOURCE` 接受目录、定义文件、`.car` 或 CID；
+  全部适用校验通过才报告成功。未固化目录的 JSON `cid` 为 `null`，
+  不把它冒充已构建根。CAR 必须单根且自足，本地缺块不隐式联网补齐。
+- 本地构建／初始化／检查不需要 Store。只有 CID 读取复用已有 Store 配置；
+  不自动启动 daemon、执行 App、上传、导入或 pin。
+- `--output FILE`／`-o FILE` 覆盖具体产物位置，相对当前目录；
+  `--replace` 仅授权原子替换普通产物文件，不能覆盖定义或入口。没有二进制
+  stdout／stdin 模式；`--json` 输出单个结果对象，诊断与进度进入 stderr。
+- 默认输出目录是源目录的 `dist`，可通过 `bundle.outputDir` 或
+  `IPAB_BUNDLE_OUTPUT_DIR` 设置共同目录；相对配置在构建时相对源目录解析。
+  不自动重写项目忽略规则。
+- 根 `.bundle-ignore` 使用 gitignore 风格规则，初始化写入 `/dist/`，
+  不默认忽略所有 CAR。控制文件本身不打包；忽略定义或实际入口明确失败。
+  活跃默认输出目录（位于源目录内时）及本次输出文件不进入本次构建，
+  因此无 ignore 文件时重复默认构建也不会把自己的产物带入。
+- 构建先完整校验／消费输入，再提交完整 CAR；失败／取消清理本次临时文件，
+  不清空源目录、`dist` 或共享 Store。再次构建已有产物需显式 `--replace`。
 
 ## Store、配置与结果
 
@@ -102,6 +242,7 @@ URL 禁止凭据、查询和 fragment。默认 Store 配置中的 URL 同样检�
 | `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                       |
 | `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录 |
 | `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                    |
+| `bundle.outputDir` | `dist`    | 非空目录路径；`IPAB_BUNDLE_OUTPUT_DIR`                     |
 
 `config get [KEY]` 显示有效值与 flag/env/user/default 来源；
 `config set KEY VALUE` 只保存用户层，遇到更高优先级覆盖时提示；
@@ -216,11 +357,11 @@ vitest.config.ts       各 code package 共用的测试与覆盖率配置
 当前协议、结构化 Schema 方言、引用和共享预算见
 [Bundle runtime](packages/bundle/README.md)，构建接口见
 [Bundle builder](packages/bundle-builder/README.md)。
-Schema 是单个自包含 JSON Schema，直接编码为 DAG-CBOR block；编码后最多
-1 MiB，超限不分块。支持 `$defs` 与本地 JSON Pointer `$ref`，不接受外部 Schema
-引用。使用 `encodeSchema` 编码，通过 `entry.schemaCid` 标识。
-CAR 包含独立 Schema block；manifest 的 CID 字符串不是 IPLD link，
-保留根 CID 不会自动保留 Schema，调用者须单独保留 Schema CID。
+完整 `.bundle.yaml` 定义直接编码为一个 DAG-CBOR block；编码后最多
+1 MiB，超限不分块。入口 Schema 支持 `$defs` 与本地 JSON Pointer `$ref`，
+不接受外部引用。`encodeSchema` 的输入是完整定义，不再是裸 JSON Schema。
+CAR 携带准确类型 block；保留内容根即可从定义重建类型，无需读取外部 Schema。
+旧 `entry.schemaCid` manifest 已移除；类型 CID 单独读取时仍须有对应 block。
 旧 Schema Bundle 目录、descriptor、builtin 注册键和专用 Builder 已移除，
 旧包须重建、更新 manifest 并按新 CID 重新注册，不提供自动迁移。
 `x-content-ref` 扩展和递归内容依赖校验

@@ -7,6 +7,9 @@ import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 /** Explicit directory-bound adapter. Symlinks are rejected, including ancestors under the bound. */
 export async function filesystemTree(
   directory: string,
+  optionsForTree: {
+    exclude?: (path: string, directory: boolean) => boolean;
+  } = {},
 ): Promise<ReadonlyFileTree> {
   const root = resolve(directory);
   const checked = async (path: string, options: ReadOptions = {}) => {
@@ -44,20 +47,28 @@ export async function filesystemTree(
       const entries = await readdir(await checked(path, options), {
         withFileTypes: true,
       });
-      return entries.map((entry) => {
-        if (!entry.isFile() && !entry.isDirectory())
-          throw new ContentBundleError(
-            "PATH_INVALID",
-            "Only regular files and directories are supported.",
-            entry.name,
-          );
-        return {
-          name: entry.name,
-          kind: entry.isDirectory()
-            ? ("directory" as const)
-            : ("file" as const),
-        };
-      });
+      return entries
+        .filter(
+          (entry) =>
+            !optionsForTree.exclude?.(
+              path ? `${path}/${entry.name}` : entry.name,
+              entry.isDirectory(),
+            ),
+        )
+        .map((entry) => {
+          if (!entry.isFile() && !entry.isDirectory())
+            throw new ContentBundleError(
+              "PATH_INVALID",
+              "Only regular files and directories are supported.",
+              entry.name,
+            );
+          return {
+            name: entry.name,
+            kind: entry.isDirectory()
+              ? ("directory" as const)
+              : ("file" as const),
+          };
+        });
     },
     async read(path, options = {}) {
       const absolute = await checked(path, options);

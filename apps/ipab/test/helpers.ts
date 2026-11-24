@@ -3,7 +3,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { encodeSchema, type JsonSchema } from "@ipab/bundle";
+import { encodeSchema, canonicalJson, type JsonSchema } from "@ipab/bundle";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
 import { appSchema } from "../src/space.js";
@@ -69,24 +69,32 @@ export async function content(
   value: unknown = { hello: "world" },
   schema: JsonSchema = { type: "object" },
 ): Promise<{ root: string; schema: string }> {
-  const encoded = await encodeSchema(schema);
+  const definition = {
+    name: "Fixture",
+    description: "",
+    entry: {
+      path: "data.json",
+      schema,
+      contentType: "application/json",
+      defaultValue: value,
+    },
+  };
+  const encoded = await encodeSchema(definition);
   const schemaCid = encoded.cid.toString();
-  await store.put(encoded.cid, encoded.bytes);
   const root = await importFiles(store, {
-    ".bundle.yaml": `entry:\n  path: data.json\n  schemaCid: ${schemaCid}\n  contentType: application/json\n`,
+    ".bundle.yaml": canonicalJson(definition),
     "data.json": JSON.stringify(value),
   });
   return { root, schema: schemaCid };
 }
 
 export async function app(store: IpfsStore, source: string): Promise<string> {
-  const schema = await encodeSchema(appSchema);
-  await store.put(schema.cid, schema.bytes);
   return importFiles(store, {
-    ".bundle.yaml": `entry:\n  path: app.json\n  schemaCid: ${schema.cid.toString()}\n  contentType: application/json\n`,
+    ".bundle.yaml": canonicalJson(appSchema),
     "app.json": JSON.stringify({
-      profile: "ipab.node.v1",
-      runtime: "node",
+      name: "Fixture App",
+      version: "0.0.0",
+      description: "",
       entry: "resources/app.cjs",
     }),
     "resources/app.cjs": source,

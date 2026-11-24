@@ -4,10 +4,13 @@ export type JsonSchema = boolean | { readonly [key: string]: unknown };
 export type ContentType =
   "application/json" | "application/yaml" | "application/jsonl";
 export interface BundleManifest {
+  readonly name: string;
+  readonly description: string;
   readonly entry: {
     readonly path: string;
-    readonly schemaCid: string;
+    readonly schema: JsonSchema;
     readonly contentType: ContentType;
+    readonly defaultValue: unknown;
   };
 }
 export interface SchemaDefinitions {
@@ -15,6 +18,7 @@ export interface SchemaDefinitions {
   readonly definitions: ReadonlyMap<string, JsonSchema>;
 }
 export interface SchemaBlock extends SchemaDefinitions {
+  readonly manifest: BundleManifest;
   readonly cid: CID;
   readonly bytes: Uint8Array;
 }

@@ -2,8 +2,8 @@
 
 Private deterministic CAR construction; no Store upload or pinning.
 
-`encodeBundleCar(tree, { signal?, limits?, schemaBlocks? })` fully consumes and
-validates a repeatable `ReadonlyFileTree` before returning
+`encodeBundleCar(tree, { signal?, limits? })` fully consumes and validates a
+repeatable `ReadonlyFileTree` before returning
 `{ cid, stream, retainedBytes, close }`. Consume `stream` completely for a
 completed CAR; cancel or close to release staged bytes. Input bytes are
 preserved, including manifests. Input lifetime must remain stable through
@@ -22,15 +22,23 @@ sharding. CARv1 contains one root, its block first, then unique storage blocks
 sorted lexicographically by CID binary bytes. Equal input produces equal root
 CID and CAR bytes. The loader accepts other legitimate layouts within budget.
 
-`schemaBlocks` supplies blocks returned by `encodeSchema` from `@ipab/bundle`.
-The builder requires the manifest's exact `entry.schemaCid` block and verifies
-its hash and schema profile rather than trusting supplied metadata. CAR output
-includes that one standalone DAG-CBOR block, with no UnixFS wrapper, directory
-graft or extra root. Unused supplied schemas are omitted from output.
+The root `.bundle.yaml` now contains the complete named type definition and
+entry contract/defaults. The builder computes and includes its canonical
+DAG-CBOR type block alongside the UnixFS DAG, with no wrapper, directory graft
+or extra root. No external `schemaBlocks` or resolver is needed. The result's
+`schema` exposes the exact validated type; content-root consumers can
+reconstruct it from the definition, even without the extra block.
 
-The manifest CID is a string, not a storage DAG link. Consumers must retain the
-schema CID separately from the UnixFS root. Merely importing/retaining the root
-does not protect this extra block. The old `embeddedSchemas` option is removed.
+`encodeSchemaCar(definition, options?)` checks the same complete profile and
+returns the same lifecycle interface with exactly one DAG-CBOR root/block. It
+does not require an actual entry file. Both results have `cid`, `schema`,
+`stream`, `retainedBytes` and `close`; all CAR bytes must still be consumed.
+
+`filesystemTree(directory, { exclude? })` allows a caller-owned selection rule
+before traversing excluded directories; selected files remain no-symlink,
+directory-bound reads. CLI `.bundle-ignore` and output exclusions use this
+adapter. Generic Builder input is already selected; it does not implicitly
+interpret local ignore files.
 
 Builder limits use the runtime defaults; larger outputs need explicit matching
 larger budgets. Final staged bytes must satisfy the runtime contract. The schema

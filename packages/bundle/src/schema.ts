@@ -1,9 +1,14 @@
 import { ContentBundleError } from "./errors.js";
-import { assertJson, record } from "./parsing.js";
+import { assertJson, record, normalizeBundleManifest } from "./parsing.js";
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
-import type { JsonSchema, SchemaDefinitions, SchemaBlock } from "./types.js";
+import type {
+  BundleManifest,
+  JsonSchema,
+  SchemaDefinitions,
+  SchemaBlock,
+} from "./types.js";
 
 export const schemaBlockBytes = 1024 * 1024;
 export interface SchemaOptions {
@@ -206,7 +211,7 @@ function checkSize(bytes: Uint8Array, options: SchemaOptions): void {
 function schemaBlock(
   cid: CID,
   bytes: Uint8Array,
-  definitions: SchemaDefinitions,
+  definitions: SchemaDefinitions & { manifest: BundleManifest },
 ): SchemaBlock {
   const identity = Uint8Array.from(cid.bytes);
   const encoded = Uint8Array.from(bytes);
@@ -221,15 +226,63 @@ function schemaBlock(
   });
 }
 
+export function inspectBundleSchema(
+  value: unknown,
+  options: SchemaOptions = {},
+): SchemaDefinitions & { manifest: BundleManifest } {
+  let manifest: BundleManifest;
+  try {
+    assertJson(value, options.nodes, options.jsonDepth, options.charge);
+    manifest = normalizeBundleManifest(value);
+  } catch (cause) {
+    if (cause instanceof ContentBundleError && cause.code !== "CONTENT_INVALID")
+      throw cause;
+    throw new ContentBundleError(
+      "SCHEMA_INVALID",
+      `Invalid bundle type definition: ${cause instanceof Error ? cause.message : "invalid data"}`,
+      "",
+      "",
+      [],
+      { cause },
+    );
+  }
+  const definitions = inspectSchema(manifest.entry.schema, options);
+  try {
+    validateValue(definitions, manifest.entry.defaultValue, {
+      charge: options.charge ?? (() => {}),
+      depth: options.depth ?? 64,
+    });
+  } catch (cause) {
+    if (
+      !(cause instanceof ContentBundleError) ||
+      cause.code !== "CONTENT_INVALID"
+    )
+      throw cause;
+    throw new ContentBundleError(
+      "SCHEMA_INVALID",
+      "defaultValue does not satisfy entry.schema.",
+      "",
+      `/entry/defaultValue${cause.pointer}`,
+      [],
+      { cause },
+    );
+  }
+  return { ...definitions, manifest };
+}
+
 export async function encodeSchema(
   value: unknown,
   options: SchemaOptions = {},
 ): Promise<SchemaBlock> {
-  const definitions = inspectSchema(value, options);
-  const bytes = dagCbor.encode(definitions.schema);
+  const definitions = inspectBundleSchema(value, options);
+  const bytes = dagCbor.encode(definitions.manifest);
   checkSize(bytes, options);
   const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
-  return schemaBlock(cid, bytes, inspectSchema(dagCbor.decode(bytes), options));
+  return schemaBlock(
+    cid,
+    bytes,
+    inspectBundleSchema(dagCbor.decode(bytes), options),
+  );
 }
 
 export async function decodeSchema(
@@ -266,8 +319,8 @@ export async function decodeSchema(
       { cause },
     );
   }
-  const definitions = inspectSchema(value, options);
-  const canonical = dagCbor.encode(definitions.schema);
+  const definitions = inspectBundleSchema(value, options);
+  const canonical = dagCbor.encode(definitions.manifest);
   if (
     canonical.length !== bytes.length ||
     !canonical.every((byte, index) => byte === bytes[index])

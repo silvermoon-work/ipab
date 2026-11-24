@@ -9,6 +9,7 @@ import {
   ContentBundleError,
   encodeSchema,
   inspectSchema,
+  inspectBundleSchema,
   openBundle,
   openSchema,
   parseBundleManifest,
@@ -21,11 +22,16 @@ import type { BundleLimits, JsonSchema } from "../src/index.js";
 
 const text = (value: string) => new TextEncoder().encode(value);
 const json = (value: unknown) => canonicalJson(value);
-const manifest = (
-  schemaCid: string,
+const definition = (
+  schema: JsonSchema,
+  defaultValue: unknown = {},
   path = "data.json",
   contentType = "application/json",
-) => json({ entry: { schemaCid, path, contentType } });
+) => ({
+  name: "Fixture",
+  description: "",
+  entry: { schema, path, contentType, defaultValue },
+});
 async function tree(files: Record<string, Uint8Array>) {
   const blocks = new Map<string, Uint8Array>();
   let root: CID | undefined;
@@ -58,12 +64,18 @@ async function fixture(
   value: unknown,
   files: Record<string, Uint8Array> = {},
   type = "application/json",
+  defaultValue: unknown = type === "application/jsonl"
+    ? []
+    : type === "application/yaml"
+      ? {}
+      : value,
 ) {
   // Raw encoding lets the loader tests exercise malformed schemas too.
-  const bytes = dagCbor.encode(schema);
+  const typeDefinition = definition(schema, defaultValue, "data.json", type);
+  const bytes = dagCbor.encode(typeDefinition);
   const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
   const f = await tree({
-    ".bundle.yaml": manifest(cid.toString(), "data.json", type),
+    ".bundle.yaml": json(typeDefinition),
     "data.json":
       type === "application/json" ? json(value) : text(String(value)),
     ...files,
@@ -119,7 +131,9 @@ describe("single-block schemas and immutable content", () => {
     bundle.schema.bytes.fill(0);
     expect(bundle.cid.equals(f.root)).toBe(true);
     expect(bundle.schema.cid.equals(f.schemaCid)).toBe(true);
-    expect(bundle.schema.bytes).toEqual(f.blocks.get(f.schemaCid.toString()));
+    expect(bundle.schema.bytes).toEqual(
+      Uint8Array.from(f.blocks.get(f.schemaCid.toString())!),
+    );
     await expect(bundle.readFile("../data.json")).rejects.toMatchObject({
       code: "PATH_INVALID",
     });
@@ -134,7 +148,11 @@ describe("single-block schemas and immutable content", () => {
       validateContentBundle(f.root, bundle.schema, f),
     ).resolves.toHaveProperty("schemaKey", bundle.schemaKey);
     await expect(
-      validateContentBundle(f.root, await encodeSchema({ type: "string" }), f),
+      validateContentBundle(
+        f.root,
+        await encodeSchema(definition({ type: "string" }, "")),
+        f,
+      ),
     ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
   });
   it.each([
@@ -164,21 +182,26 @@ describe("single-block schemas and immutable content", () => {
     },
   );
   it.each([
-    [false, null],
-    [{ type: "string" }, 2],
-    [{ type: "integer" }, 2.3],
-    [{ const: { a: 1 } }, { b: 1 }],
-    [{ enum: [[1], 2] }, [2]],
-    [{ required: ["x"] }, {}],
-    [{ additionalProperties: false }, { x: 1 }],
-    [{ items: false }, [1]],
-    [{ properties: { x: false } }, { x: 1 }],
-    [{ anyOf: [false, { type: "string" }] }, 1],
-    [{ $defs: { n: { type: "integer" } }, $ref: "#/$defs/n" }, "3"],
-  ] satisfies [JsonSchema, unknown][])(
+    [{ type: "string" }, 2, ""],
+    [{ type: "integer" }, 2.3, 2],
+    [{ const: { a: 1 } }, { b: 1 }, { a: 1 }],
+    [{ enum: [[1], 2] }, [2], 2],
+    [{ required: ["x"] }, {}, { x: 1 }],
+    [{ additionalProperties: false }, { x: 1 }, {}],
+    [{ items: false }, [1], []],
+    [{ properties: { x: false } }, { x: 1 }, {}],
+    [{ anyOf: [false, { type: "string" }] }, 1, ""],
+    [{ $defs: { n: { type: "integer" } }, $ref: "#/$defs/n" }, "3", 3],
+  ] satisfies [JsonSchema, unknown, unknown][])(
     "rejects invalid entry data",
-    async (schema, value) => {
-      const f = await fixture(schema, value);
+    async (schema, value, defaultValue) => {
+      const f = await fixture(
+        schema,
+        value,
+        {},
+        "application/json",
+        defaultValue,
+      );
       await expect(openBundle(f.root, f)).rejects.toMatchObject({
         code: "CONTENT_INVALID",
         path: "data.json",
@@ -262,7 +285,7 @@ describe("single-block schemas and immutable content", () => {
     });
   });
   it("leaves dependencies and nested manifests opaque without fetching their schemas", async () => {
-    const missing = await encodeSchema({ type: "integer" });
+    const missing = await encodeSchema(definition({ type: "integer" }, 1));
     const f = await fixture(
       {
         properties: {
@@ -278,7 +301,7 @@ describe("single-block schemas and immutable content", () => {
       },
       {
         "invalid.json": new Uint8Array(1024).fill(255),
-        "child/.bundle.yaml": manifest(missing.cid.toString()),
+        "child/.bundle.yaml": json(missing.manifest),
         "child/data.json": json("not an integer"),
       },
     );
@@ -297,10 +320,14 @@ describe("single-block schemas and immutable content", () => {
   it("reports missing/corrupt schemas, malformed CBOR and noncanonical encoding", async () => {
     const f = await fixture({}, {});
     f.blocks.delete(f.schemaCid.toString());
-    await expect(openBundle(f.root, f)).rejects.toMatchObject({
+    await expect(openSchema(f.schemaCid, f)).rejects.toMatchObject({
       code: "CONTENT_UNAVAILABLE",
     });
-    const schema = await encodeSchema({});
+    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
+      "schemaKey",
+      f.schemaCid.toString(),
+    );
+    const schema = await encodeSchema(definition({}));
     await expect(
       openSchema(schema.cid, {
         resolveCid: () => Promise.resolve(Uint8Array.of(255)),
@@ -312,30 +339,11 @@ describe("single-block schemas and immutable content", () => {
         openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
       ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
     }
-    // An unsorted map is valid CBOR but not the protocol's canonical encoding.
-    const bytes = Uint8Array.of(
-      0xa2,
-      0x65,
-      0x74,
-      0x69,
-      0x74,
-      0x6c,
-      0x65,
-      0x61,
-      0x78,
-      0x64,
-      0x74,
-      0x79,
-      0x70,
-      0x65,
-      0x66,
-      0x73,
-      0x74,
-      0x72,
-      0x69,
-      0x6e,
-      0x67,
-    );
+    // Omitted description must be normalized before the block is encoded.
+    const bytes = dagCbor.encode({
+      name: "Fixture",
+      entry: definition({}).entry,
+    });
     const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
     await expect(
       openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
@@ -444,21 +452,37 @@ describe("single-block schemas and immutable content", () => {
   });
   it("canonicalizes object ordering without changing arrays, and enforces the exact encoded block boundary", async () => {
     const a = await encodeSchema(
-      parseData(text('{"type":"string","enum":["z","a"]}'), "application/json"),
+      definition(
+        inspectSchema(
+          parseData(
+            text('{"type":"string","enum":["z","a"]}'),
+            "application/json",
+          ),
+        ).schema,
+        "z",
+      ),
     );
-    const b = await encodeSchema({ enum: ["z", "a"], type: "string" });
+    const b = await encodeSchema(
+      definition({ enum: ["z", "a"], type: "string" }, "z"),
+    );
     expect(a.cid.equals(b.cid)).toBe(true);
     expect(a.bytes).toEqual(b.bytes);
-    expect(dagCbor.decode(a.bytes)).toEqual({
-      enum: ["z", "a"],
-      type: "string",
-    });
-    const changed = await encodeSchema({ enum: ["a", "z"], type: "string" });
+    expect(dagCbor.decode(a.bytes)).toEqual(
+      definition({ enum: ["z", "a"], type: "string" }, "z"),
+    );
+    const changed = await encodeSchema(
+      definition({ enum: ["a", "z"], type: "string" }, "z"),
+    );
     expect(changed.cid.equals(a.cid)).toBe(false);
     const overhead =
-      dagCbor.encode({ description: "x".repeat(schemaBlockBytes) }).length -
-      schemaBlockBytes;
-    const schema = { description: "x".repeat(schemaBlockBytes - overhead) };
+      dagCbor.encode({
+        ...definition(true, null),
+        description: "x".repeat(schemaBlockBytes),
+      }).length - schemaBlockBytes;
+    const schema = {
+      ...definition(true, null),
+      description: "x".repeat(schemaBlockBytes - overhead),
+    };
     const exact = await encodeSchema(schema);
     expect(exact.bytes.length).toBe(schemaBlockBytes);
     await expect(
@@ -466,11 +490,14 @@ describe("single-block schemas and immutable content", () => {
     ).resolves.toHaveProperty("cid");
     await expect(
       encodeSchema(
-        { description: `${schema.description}x` },
+        { ...schema, description: `${schema.description}x` },
         { schemaBytes: schemaBlockBytes + 1 },
       ),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-    const oversized = dagCbor.encode({ description: `${schema.description}x` });
+    const oversized = dagCbor.encode({
+      ...schema,
+      description: `${schema.description}x`,
+    });
     const cid = CID.createV1(dagCbor.code, await sha256.digest(oversized));
     await expect(
       openSchema(cid, {
@@ -496,6 +523,48 @@ describe("single-block schemas and immutable content", () => {
   });
 });
 describe("closed schema profile and safe parsing", () => {
+  it("requires complete type metadata and validates default data, including JSONL", async () => {
+    const valid = definition({ type: "object" });
+    for (const value of [
+      { ...valid, name: "" },
+      { ...valid, name: "  " },
+      { ...valid, name: null },
+      { ...valid, description: null },
+      { ...valid, extra: true },
+      { ...valid, entry: { ...valid.entry, defaultValue: 1 } },
+      { ...valid, entry: { ...valid.entry, contentType: "text/plain" } },
+      { ...valid, entry: { ...valid.entry, contentType: "application/jsonl" } },
+      { ...valid, entry: { ...valid.entry, path: "../x" } },
+      { ...valid, entry: { ...valid.entry, path: ".bundle.yaml" } },
+      { ...valid, entry: { ...valid.entry, schema: 1 } },
+      { ...valid, entry: { path: "x", schema: {} } },
+      definition(false, null),
+    ])
+      expect(() => inspectBundleSchema(value)).toThrow(ContentBundleError);
+    const omitted = { name: valid.name, entry: valid.entry };
+    const a = await encodeSchema(valid);
+    const b = await encodeSchema(omitted);
+    expect(a.cid.equals(b.cid)).toBe(true);
+    expect(b.manifest.description).toBe("");
+    const renamed = await encodeSchema({ ...valid, name: "Other" });
+    expect(renamed.cid.equals(a.cid)).toBe(false);
+    const changed = await fixture(
+      valid.entry.schema,
+      { changed: true },
+      {},
+      "application/json",
+      {},
+    );
+    const original = await fixture(
+      valid.entry.schema,
+      {},
+      {},
+      "application/json",
+      {},
+    );
+    expect(changed.schemaCid.equals(original.schemaCid)).toBe(true);
+    expect(changed.root.equals(original.root)).toBe(false);
+  });
   it.each([
     { pattern: "x" },
     { $defs: [] },
@@ -594,7 +663,7 @@ describe("closed schema profile and safe parsing", () => {
     expect(() => safePath(path)).toThrow();
   });
   it("rejects schema directory manifests, builtin keys, invalid schema codecs and invalid entry fields", async () => {
-    const schema = await encodeSchema({});
+    const schema = await encodeSchema(definition({}));
     for (const entry of [
       { path: "x", schema: "/schema", contentType: "application/json" },
       {

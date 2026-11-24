@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{name}}</title>
+  </head>
+  <body>
+    <main>
+      <h1>A conversation with your App</h1>
+      <p>
+        This page talks to the Node backend delivered in the same IPAB bundle.
+      </p>
+      <form id="greeting">
+        <label for="name">Your name</label>
+        <div class="input-row">
+          <input
+            id="name"
+            name="name"
+            required
+            maxlength="80"
+            autocomplete="given-name"
+          />
+          <button type="submit" disabled>Send greeting</button>
+        </div>
+      </form>
+      <p id="reply" role="status">Connecting to the App...</p>
+      <p id="events" aria-live="polite"></p>
+    </main>
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>

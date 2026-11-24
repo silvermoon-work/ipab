@@ -50,6 +50,7 @@ import {
 
 export interface AuthoringOptions {
   signal?: AbortSignal;
+  diagnostic?: (text: string) => void;
   resolveCid?: OpenBundleOptions["resolveCid"];
 }
 export interface BuildResult {
@@ -537,7 +538,7 @@ export async function initBundle(
 }
 export async function scaffoldFiles(
   directory: string,
-  files: ReadonlyMap<string, string>,
+  files: ReadonlyMap<string, string | Uint8Array>,
   options: AuthoringOptions = {},
 ): Promise<string> {
   const root = resolve(directory);

@@ -9,6 +9,15 @@ Bundle 与 Store 已迁入 private
 不包含 npm 交付流程。CLI 的用户确认规范和后续
 Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临时 Open With。
 
+上层 App 构建新增显式 `ipab-prebuild` 项目脚本策略：本地严格类型检查后执行
+指定 npm/pnpm script，从本次 `IPAB_BUILD_DIR` 取得自包含 Node 程序和明确资源，
+再校验、组装 CAR。默认 Node 编译流程不变；两种编译策略互斥，不根据脚本存在猜测。
+脚本模式执行可信项目代码，禁止隐式安装及额外 lifecycle hooks，并检测同项目递归。
+内置 `node`／`web-app` 及数据式本地模板仅负责 Init 脚手架，不改变 App 协议。
+private `@ipab/web-app` 在 App 子进程内提供本机 HTTP、宿主页／opaque iframe、
+受限业务 RPC、事件及连接生命周期；不把 Node context 暴露给浏览器，也不是沙箱。
+完整构建契约、模板扩展和使用方式见 README.md 及 packages/web-app/README.md。
+
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
 Content Bundle 校验存储完整性、路径、`.bundle.yaml`
@@ -53,7 +62,8 @@ build 显式执行项目本地严格 tsc（入口必须参与检查），再由 
 生成自包含 Node CommonJS，使用全新自有 staging 中的准确 App 定义、
 app.json、resources/app.cjs 与显式 assets 文件，最后直接复用内部
 Bundle Builder 生成默认 dist/app.car／CID。不调用自身 CLI，不执行任意 npm
-hooks／JS 配置，不执行 App 或 pin，不创建 watch／任务系统。
+hooks／JS 配置，不执行 App 或 pin，不创建 watch／任务系统。上述为默认 Node 编译路径；显式项目钩子策略允许可信构建代码，
+并与默认编译互斥，不改变底层 Bundle Builder 的纯构建接口。
 CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，不改变 Builder 的纯构建接口。
 未知配置、动态外部依赖、源文件输出与覆盖都明确失败；覆盖已有普通 CAR
 仅由 --replace 授权。staging 与 CAR 临时文件都仅删除本次拥有的路径。

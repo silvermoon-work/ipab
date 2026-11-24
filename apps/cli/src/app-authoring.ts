@@ -20,13 +20,15 @@ import {
   appSchema,
   builtinAppSchema,
 } from "./app-definition.js";
+import { appTemplate } from "./app-templates.js";
+import { buildChain, projectBuild, runPrebuild } from "./app-prebuild.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
 export async function initApp(
   name: string,
   directory = name,
-  options: AuthoringOptions = {},
+  options: AuthoringOptions & { template?: string } = {},
 ) {
   if (
     !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
@@ -36,47 +38,14 @@ export async function initApp(
     throw new HostError(
       "App NAME must be an unscoped lowercase npm package name.",
     );
-  const files = new Map([
-    [
-      "package.json",
-      json({
-        name,
-        version: "0.0.0",
-        private: true,
-        type: "module",
-        engines: { node: ">=22.15.0" },
-        scripts: { typecheck: "tsc --noEmit", build: "ipab build" },
-        devDependencies: {
-          "@types/node": "26.6.6",
-          typescript: "6.0.3",
-        },
-      }),
-    ],
-    [
-      "tsconfig.json",
-      json({
-        compilerOptions: {
-          target: "ES2022",
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          strict: true,
-          noEmit: true,
-          types: ["node"],
-          skipLibCheck: false,
-        },
-        include: ["src/**/*.ts"],
-      }),
-    ],
-    ["ipab.json", json({ entry: "src/main.ts", resources: [], app: {} })],
-    ["src/main.ts", 'console.log("Hello from your IPAB App.");\n'],
-    [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n"],
-  ]);
+  const files = await appTemplate(options.template ?? "node", name, options);
   const schemaCid = (await builtinAppSchema()).cid.toString();
   const root = await scaffoldFiles(directory, files, options);
   return {
     kind: "app-init" as const,
     directory: root,
     name,
+    template: options.template ?? "node",
     schemaCid,
     files: [...files.keys()],
   };
@@ -91,6 +60,7 @@ async function typecheck(
   root: string,
   entry: string,
   options: AuthoringOptions,
+  config = "tsconfig.json",
 ) {
   const compiler = join(root, "node_modules", "typescript", "bin", "tsc");
   try {
@@ -112,7 +82,7 @@ async function typecheck(
       [
         compiler,
         "--project",
-        join(root, "tsconfig.json"),
+        join(root, ...config.split("/")),
         "--noEmit",
         "--incremental",
         "false",
@@ -160,7 +130,7 @@ async function typecheck(
         reject(
           new HostError(
             code === 0
-              ? "App entry is not included in tsconfig.json; include the selected source before building."
+              ? `App entry is not included in ${config}; include the selected source before building.`
               : `App typecheck failed (${String(code)}).\n${diagnostic
                   .split(/\r?\n/)
                   .filter(
@@ -187,6 +157,7 @@ export async function buildApp(
   const stat = await lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new HostError("App build requires a regular project directory.");
+  const chain = await buildChain(root);
   const tree = await filesystemTree(root);
   const config = object(
     JSON.parse(
@@ -200,16 +171,21 @@ export async function buildApp(
     typeof config.entry !== "string" ||
     !Array.isArray(config.resources) ||
     Object.keys(config).some(
-      (key) => !["entry", "resources", "app"].includes(key),
+      (key) => !["entry", "resources", "app", "build"].includes(key),
     )
   )
     throw new HostError(
       "ipab.json requires entry and an explicit resources array, with optional app metadata overrides; unknown fields are not supported.",
     );
+  const prebuild = projectBuild(config.build);
   const entry = relativePath(config.entry);
-  if (!entry.startsWith("src/") || !entry.endsWith(".ts"))
+  if (!prebuild && (!entry.startsWith("src/") || !entry.endsWith(".ts")))
     throw new HostError("App entry must be a .ts file under src/.");
-  await readBytes(tree, entry, 16 * 1024 * 1024, options);
+  if (prebuild && !entry.endsWith(".cjs"))
+    throw new HostError(
+      "Prebuilt App entry must be a relative .cjs file in IPAB_BUILD_DIR.",
+    );
+  if (!prebuild) await readBytes(tree, entry, 16 * 1024 * 1024, options);
   const resources = new Set<string>();
   for (const item of config.resources) {
     if (typeof item !== "string")
@@ -218,12 +194,22 @@ export async function buildApp(
       );
     const path = relativePath(item);
     if (
-      !path.startsWith("assets/") ||
+      (!prebuild && !path.startsWith("assets/")) ||
       path.split("/").some((part) => part.startsWith(".")) ||
+      path === entry ||
+      (prebuild && (path === "app.cjs" || path.startsWith("app.cjs/"))) ||
+      path.startsWith(`${entry}/`) ||
+      entry.startsWith(`${path}/`) ||
+      [...resources].some(
+        (existing) =>
+          path.startsWith(`${existing}/`) || existing.startsWith(`${path}/`),
+      ) ||
       resources.has(path)
     )
       throw new HostError(
-        "Resources must be unique non-hidden files under assets/ (no globs or directories).",
+        prebuild
+          ? "Prebuilt resources must be unique, non-overlapping paths separate from the entry."
+          : "Resources must be unique non-hidden files under assets/ (no globs or directories).",
       );
     resources.add(path);
   }
@@ -254,8 +240,12 @@ export async function buildApp(
   if (description.icon !== undefined) {
     const icon = relativePath(description.icon);
     if (
-      !icon.startsWith("resources/assets/") ||
-      !resources.has(icon.slice("resources/".length))
+      !icon.startsWith("resources/") ||
+      ![...resources].some(
+        (path) =>
+          icon === `resources/${path}` ||
+          (prebuild && icon.startsWith(`resources/${path}/`)),
+      )
     )
       throw new HostError(
         "App icon must reference a selected resources/assets/ file.",
@@ -291,21 +281,37 @@ export async function buildApp(
     if (next === parent) break;
     parent = next;
   }
-  await typecheck(root, entry, options);
+  if (prebuild) {
+    for (const check of prebuild.typecheck) {
+      await readBytes(tree, check.config, 1024 * 1024, options);
+      await readBytes(tree, check.entry, 16 * 1024 * 1024, options);
+      await typecheck(root, check.entry, options, check.config);
+    }
+  } else await typecheck(root, entry, options);
   options.signal?.throwIfAborted();
   const stage = await mkdtemp(join(root, ".ipab-app-"));
   try {
     const { build } = await import("esbuild");
-    await mkdir(join(stage, "resources"));
+    const bundleStage = join(stage, "bundle");
+    const input = prebuild ? join(stage, "input") : root;
+    if (prebuild) {
+      await mkdir(input);
+      await runPrebuild(root, input, pkg, chain, options);
+    }
+    const inputTree = prebuild ? await filesystemTree(input) : tree;
+    const prebuiltSource = prebuild
+      ? await readBytes(inputTree, entry, 8 * 1024 * 1024, options)
+      : undefined;
+    await mkdir(join(bundleStage, "resources"), { recursive: true });
     const program = await build({
-      absWorkingDir: root,
+      absWorkingDir: input,
       entryPoints: [entry],
-      outfile: join(stage, "resources", "app.cjs"),
+      outfile: join(bundleStage, "resources", "app.cjs"),
       bundle: true,
       platform: "node",
       format: "cjs",
       target: "node22.15",
-      packages: "bundle",
+      packages: prebuild ? "external" : "bundle",
       metafile: true,
       write: false,
       logLevel: "silent",
@@ -318,6 +324,7 @@ export async function buildApp(
     if (
       program.outputFiles.length !== 1 ||
       program.outputFiles[0]!.contents.length > 8 * 1024 * 1024 ||
+      (prebuild && Object.keys(program.metafile.inputs).length !== 1) ||
       Object.values(program.metafile.outputs).some((file) =>
         file.imports.some((item) => item.external && !isBuiltin(item.path)),
       )
@@ -326,26 +333,59 @@ export async function buildApp(
         "App must bundle into one self-contained .cjs of at most 8 MiB; only Node builtins may remain external.",
       );
     options.signal?.throwIfAborted();
-    await writeFile(
-      join(stage, "resources", "app.cjs"),
-      program.outputFiles[0]!.contents,
-      { flag: "wx", signal: options.signal },
-    );
-    await writeFile(join(stage, ".bundle.yaml"), stringify(appSchema), {
+    const source = prebuiltSource ?? program.outputFiles[0]!.contents;
+    await writeFile(join(bundleStage, "resources", "app.cjs"), source, {
       flag: "wx",
       signal: options.signal,
     });
-    await writeFile(join(stage, "app.json"), json(description), {
+    await writeFile(join(bundleStage, ".bundle.yaml"), stringify(appSchema), {
       flag: "wx",
       signal: options.signal,
     });
-    for (const path of resources) {
-      const bytes = await readBytes(tree, path, 16 * 1024 * 1024, options);
-      const target = join(stage, "resources", ...path.split("/"));
+    await writeFile(join(bundleStage, "app.json"), json(description), {
+      flag: "wx",
+      signal: options.signal,
+    });
+    let resourceCount = 0;
+    const copyFile = async (path: string) => {
+      if (++resourceCount > 4096)
+        throw new HostError("App resource file count exceeds 4096.");
+      relativePath(path);
+      if (path.split("/").some((part) => part.startsWith(".")))
+        throw new HostError("Hidden prebuilt resources are not supported.");
+      const bytes = await readBytes(inputTree, path, 16 * 1024 * 1024, options);
+      const target = join(bundleStage, "resources", ...path.split("/"));
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, bytes, { flag: "wx", signal: options.signal });
+    };
+    const copyDirectory = async (path: string): Promise<void> => {
+      relativePath(path);
+      if (++resourceCount > 4096)
+        throw new HostError("App resource path count exceeds 4096.");
+      if (path.split("/").some((part) => part.startsWith(".")))
+        throw new HostError("Hidden prebuilt resources are not supported.");
+      for (const item of await inputTree.list(path, options)) {
+        const child = `${path}/${item.name}`;
+        if (item.kind === "directory") await copyDirectory(child);
+        else await copyFile(child);
+      }
+    };
+    for (const path of resources) {
+      if (
+        prebuild &&
+        (await lstat(join(input, ...path.split("/")))).isDirectory()
+      )
+        await copyDirectory(path);
+      else await copyFile(path);
     }
-    const result = await buildBundle(stage, { ...options, output });
+    if (description.icon !== undefined)
+      await readBytes(
+        await filesystemTree(bundleStage),
+        description.icon,
+        16 * 1024 * 1024,
+        options,
+      );
+    const result = await buildBundle(bundleStage, { ...options, output });
     return { ...result, kind: "app-bundle" };
   } finally {
     await rm(stage, { recursive: true, force: true });

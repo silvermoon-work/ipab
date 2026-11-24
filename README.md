@@ -174,6 +174,126 @@ ipab bundle import .\dist\app.car
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
 
+### 模板与扩展
+
+`init NAME [DIR] --template TEMPLATE` 选择脚手架，不选择运行时协议：
+
+```powershell
+ipab init hello
+ipab init my-web-app --template web-app
+ipab init custom-app --template .\my-template
+```
+
+内置 `node` 是原默认模板；`web-app` 是 Vite + 原生 TypeScript 前端及
+自包含 Node 后端。模板只创建文件，不安装、构建或执行代码，也不访问 Store。
+没有远程模板下载或自动 npm 模板安装；未知内置名明确失败。
+Web 模板依赖尚未发布的 private `@ipab/web-app`，使用当前本地包的 `file:`
+引用，不生成虚构的 registry 版本。移动项目到另一台设备前须更新本地依赖来源。
+
+新增内置模板应在 `app-templates.ts` 明确登记。无需改 CLI 即可使用本地目录模板，
+目录包含以下 `ipab-template.json`，源文件按明确清单复制：
+
+```json
+{
+  "version": 1,
+  "files": [
+    { "source": "package.json", "target": "package.json", "render": true },
+    { "source": "ipab.json", "target": "ipab.json" },
+    { "source": "src/main.ts", "target": "src/main.ts" }
+  ]
+}
+```
+
+`render: true` 的文件必须是 UTF-8，可用 `{{name}}` 替换项目名；未知变量失败。
+未启用 render 的文件按原始字节复制，可包含二进制资源。目标必须包含
+`package.json` 和 `ipab.json`；拒绝穿越、符号链接、路径碰撞及
+`node_modules`／`.git`／`dist` 路径。最多 256 个文件，单文件 1 MiB、总计 8 MiB。
+清单本身不执行；只有用户之后显式构建才执行项目代码。
+
+### 项目 `ipab-prebuild` 策略
+
+默认 Node 项目仍由 IPAB 执行严格 tsc 和内建 esbuild，不运行 npm hooks。
+需要自定义构建时，在 `ipab.json` **显式**选择另一种互斥策略：
+
+```json
+{
+  "entry": "app.cjs",
+  "resources": ["web"],
+  "build": {
+    "strategy": "ipab-prebuild",
+    "typecheck": [
+      { "config": "tsconfig.server.json", "entry": "src/server/main.ts" },
+      { "config": "tsconfig.web.json", "entry": "src/web/main.ts" }
+    ]
+  },
+  "app": {}
+}
+```
+
+```json
+{
+  "scripts": {
+    "build": "ipab build",
+    "ipab-prebuild": "node build.config.mjs"
+  }
+}
+```
+
+流程为 `npm run build` → `ipab build` → 严格类型检查 → 指定项目
+`ipab-prebuild` → 产物校验与组装 → 按选项导入 Store。
+直接 `ipab build` 同样完成全部步骤；不自动回调 npm 的 build。
+**这是执行可信项目代码的模式**，与默认只编译源码不同；脚本和工具插件不是沙箱。
+IPAB 不加载 Vite／esbuild 配置、不安装工具，不通过是否存在脚本来猜测策略。
+钩子可自由使用 Vite、esbuild 或其他工具；模板预置的 Vite 为 `8.3.8`。
+
+IPAB 使用项目声明的准确 npm/pnpm `packageManager`；未声明使用 npm。
+不支持的声明、版本不匹配或工具不存在明确失败，不自动安装或切换版本。
+通过 npm 执行时使用 `--ignore-scripts`，通过 pnpm 执行时关闭
+`enable-pre-post-scripts`；只执行指定脚本，不隐式运行其前后置生命周期 hooks。
+直接调用无法定位 pnpm CLI 时，可用已配置的 `pnpm exec ipab build`。
+钩子 stdout/stderr 均作为诊断进入宿主 stderr，不污染 `--json` 输出。
+
+钩子通过环境变量 `IPAB_BUILD_DIR` 获得本次全新绝对输出目录：
+
+```text
+IPAB_BUILD_DIR/
+  app.cjs
+  web/
+    index.html
+    assets/...
+```
+
+此模式的 `entry`／`resources` 相对此目录，而非源码目录；resources 可明确选取
+文件或目录，目录按安全文件树递归收集。Node 程序原始字节保留为
+`resources/app.cjs`，资源进入 `resources/<选取路径>`。不重复编译钩子程序；
+esbuild 只静态分析其自包含性，拒绝动态加载、外部 npm 依赖和额外本地模块。
+入口仍最多 8 MiB，资源单文件 16 MiB，路径总量最多 4096，并受 Bundle 总预算约束。
+类型检查数组必须非空，每个配置执行项目本地严格 tsc，所选 TS／TSX 源入口必须实际参与检查；
+后端和前端配置应分别声明 Node 与 DOM 环境，并包含共享代码及适用测试。
+
+钩子失败、取消、缺产物或产物不合法均停止，不打包旧文件；已有 CAR 保持不变。
+`IPAB_BUILD_CHAIN` 用于同项目递归诊断，钩子不得清除标记或再次调用自身
+`ipab build`。
+取消仅终止本次钩子进程树；不清空源码、旧 dist 或共享 Store。
+输出交接目录及 Bundle staging 均由本次构建拥有，结束后清理。
+
+### Web App
+
+```powershell
+ipab init my-web-app --template web-app
+Set-Location .\my-web-app
+npm install
+ipab build --no-import
+ipab bundle import .\dist\app.car
+ipab exec <返回的App CID>
+```
+
+运行后打开 stderr 报告的本机 URL。前端 Vite 产物与 Node 后端在同一 App Bundle，
+运行不需要 Vite dev server 或 node_modules。前端与后端分开构建、通过框架通信；
+IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 Viewer／Task 业务。
+框架 API、请求校验及页面生命周期见
+[Web App framework](packages/web-app/README.md)。
+
 `build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]`
 默认使用当前项目，
 读取数据配置（不加载 JS 配置、npm lifecycle hooks 或用户插件）：

@@ -14,6 +14,7 @@ import { appDescription, schemaAlias } from "../src/app-definition.js";
 import { object } from "../src/errors.js";
 import { cli, fixture, subprocess } from "./helpers.js";
 import { State } from "../src/state.js";
+import { buildChain, projectBuild, runPrebuild } from "../src/app-prebuild.js";
 
 const require = createRequire(import.meta.url);
 vi.mock("node:fs/promises", async () => {
@@ -475,4 +476,336 @@ describe("App-first authoring", () => {
       "symbolic links",
     );
   }, 60_000);
+  it("extends init with explicit data-only local templates and preserves binary files", async () => {
+    const template = join(work.root, "template");
+    await mkdir(template);
+    const definition = {
+      version: 1,
+      files: [
+        { source: "package.txt", target: "package.json", render: true },
+        { source: "config.json", target: "ipab.json" },
+        { source: "image.bin", target: "assets/image.bin" },
+      ],
+    };
+    await writeFile(
+      join(template, "ipab-template.json"),
+      JSON.stringify(definition),
+    );
+    await writeFile(
+      join(template, "package.txt"),
+      '{"name":"{{name}}","private":true}',
+    );
+    await writeFile(
+      join(template, "config.json"),
+      '{"entry":"src/main.ts","resources":[]}',
+    );
+    await writeFile(join(template, "image.bin"), new Uint8Array([0, 255, 128]));
+    const created = await cli(work.stateDir, [
+      "--json",
+      "init",
+      "custom",
+      project,
+      "--template",
+      template,
+    ]);
+    expect(created.code, created.err).toBe(0);
+    expect(result(created.out).template).toBe(template);
+    expect(
+      JSON.parse(await readFile(join(project, "package.json"), "utf8")),
+    ).toMatchObject({ name: "custom" });
+    expect(await readFile(join(project, "assets", "image.bin"))).toEqual(
+      Buffer.from([0, 255, 128]),
+    );
+    expect(
+      (await cli(work.stateDir, ["init", "unknown", "--template", "unknown"]))
+        .err,
+    ).toContain("Unknown template");
+    for (const files of [
+      [{ source: "../outside", target: "package.json" }],
+      [{ source: "package.txt", target: "../outside" }],
+      [{ source: "package.txt", target: "node_modules/foo" }],
+      [
+        { source: "package.txt", target: "package.json" },
+        { source: "config.json", target: "PACKAGE.JSON" },
+      ],
+      [
+        { source: "package.txt", target: "package.json" },
+        { source: "config.json", target: "package.json/child" },
+      ],
+      [{ source: "package.txt", target: "package.json", unknown: true }],
+      [{ source: "package.txt", target: "package.json", render: "true" }],
+      [{ source: "package.txt", target: "package.json" }],
+    ]) {
+      await writeFile(
+        join(template, "ipab-template.json"),
+        JSON.stringify({ version: 1, files }),
+      );
+      await expect(
+        initApp("invalid", join(work.root, "invalid"), { template }),
+      ).rejects.toThrow();
+    }
+    await writeFile(
+      join(template, "ipab-template.json"),
+      JSON.stringify(definition),
+    );
+    await writeFile(join(template, "package.txt"), "{{unknown}}");
+    await expect(
+      initApp("invalid", join(work.root, "invalid"), { template }),
+    ).rejects.toThrow("Unknown template variable");
+  });
+  it("validates hook contracts and detects recursive builds without guessing a strategy", async () => {
+    expect(projectBuild(undefined)).toBeUndefined();
+    for (const build of [
+      {},
+      { strategy: "ipab-prebuild", typecheck: [] },
+      { strategy: "ipab-prebuild", typecheck: [{}] },
+      {
+        strategy: "ipab-prebuild",
+        typecheck: [{ config: "../secret", entry: "src/main.ts" }],
+      },
+      {
+        strategy: "ipab-prebuild",
+        typecheck: [{ config: "config.js", entry: "src/main.ts" }],
+      },
+      {
+        strategy: "ipab-prebuild",
+        typecheck: [{ config: "tsconfig.json", entry: "other.ts" }],
+      },
+      {
+        strategy: "ipab-prebuild",
+        typecheck: [{ config: "tsconfig.json", entry: "src/main.js" }],
+      },
+      {
+        strategy: "ipab-prebuild",
+        typecheck: [
+          { config: "tsconfig.json", entry: "src/main.ts", unknown: true },
+        ],
+      },
+    ])
+      expect(() => projectBuild(build)).toThrow();
+    await mkdir(project);
+    const chain = await buildChain(project);
+    vi.stubEnv("IPAB_BUILD_CHAIN", JSON.stringify(chain));
+    await expect(buildChain(project)).rejects.toThrow("Recursive");
+    vi.stubEnv("IPAB_BUILD_CHAIN", '["parent",1]');
+    await expect(buildChain(project)).rejects.toThrow("Invalid");
+    vi.stubEnv("IPAB_BUILD_CHAIN", "{");
+    await expect(buildChain(project)).rejects.toThrow();
+  });
+  it("builds the real Web App template with Vite, preserving front-end assets in one Node App CAR", async () => {
+    await initApp("web-demo", project, { template: "web-app" });
+    await projectTools(project);
+    for (const name of ["esbuild", "vite", "@ipab/web-app"]) {
+      if (name.startsWith("@ipab/"))
+        await mkdir(join(project, "node_modules", "@ipab"), {
+          recursive: true,
+        });
+      await symlink(
+        dirname(require.resolve(`${name}/package.json`)),
+        join(project, "node_modules", name),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    }
+    const built = await cli(work.stateDir, ["--json", "build", project]);
+    expect(built.code, built.err).toBe(0);
+    expect(result(built.out)).toMatchObject({
+      kind: "app-bundle",
+      imported: true,
+    });
+    const bundle = await loadCar(join(project, "dist", "app.car"));
+    const html = await new Response(
+      await bundle.readFile("resources/web/index.html"),
+    ).text();
+    expect(html).toContain("<title>web-demo</title>");
+    const js = /src="\.\/([^"]+\.js)"/.exec(html)?.[1];
+    const css = /href="\.\/([^"]+\.css)"/.exec(html)?.[1];
+    expect(js).toBeDefined();
+    expect(css).toBeDefined();
+    expect(
+      await new Response(await bundle.readFile(`resources/web/${js!}`)).text(),
+    ).toContain("Send a greeting");
+    expect(
+      await new Response(await bundle.readFile(`resources/web/${css!}`)).text(),
+    ).toContain("#18334b");
+    const backend = await new Response(
+      await bundle.readFile("resources/app.cjs"),
+    ).text();
+    expect(backend).toContain("Your App is listening");
+    await expect(bundle.readFile("src/server/main.ts")).rejects.toThrow();
+    await expect(
+      bundle.readFile("node_modules/vite/package.json"),
+    ).rejects.toThrow();
+    await expect(bundle.readFile("build.config.mjs")).rejects.toThrow();
+    const pkgPath = join(project, "package.json");
+    const pkg = object(
+      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+      "package",
+    );
+    const oldCar = await readFile(join(project, "dist", "app.car"));
+    await writeFile(
+      pkgPath,
+      JSON.stringify({
+        ...pkg,
+        scripts: {
+          "ipab-prebuild": `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} build --no-import`,
+        },
+      }),
+    );
+    const recursive = await cli(work.stateDir, [
+      "build",
+      project,
+      "--replace",
+      "--no-import",
+    ]);
+    expect(recursive.code).toBe(1);
+    expect(recursive.err).toContain("Recursive ipab build");
+    expect(await readFile(join(project, "dist", "app.car"))).toEqual(oldCar);
+  }, 120_000);
+  it("assembles fresh hook output, skips lifecycle hooks and rejects invalid programs without replacing the CAR", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const config = {
+      entry: "app.cjs",
+      resources: ["web"],
+      build: {
+        strategy: "ipab-prebuild",
+        typecheck: [{ config: "tsconfig.json", entry: "src/main.ts" }],
+      },
+      app: { icon: "resources/web/icon.svg" },
+    };
+    await writeFile(join(project, "ipab.json"), JSON.stringify(config));
+    const hook = join(project, "prebuild.mjs");
+    const writeHook = async (source: string) =>
+      writeFile(
+        hook,
+        `
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+const output = process.env.IPAB_BUILD_DIR;
+await mkdir(join(output, "web"));
+await writeFile(join(output, "app.cjs"), ${JSON.stringify(source)});
+await writeFile(join(output, "web", "index.html"), "<h1>Fresh output</h1>");
+await writeFile(join(output, "web", "icon.svg"), "<svg/>");
+`,
+      );
+    await writeHook('console.log("fresh");');
+    const pkgPath = join(project, "package.json");
+    const pkg = object(
+      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+      "package",
+    );
+    await writeFile(
+      pkgPath,
+      JSON.stringify({
+        ...pkg,
+        scripts: {
+          build: "ipab build",
+          "ipab-prebuild": "node prebuild.mjs",
+          "preipab-prebuild": "node missing-pre-hook.cjs",
+          "postipab-prebuild": "node missing-post-hook.cjs",
+        },
+      }),
+    );
+    const first = await cli(work.stateDir, [
+      "--json",
+      "build",
+      project,
+      "--no-import",
+    ]);
+    expect(first.code, first.err).toBe(0);
+    expect(first.err).toContain("ipab-prebuild");
+    expect(result(first.out).imported).toBe(false);
+    const carPath = join(project, "dist", "app.car");
+    const original = await readFile(carPath);
+    const bundle = await loadCar(carPath);
+    expect(
+      await new Response(
+        await bundle.readFile("resources/web/index.html"),
+      ).text(),
+    ).toContain("Fresh output");
+    expect(
+      await new Response(await bundle.readFile("resources/app.cjs")).text(),
+    ).toBe('console.log("fresh");');
+    for (const source of [
+      'require("external-package");',
+      "require(process.argv[2]);",
+      'require("./web/other.cjs");',
+      "export const invalid = ;",
+    ]) {
+      await writeHook(source);
+      await expect(buildApp(project, { replace: true })).rejects.toThrow();
+      expect(await readFile(carPath)).toEqual(original);
+    }
+    await writeFile(hook, "process.exitCode = 7;");
+    await expect(buildApp(project, { replace: true })).rejects.toThrow(
+      "ipab-prebuild failed",
+    );
+    expect(await readFile(carPath)).toEqual(original);
+    await writeFile(hook, 'console.log("No output");');
+    await expect(buildApp(project, { replace: true })).rejects.toThrow();
+    expect(
+      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
+    ).toEqual([]);
+  }, 120_000);
+  it("rejects missing hooks and unsupported package managers, and cancels only the spawned hook tree", async () => {
+    await mkdir(project);
+    const output = join(project, "output");
+    await mkdir(output);
+    for (const pkg of [
+      { scripts: {} },
+      { scripts: { "ipab-prebuild": "" } },
+      {
+        scripts: { "ipab-prebuild": "node foo" },
+        packageManager: "yarn@4.0.0",
+      },
+      { scripts: { "ipab-prebuild": "node foo" }, packageManager: "npm@0.0.0" },
+    ])
+      await expect(runPrebuild(project, output, pkg, [], {})).rejects.toThrow();
+    const pkg = { scripts: { "ipab-prebuild": "node wait.cjs" } };
+    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
+    await writeFile(
+      join(project, "wait.cjs"),
+      'console.log("HOOK_WAITING"); setInterval(() => {}, 1000);',
+    );
+    const controller = new AbortController();
+    await expect(
+      runPrebuild(project, output, pkg, [], {
+        signal: controller.signal,
+        diagnostic(text) {
+          if (text.includes("HOOK_WAITING"))
+            controller.abort(new Error("Stop hook."));
+        },
+      }),
+    ).rejects.toThrow("Stop hook.");
+    const already = AbortSignal.abort(new Error("Already stopped."));
+    await expect(
+      runPrebuild(project, output, pkg, [], { signal: already }),
+    ).rejects.toThrow("Already stopped.");
+  }, 30_000);
+  it("uses the declared pnpm runner without its optional lifecycle hooks", async () => {
+    await mkdir(project);
+    const output = join(project, "output");
+    await mkdir(output);
+    const workspace = object(
+      JSON.parse(
+        await readFile(resolve("..", "..", "package.json"), "utf8"),
+      ) as unknown,
+      "workspace",
+    );
+    const pkg = {
+      packageManager: workspace.packageManager,
+      scripts: {
+        "ipab-prebuild": "node write.cjs",
+        "preipab-prebuild": "node missing.cjs",
+        "postipab-prebuild": "node missing.cjs",
+      },
+    };
+    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
+    await writeFile(
+      join(project, "write.cjs"),
+      'require("node:fs").writeFileSync(require("node:path").join(process.env.IPAB_BUILD_DIR,"marker"),"pnpm hook");',
+    );
+    await runPrebuild(project, output, pkg, [], {});
+    expect(await readFile(join(output, "marker"), "utf8")).toBe("pnpm hook");
+  }, 30_000);
 });

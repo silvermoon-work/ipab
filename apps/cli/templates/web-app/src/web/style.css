@@ -1,0 +1,70 @@
+:root {
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  color: #18334b;
+  background: #f7fafc;
+  color-scheme: light;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 46rem;
+  margin: 10vh auto;
+  padding: 2rem;
+}
+h1 {
+  font-size: clamp(2rem, 6vw, 3.6rem);
+  line-height: 1.1;
+  font-weight: 600;
+  max-width: 14ch;
+}
+p {
+  line-height: 1.65;
+  max-width: 65ch;
+}
+form {
+  margin-top: 3rem;
+}
+label {
+  display: block;
+  margin-bottom: 0.6rem;
+  font-weight: 600;
+}
+.input-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+input,
+button {
+  font: inherit;
+  padding: 0.8rem 1rem;
+  border-radius: 0.35rem;
+}
+input {
+  min-width: 0;
+  flex: 1 1 14rem;
+  border: 1px solid #7895a6;
+  background: white;
+}
+button {
+  border: 1px solid #067a79;
+  background: #067a79;
+  color: white;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+:focus-visible {
+  outline: 3px solid #18334b;
+  outline-offset: 3px;
+}
+#reply {
+  padding: 1rem 0;
+  font-size: 1.25rem;
+}
+#events {
+  color: #38556a;
+}

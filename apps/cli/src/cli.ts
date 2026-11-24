@@ -67,7 +67,7 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
-  init: "init NAME [DIR]",
+  init: "init NAME [DIR] [--template TEMPLATE]",
   build: "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]",
   "bundle init": "bundle init TYPE DIR",
   "bundle build":
@@ -112,15 +112,21 @@ See README.md and docs/design-overview.md. Node Apps are NOT sandboxed.`;
     return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
 Examples: ipab init hello
           ipab init hello .\\projects\\hello
+          ipab init my-web-app --template web-app
           ipab --json build hello --replace
 init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
+--template selects node (default), web-app, or an explicit local directory with ipab-template.json.
+Local templates are data-only, explicitly selected, and never installed or executed by init.
 Install the generated package's dependencies explicitly; use a locally linked ipab.
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
-ipab.json selects src/main.ts and explicit assets/ files; default output is dist/app.car.
+ipab.json can explicitly select ipab-prebuild: strict checks, project script, then artifact assembly.
+The hook receives IPAB_BUILD_DIR; it must not invoke ipab build recursively.
+Hook mode executes trusted project code, never installs dependencies, and skips extra script lifecycle hooks.
+Default Node mode selects src/main.ts and explicit assets/ files; output is dist/app.car.
 --output FILE selects a .car destination; --replace replaces only a regular artifact.
 build imports the result into the configured Store without pinning; --no-import emits only CAR.
 Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
-No npm hooks, installs, execution or pins. --json emits result metadata, including imported for builds.
+No App execution or pins. --json emits result metadata, including imported for builds.
 Global flags precede COMMAND. Use -h/--help for help.`;
   if (usage && path.startsWith("bundle ")) {
     if (path === "bundle import")
@@ -425,15 +431,17 @@ export function parse(argv: readonly string[]): Parsed {
             ? ["yes"]
             : [];
   const values =
-    result.path === "bundle build" || result.path === "build"
-      ? ["output"]
-      : result.path === "history list"
-        ? ["app", "status", "since", "until", "limit", "before"]
-        : result.path === "history remove"
-          ? ["app", "status", "since", "until"]
-          : result.path === "pin list"
-            ? ["kind", "type"]
-            : [];
+    result.path === "init"
+      ? ["template"]
+      : result.path === "bundle build" || result.path === "build"
+        ? ["output"]
+        : result.path === "history list"
+          ? ["app", "status", "since", "until", "limit", "before"]
+          : result.path === "history remove"
+            ? ["app", "status", "since", "until"]
+            : result.path === "pin list"
+              ? ["kind", "type"]
+              : [];
   while (tokens.length) {
     const value = tokens.shift()!;
     if (value.startsWith("--") || value === "-o") {
@@ -576,6 +584,9 @@ async function performCli(
           };
           const request = {
             signal: controller.signal,
+            diagnostic: (text: string) => {
+              io.err(text);
+            },
             resolveCid: async (cid: CID, options: { signal?: AbortSignal }) => {
               return (await getStore()).block.get(cid.toString(), options);
             },
@@ -590,7 +601,12 @@ async function performCli(
             io.err("Validating and importing CAR into Store...");
           const result =
             parsed.path === "init"
-              ? await initApp(first!, second, request)
+              ? await initApp(first!, second, {
+                  ...request,
+                  ...(typeof parsed.options.template === "string"
+                    ? { template: parsed.options.template }
+                    : {}),
+                })
               : parsed.path === "build"
                 ? await buildApp(first, {
                     ...request,

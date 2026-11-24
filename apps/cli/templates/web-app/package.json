@@ -1,0 +1,23 @@
+{
+  "name": "{{name}}",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "build": "ipab build",
+    "ipab-prebuild": "node build.config.mjs",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit"
+  },
+  "dependencies": {
+    "@ipab/web-app": "{{webAppDependency}}"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vite": "8.3.8"
+  }
+}

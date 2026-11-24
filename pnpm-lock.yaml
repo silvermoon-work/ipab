@@ -90,6 +90,9 @@ catalogs:
     typescript-eslint:
       specifier: 8.72.2
       version: 8.72.2
+    vite:
+      specifier: 8.3.8
+      version: 8.3.8
     vitest:
       specifier: 5.1.0
       version: 5.1.0
@@ -149,6 +152,9 @@ importers:
       '@ipab/ipfs-store':
         specifier: workspace:*
         version: link:../../packages/ipfs-store
+      '@ipab/web-app':
+        specifier: workspace:*
+        version: link:../../packages/web-app
       '@ipld/car':
         specifier: 'catalog:'
         version: 5.4.6
@@ -186,6 +192,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
         version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1))
@@ -303,6 +312,21 @@ importers:
       ipfs-unixfs-importer:
         specifier: 'catalog:'
         version: 17.1.1(supports-color@10.2.2)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1))
+
+  packages/web-app:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 5.1.0(vitest@5.1.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

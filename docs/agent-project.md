@@ -10,7 +10,8 @@ Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`�
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
 `workspace:*` 引用 Store。`@ipab/bundle-builder` 也为 private；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-四个 code 成员均 private，不迁移旧发布归属。
+五个 code 成员均 private，不迁移旧发布归属；新增 `@ipab/web-app`
+是本机浏览器桥接框架。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
 
@@ -76,6 +77,15 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   复用 Store put 保存原始 block，不 pin／retain，不执行 App／GC 或启动 daemon；
   导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
   不打包或删除旧 staging。完整公共接口与资源路径见 README.md。
+- Init 支持 `--template node|web-app|显式本地目录`；本地 `ipab-template.json`
+  v1 只列 source/target/render 文件映射，不运行脚本或安装模板依赖。
+  默认 Node 编译不变；显式 `build.strategy=ipab-prebuild` 执行可信项目代码，
+  先按 typecheck 配置运行严格本地 tsc，再调用准确 npm/pnpm 的指定 script，
+  不运行额外 lifecycle hooks。钩子只写本次 `IPAB_BUILD_DIR`，不得清除
+  `IPAB_BUILD_CHAIN` 后递归构建；IPAB 从新产物组装并保留原程序字节。
+  Web 模板依赖本地 private 框架的 file 引用，Vite 只在项目构建期执行。
+  框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
+  不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。
 - 用户 Alias 由具名 pin 替代；旧 aliases 表保留但不作为 pin 解析或自动迁移。
   pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
   原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，

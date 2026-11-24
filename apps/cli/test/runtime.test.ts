@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFile, readFile, access } from "node:fs/promises";
+import { writeFile, readFile, access, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { encodeSchema } from "@ipab/bundle";
@@ -21,6 +21,8 @@ import {
 import { Ownership } from "../src/history.js";
 import { execute } from "../src/runtime.js";
 import { addPin, renamePin } from "../src/pins.js";
+import { ExecutionLogs, logFiles } from "../src/logs.js";
+import { parse } from "../src/cli.js";
 import {
   app,
   cli,
@@ -115,8 +117,10 @@ describe("real UnixFS and Node subprocess runtime", () => {
     expect(state.hold(owner.owner)).toBeUndefined();
   });
 
-  it("ordinary argv/stdin/binary stdout are exact and output is the entire finalized directory", async () => {
-    const source = `const fs = require("node:fs");
+  it.each([false, true])(
+    "ordinary argv/stdin/binary stdout remain exact with logging=%s",
+    async (log) => {
+      const source = `const fs = require("node:fs");
 const input = fs.readFileSync(0);
 process.stdout.write(input);
 process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
@@ -124,41 +128,149 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
   await ipab.output.writeFile("nested/result.bin", new ReadableStream({start(c) { c.enqueue(input); c.close(); }}));
   await ipab.output.writeFile("second.txt", new ReadableStream({start(c) { c.enqueue(Buffer.from("two")); c.close(); }}));
 })().catch(e => {console.error(e); process.exitCode = 9;});`;
-    const root = await app(work.store, source);
-    const argv = ["--help", "--cid", "--", "--json", "a b", "%", "☃"];
-    const input = Buffer.from([0, 255, 1, 2, 13, 10]);
+      const root = await app(work.store, source);
+      const argv = ["--help", "--cid", "--", "--json", "a b", "%", "☃"];
+      const input = Buffer.from([0, 255, 1, 2, 13, 10]);
+      const result = await subprocess(
+        [
+          "--state-dir",
+          work.stateDir,
+          "exec",
+          ...(log ? ["--log"] : []),
+          root,
+          ...argv,
+        ],
+        config,
+        input,
+      );
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toEqual(input);
+      expect(result.stderr).toContain(JSON.stringify(argv));
+      const run = state.runs()[0]!;
+      expect(run.status).toBe("succeeded");
+      expect(run.appCid).toBe(root);
+      expect(run.argv).toEqual(argv);
+      expect(run.retention.owned).toBe(true);
+      expect(run.outputCid).not.toBe(root);
+      expect((await work.store.read(run.outputCid!)).type).toBe("directory");
+      const resultNode = await work.store.read(
+        `${run.outputCid}/nested/result.bin`,
+      );
+      expect(resultNode.type).not.toBe("directory");
+      if (resultNode.type !== "directory")
+        expect(
+          await bytes(ReadableStream.from(resultNode.content()), 100),
+        ).toEqual(Uint8Array.from(input));
+      const second = await work.store.read(`${run.outputCid}/second.txt`);
+      if (second.type !== "directory")
+        expect(
+          new TextDecoder().decode(
+            await bytes(ReadableStream.from(second.content()), 100),
+          ),
+        ).toBe("two");
+      expect(result.stdout.toString()).not.toContain(run.outputCid!);
+      expect(result.stderr).toContain(`Output: ${run.outputCid}`);
+      const files = await logFiles(work.stateDir, run.id);
+      if (log) {
+        expect(run.log).toBe("complete");
+        expect(await readFile(files.stdout!)).toEqual(input);
+        expect((await readFile(files.stderr!)).toString()).toBe(
+          JSON.stringify(argv) + "\n",
+        );
+        const shown = await cli(work.stateDir, [
+          "--json",
+          "history",
+          "show",
+          run.id,
+        ]);
+        expect(JSON.parse(shown.out) as unknown).toMatchObject({
+          log: "complete",
+          logs: files,
+        });
+        await unlink(files.stdout!);
+        const missing = await cli(work.stateDir, ["history", "show", run.id]);
+        expect(missing.out).toContain("Stdout log: unavailable");
+        expect(missing.out).toContain(files.stderr!);
+        expect(
+          (await cli(work.stateDir, ["history", "remove", run.id, "--yes"]))
+            .code,
+        ).toBe(0);
+        await expect(
+          access(join(work.stateDir, "logs", run.id)),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        expect(run.log).toBeUndefined();
+        expect(files).toEqual({ stdout: null, stderr: null });
+      }
+    },
+    20000,
+  );
+
+  it("log flag is host-only before APP and fails before execution with history disabled", async () => {
+    expect(parse(["exec", "--log", "--help"]).help).toBe(true);
+    expect(parse(["exec", "--log", "reader", "--log"]).positional).toEqual([
+      "reader",
+      "--log",
+    ]);
+    expect(() => parse(["exec", "--log"])).toThrow("Expected APP");
+    expect(() => parse(["exec", "--log", "--log", "reader"])).toThrow(
+      "Expected APP",
+    );
+    const root = await app(work.store, "throw new Error('must not execute');");
+    state.setConfig("history.enabled", false);
     const result = await subprocess(
-      ["--state-dir", work.stateDir, "exec", root, ...argv],
+      ["--state-dir", work.stateDir, "exec", "--log", root],
       config,
-      input,
     );
-    expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toEqual(input);
-    expect(result.stderr).toContain(JSON.stringify(argv));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("requires history.enabled=true");
+    expect(state.runs()).toEqual([]);
+  });
+
+  it("failed Apps retain complete debug output and logging failures are recorded explicitly", async () => {
+    const root = await app(
+      work.store,
+      "console.log('debug'); console.error('failure'); process.exitCode = 7;",
+    );
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", "--log", root],
+      config,
+    );
+    expect(result.code).toBe(7);
     const run = state.runs()[0]!;
-    expect(run.status).toBe("succeeded");
-    expect(run.appCid).toBe(root);
-    expect(run.argv).toEqual(argv);
-    expect(run.retention.owned).toBe(true);
-    expect(run.outputCid).not.toBe(root);
-    expect((await work.store.read(run.outputCid!)).type).toBe("directory");
-    const resultNode = await work.store.read(
-      `${run.outputCid}/nested/result.bin`,
+    expect(run).toMatchObject({
+      status: "failed",
+      log: "complete",
+      appExitCode: 7,
+    });
+    const files = await logFiles(work.stateDir, run.id);
+    expect((await readFile(files.stdout!)).toString()).toBe("debug\n");
+    expect((await readFile(files.stderr!)).toString()).toBe("failure\n");
+    expect(
+      (await cli(work.stateDir, ["history", "remove", run.id, "--yes"])).code,
+    ).toBe(0);
+    await expect(
+      access(join(work.stateDir, "logs", run.id)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    vi.spyOn(ExecutionLogs.prototype, "forward").mockRejectedValue(
+      new Error("disk full"),
     );
-    expect(resultNode.type).not.toBe("directory");
-    if (resultNode.type !== "directory")
-      expect(
-        await bytes(ReadableStream.from(resultNode.content()), 100),
-      ).toEqual(Uint8Array.from(input));
-    const second = await work.store.read(`${run.outputCid}/second.txt`);
-    if (second.type !== "directory")
-      expect(
-        new TextDecoder().decode(
-          await bytes(ReadableStream.from(second.content()), 100),
-        ),
-      ).toBe("two");
-    expect(result.stdout.toString()).not.toContain(run.outputCid!);
-    expect(result.stderr).toContain(`Output: ${run.outputCid}`);
+    const execution = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        log: true,
+        diagnostic: () => {},
+      },
+    );
+    expect(execution.exitCode).not.toBe(0);
+    expect(execution.record.log).toBe("incomplete");
+    expect(execution.record.error?.message).toContain("disk full");
+    expect(execution.record.outputCid).toBeNull();
   }, 20000);
 
   it("reads arbitrary Space without manifest and links only valid UnixFS file/directory targets", async () => {
@@ -278,7 +390,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     );
     renamePin(state, "program", "renamed-program");
     const result = await subprocess(
-      ["--state-dir", work.stateDir, "open", "document"],
+      ["--state-dir", work.stateDir, "open", "--log", "document"],
       config,
     );
     expect(result.code, result.stderr).toBe(0);
@@ -286,6 +398,10 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(result.stdout.toString()).toBe(JSON.stringify(actual));
     expect(state.runs()[0]?.argv).toEqual(actual);
     expect(state.runs()[0]?.origin).toBe("open");
+    const logs = await logFiles(work.stateDir, state.runs()[0]!.id);
+    expect((await readFile(logs.stdout!)).toString()).toBe(
+      JSON.stringify(actual),
+    );
     state.removeAssociation(input.schema);
     const missing = await subprocess(
       ["--state-dir", work.stateDir, "open", input.root],

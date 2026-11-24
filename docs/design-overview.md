@@ -92,6 +92,13 @@ rename 在单一 SQLite 事务中只改 name；ready 才能解析或改名，临
 App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化描述，
 不是直接把任意 `.bundle.yaml` 文件的存在当作有效 App：
 
+运行仍使用普通 Node 子进程：初始化独立 IPC Context 后 require 自包含
+CommonJS 入口，不调用导出的 main(context)，不 override Console，也不提供沙箱。
+默认继承 stdio；exec --log APP / open --log CONTENT 时宿主分流 stdout/stderr
+至原输出和状态目录中的执行日志，stdin 继续继承且不记录。
+日志要求 History 开启，随历史删除；show 关联仍存在的日志，不将日志作为
+Output Space 或 Store pin。日志模式 stdout/stderr 不再是 TTY。
+
 ```yaml
 name: IPAB Node App
 description: Self-contained Node CommonJS application and declarative metadata.

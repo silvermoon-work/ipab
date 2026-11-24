@@ -2,7 +2,7 @@
 
 ## 当前实现与规范优先级
 
-当前 `apps/ipab` 实现已确认 CLI：exec/open、alias、register、config、
+当前 `apps/cli` 实现已确认 CLI：exec/open、alias、register、config、
 history、上层 App init/build，以及 Node 子进程运行时。Content
 Bundle 与 Store 已迁入 private
 成员 `@ipab/bundle`、`@ipab/ipfs-store`，包含 Kubo pin 兼容修复，

@@ -11,10 +11,10 @@ IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/
 
 ```sh
 pnpm build
-node apps/ipab/dist/main.js --help
+node apps/cli/dist/main.js --help
 ```
 
-以下示例的 `ipab` 指构建后的 `apps/ipab/dist/main.js`（也可用 Node 直接运行）。
+以下示例的 `ipab` 指构建后的 `apps/cli/dist/main.js`（也可用 Node 直接运行）。
 CID 占位符应替换为真实的 CID：
 
 ```sh
@@ -34,7 +34,7 @@ CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前保持 private，尚未发�
 ```powershell
 pnpm build
 $pnpmEntry = pnpm exec node -p 'process.env.npm_execpath'
-node $pnpmEntry add --global "@ipab/cli@link:$((Resolve-Path apps\ipab).Path)"
+node $pnpmEntry add --global "@ipab/cli@link:$((Resolve-Path apps\cli).Path)"
 ipab --version
 ```
 
@@ -182,7 +182,7 @@ Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 
 实际数据修改不改变类型 CID。
 
 从仓库根体验以下离线闭环（`ipab` 也可以替换为
-`node .\apps\ipab\dist\main.js`）：
+`node .\apps\cli\dist\main.js`）：
 
 ```powershell
 ipab bundle build .\examples\note-type\.bundle.yaml --schema-only
@@ -341,7 +341,7 @@ Node 选择依据为 2026-11-23 搭建时读取的
 ## 结构
 
 ```text
-apps/ipab/             @ipab/cli：private CLI、Node runtime、IPC context 与回归测试
+apps/cli/              @ipab/cli：private CLI、Node runtime、IPC context 与回归测试
 packages/bundle/       @ipab/bundle：private 存储完整性、入口校验和 Schema
 packages/bundle-builder/ @ipab/bundle-builder：repeatable VFS 与确定性 UnixFS/CAR
 packages/ipfs-store/   @ipab/ipfs-store：private Local/Kubo Store 与保留协调

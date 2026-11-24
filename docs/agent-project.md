@@ -3,7 +3,7 @@
 ## Scope
 
 本仓库是 IPAB（InterPlanetary Application Bundle）的独立工程 workspace。
-当前 `apps/ipab` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、
+当前 `apps/cli` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、
 本地元数据及 Store owner 协调。普通 App argv/stdio 取代早期单 CID Task 输入；
 关联管理叫 register，不是 apps；open 不提供临时应用覆盖。
 Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`，

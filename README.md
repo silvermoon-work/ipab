@@ -74,7 +74,10 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   也接受离线内置类型 alias
   `builtin:node-app.v1`，set/remove 都解析并保存准确 CID。
   不接受 UnixFS 目录 CID 或旧 builtin 注册键；builtin 不是 App 执行目标。
-- `alias list/set/remove` 只维护准确 CID 引用，不构成 alias 链，不 pin 或执行。
+- `alias list` 同时显示用户 alias 和只读内置类型 `builtin:node-app.v1`
+  的准确 CID；
+  内置类型不写入用户数据库，`alias set/remove` 不能修改它。
+  `alias set/remove` 只维护用户准确 CID 引用，不构成 alias 链，不 pin 或执行。
   `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
   `--replace`；
   相同值幂等成功。Alias 的后续修改不影响关联或历史。

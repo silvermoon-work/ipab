@@ -16,6 +16,7 @@ import {
 import { HostError, message, object } from "../src/errors.js";
 import { aliasName, exactCid, State } from "../src/state.js";
 import { appSchemaCid } from "../src/space.js";
+import { appBuiltinAlias } from "../src/app-definition.js";
 import { fixture, cli, record, importFiles } from "./helpers.js";
 
 describe("management contract", () => {
@@ -60,13 +61,19 @@ describe("management contract", () => {
     state.saveRun(succeeded);
     state.close();
     const aliases = await cli(work.stateDir, ["alias", "list"]);
-    expect(aliases.out).toMatch(/^NAME\s+CID\nreader\s+/);
+    expect(aliases.out).toMatch(/^NAME\s+CID\nbuiltin:node-app.v1\s+/);
+    expect(aliases.out).toContain("reader");
     expect(aliases.out).toContain(another);
     expect(
       JSON.parse(
         (await cli(work.stateDir, ["--json", "alias", "list"])).out,
       ) as unknown,
-    ).toEqual({ items: [{ name: "reader", cid: another }] });
+    ).toEqual({
+      items: [
+        { name: appBuiltinAlias, cid: schema },
+        { name: "reader", cid: another },
+      ],
+    });
     const registered = await cli(work.stateDir, ["register", "list"]);
     expect(registered.out).toMatch(/^SCHEMA CID\s+APP CID\s+ARGV\n/);
     expect(registered.out).toContain(JSON.stringify(association.argv));
@@ -442,7 +449,6 @@ describe("management contract", () => {
 
   it("empty human lists succeed clearly and confirmations are not JSON fallbacks", async () => {
     for (const [group, text] of [
-      ["alias", "No aliases."],
       ["register", "No associations."],
       ["history", "No ended executions."],
     ])
@@ -566,7 +572,7 @@ describe("management contract", () => {
 
   it("aliases are exact identities, idempotent and independent of registrations", async () => {
     expect((await cli(work.stateDir, ["--json", "alias", "list"])).out).toBe(
-      '{"items":[]}',
+      JSON.stringify({ items: [{ name: appBuiltinAlias, cid: schema }] }),
     );
     for (const name of ["z", "a"]) {
       const result = await cli(work.stateDir, [
@@ -598,6 +604,7 @@ describe("management contract", () => {
     expect(JSON.parse(listed.out) as unknown).toEqual({
       items: [
         { name: "a", cid: schema },
+        { name: appBuiltinAlias, cid: schema },
         { name: "z", cid: another },
       ],
     });
@@ -627,6 +634,28 @@ describe("management contract", () => {
     expect(() => state.resolve("unknown")).toThrow("Unknown");
     expect(() => state.resolve(another, true)).toThrow("DAG-CBOR");
     state.close();
+  });
+
+  it("lists builtin type aliases without persisting them or allowing user mutation", async () => {
+    const listed = await cli(work.stateDir, ["alias", "list"]);
+    expect(listed.code).toBe(0);
+    expect(listed.out).toContain(appBuiltinAlias);
+    expect(listed.out).toContain(schema);
+    const state = new State(work.stateDir);
+    expect(state.aliases()).toEqual([]);
+    state.close();
+    for (const args of [
+      ["alias", "set", appBuiltinAlias, another, "--replace"],
+      ["alias", "remove", appBuiltinAlias],
+    ]) {
+      const response = await cli(work.stateDir, args);
+      expect(response.code).toBe(2);
+    }
+    expect(
+      JSON.parse(
+        (await cli(work.stateDir, ["--json", "alias", "list"])).out,
+      ) as unknown,
+    ).toEqual({ items: [{ name: appBuiltinAlias, cid: schema }] });
   });
 
   it("registrations validate full-token templates and require deliberate replacement", async () => {

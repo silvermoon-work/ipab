@@ -26,7 +26,7 @@ import { validatedBundle } from "./space.js";
 import { State, type RunRecord } from "./state.js";
 import { buildBundle, initBundle, inspectBundle } from "./authoring.js";
 import { buildApp, initApp } from "./app-authoring.js";
-import { schemaAlias } from "./app-definition.js";
+import { builtinTypes, schemaAlias } from "./app-definition.js";
 
 export interface IO {
   out(text: string): void;
@@ -603,7 +603,12 @@ async function performCli(
         break;
       }
       case "alias list": {
-        const aliases = state.aliases();
+        const aliases = [
+          ...state.aliases(),
+          ...[...builtinTypes].map(([name, cid]) => ({ name, cid })),
+        ].sort((left, right) =>
+          left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+        );
         emit(
           { items: aliases },
           table(

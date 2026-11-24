@@ -37,7 +37,6 @@ export interface BundleLimits {
   schemaBytes: number;
   documentBytes: number;
   schemas: number;
-  references: number;
   nodes: number;
 }
 export interface OpenBundleOptions {

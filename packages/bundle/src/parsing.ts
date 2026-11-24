@@ -39,25 +39,6 @@ export function rootPath(value: string): string {
   return safePath(value.slice(1));
 }
 
-export function parseContentRef(
-  value: string,
-  rule: string,
-):
-  | { kind: "bundle"; path: string }
-  | { kind: "json" | "yaml" | "jsonl"; path: string; target: string } {
-  if (rule === "bundle")
-    return { kind: "bundle" as const, path: rootPath(value) };
-  const match = /^(json|yaml|jsonl):(\/.+)$/u.exec(value);
-  if (!match || !rule.startsWith("file:"))
-    throw new ContentBundleError(
-      "REFERENCE_INVALID",
-      "Expected json:/path, yaml:/path or jsonl:/path.",
-    );
-  const kind =
-    match[1] === "json" ? "json" : match[1] === "yaml" ? "yaml" : "jsonl";
-  return { kind, path: rootPath(match[2]!), target: rule.slice(5) };
-}
-
 export function assertJson(
   value: unknown,
   maximumNodes = 100_000,

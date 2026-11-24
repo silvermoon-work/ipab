@@ -34,7 +34,6 @@ const keywords = new Set([
   "anyOf",
   "title",
   "description",
-  "x-content-ref",
 ]);
 const types = new Set([
   "null",
@@ -136,20 +135,6 @@ export function inspectSchemaBundle(
       if (!absoluteId(schema.$ref))
         invalid("$ref must be a full explicit absolute ID.", pointer);
       references.push(schema.$ref);
-    }
-    if (schema["x-content-ref"] !== undefined) {
-      const rule = schema["x-content-ref"];
-      if (
-        schema.type !== "string" ||
-        typeof rule !== "string" ||
-        (rule !== "bundle" &&
-          (!rule.startsWith("file:") || !absoluteId(rule.slice(5))))
-      )
-        invalid(
-          "x-content-ref requires type:string and bundle or file:<absolute ID>.",
-          pointer,
-        );
-      if (rule !== "bundle") references.push(rule.slice(5));
     }
     if (schema.properties !== undefined) {
       if (!record(schema.properties))
@@ -260,21 +245,14 @@ function equal(a: unknown, b: unknown, charge: () => void): boolean {
 export interface ValidationContext {
   charge(this: void): void;
   depth: number;
-  reference(
-    rule: string,
-    value: string,
-    pointer: string,
-    inBranch: boolean,
-  ): Promise<void>;
 }
 
-/** Structural checks and content references are evaluated together in each branch. */
-export async function validateValue(
+export function validateValue(
   definitions: SchemaDefinitions,
   id: string,
   value: unknown,
   context: ValidationContext,
-): Promise<void> {
+): void {
   const fail = (pointer: string): never => {
     throw new ContentBundleError(
       "CONTENT_INVALID",
@@ -283,14 +261,12 @@ export async function validateValue(
       pointer,
     );
   };
-  const visit = async (
+  const visit = (
     schema: JsonSchema,
     data: unknown,
     pointer: string,
     depth: number,
-    branch: boolean,
-    contentChecks = true,
-  ): Promise<void> => {
+  ): void => {
     context.charge();
     if (depth > context.depth)
       throw new ContentBundleError(
@@ -328,13 +304,11 @@ export async function validateValue(
     )
       fail(pointer);
     if (typeof schema.$ref === "string")
-      await visit(
+      visit(
         definitions.definitions.get(schema.$ref)!,
         data,
         pointer,
         depth + 1,
-        branch,
-        contentChecks,
       );
     if (record(data)) {
       if (
@@ -348,47 +322,22 @@ export async function validateValue(
           ? (properties[name] as JsonSchema)
           : (schema.additionalProperties as JsonSchema | undefined);
         if (rule !== undefined)
-          await visit(
-            rule,
-            child,
-            `${pointer}/${pointerPart(name)}`,
-            depth + 1,
-            branch,
-            contentChecks,
-          );
+          visit(rule, child, `${pointer}/${pointerPart(name)}`, depth + 1);
       }
     }
     if (Array.isArray(data) && schema.items !== undefined)
       for (const [index, child] of data.entries())
-        await visit(
+        visit(
           schema.items as JsonSchema,
           child,
           `${pointer}/${String(index)}`,
           depth + 1,
-          branch,
-          contentChecks,
         );
     if (Array.isArray(schema.anyOf)) {
       let success = false;
       for (const child of schema.anyOf) {
         try {
-          if (contentChecks)
-            await visit(
-              child as JsonSchema,
-              data,
-              pointer,
-              depth + 1,
-              true,
-              false,
-            );
-          await visit(
-            child as JsonSchema,
-            data,
-            pointer,
-            depth + 1,
-            true,
-            contentChecks,
-          );
+          visit(child as JsonSchema, data, pointer, depth + 1);
           success = true;
           break;
         } catch (cause) {
@@ -401,16 +350,8 @@ export async function validateValue(
       }
       if (!success) fail(pointer);
     }
-    if (contentChecks && typeof schema["x-content-ref"] === "string")
-      await context.reference(
-        schema["x-content-ref"],
-        data as string,
-        pointer,
-        branch,
-      );
   };
   const schema = definitions.definitions.get(id);
   if (schema === undefined) invalid(`Unknown schema ID ${id}.`);
-  await visit(schema, value, "", 0, false, false);
-  await visit(schema, value, "", 0, false);
+  visit(schema, value, "", 0);
 }

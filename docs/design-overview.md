@@ -10,20 +10,23 @@ Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
-Content Bundle 完整校验 `.bundle.yaml`、入口内容、内嵌 UnixFS Schema Bundle
-及 content refs；同一目录 DAG 已包含全部定义。当前协议详见
+Content Bundle 校验存储完整性、路径、`.bundle.yaml`、入口内容和内嵌 UnixFS
+Schema Bundle；同一目录 DAG 已包含全部定义。其他资源及子 Bundle 的业务语义、
+引用格式与依赖校验完全交给 App，不通过 `x-content-ref` 递归验证。当前协议详见
 [Bundle runtime](../packages/bundle/README.md)。旧 DAG-CBOR Schema 协议及
 `schemaCid` manifest 已移除，无兼容或注册表迁移。
 
 普通 entry 的 `schema: /schema` 指向当前根内嵌的 Schema Bundle 目录；
 其准确目录 CID 是 register 键。Schema Bundle 的 entry.schema 必须准确为
 `builtin:bundle-schema.v1`，入口 JSON descriptor 明确列出内部无起始斜杠路径
-和必需 main。所有文件根 $id 为独一的作者自选 absolute URI；$ref 与 file:
-目标仅准确匹配当前 Bundle 完整 $id。无网络、fragment/pointer/相对引用。
+和必需 main。所有 Schema 文件根 $id 为独一的作者自选 absolute URI；$ref
+仅准确匹配当前 Schema Bundle 完整 $id，用于复用入口类型定义，不引用内容文件。
+无网络、fragment/pointer/相对引用。
 Schema 集合可通过 builtin 注册键打开。
 
-当前最小结构方言及 anyOf 全分支内容验证、root-relative content refs、
-共享预算、确定性 Builder 规则以上述 runtime 文档为准。两个 private Builder
+当前最小结构方言及 anyOf 结构匹配、入口校验、
+共享预算、确定性 Builder 规则以上述 runtime 文档为准。`x-content-ref` 不再支持，
+含此关键字的 Schema 必须更新并按新 CID 重新注册。两个 private Builder
 支持 repeatable VFS、独立 Node 本地适配器和固定 UnixFS/CAR；不上传或 pin。
 
 <a id="node-app-profile"></a>
@@ -189,7 +192,7 @@ callback 在 Store participant mutex 内重新读持久根，不捕获旧数组�
 下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
 其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
 和“迁移公共库”均已被上述实现及确认决定取代。下文所有 DAG-CBOR Schema、
-schemaCid、旧外部 $ref 及旧 content refs 也是历史协议，禁止用于当前构建。
+schemaCid、旧外部 $ref 及 content refs 也是历史协议，禁止用于当前构建。
 
 ## 历史设计草案（实现前）
 

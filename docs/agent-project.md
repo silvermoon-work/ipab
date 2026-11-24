@@ -44,6 +44,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   与 README.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon GC。
 - 当前 Bundle 协议见 packages/bundle/README.md：Schema 是内嵌 UnixFS 目录，
   不再是 DAG-CBOR block；main 与完整 $id 索引为 Bundle 内封闭引用。
+  Schema 只约束入口数据，不约束其他资源；不支持 x-content-ref 或递归内容
+  依赖校验，业务依赖交给 App。全部资源仍须通过存储完整性与路径检查。
   两个 Builder 固定 UnixFS/CAR 参数，已有 Schema 子树通过 graft 保留准确 CID。
 
 ## Direct scripts and standard boundary

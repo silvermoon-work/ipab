@@ -27,8 +27,9 @@ JSON and YAML decode to one JSON-compatible value; JSONL decodes the complete
 ordered array, including an empty file as `[]`. CRLF and terminal newlines are
 accepted; blank internal lines are not. JSON duplicate keys, YAML duplicate
 keys, invalid UTF-8/surrogates, nonfinite numbers and unsafe integers are
-rejected. Files are never changed by the loader. Unreferenced attachments remain
-opaque, but their paths and complete underlying storage DAG are verified.
+rejected. Files are never changed by the loader. Only the entry data is parsed
+and validated against its schema. All other resources, including nested Bundles,
+remain opaque, but their paths and complete underlying storage DAG are verified.
 
 ## Schema Bundle
 
@@ -53,8 +54,8 @@ are checked before success.
 `$ref` is a full explicit `$id` exactly matching this Bundle's index. There is
 no network lookup, relative/fragment/pointer/alias/prefix matching, nested
 `$id`, `$defs`, external dependency or recursive meta-schema loading. `main` and
-`file:` extension targets use the same exact index. The fixed builtin validates
-the descriptor, dialect and closed references; ordinary data cannot bypass
+schema references use the same exact index. The fixed builtin validates the
+descriptor, dialect and closed references; ordinary data cannot bypass
 validation merely by spelling the builtin in its manifest.
 
 The minimal structural dialect supports:
@@ -63,8 +64,8 @@ The minimal structural dialect supports:
 - `enum`, `const`, `properties`, unique `required`, `additionalProperties`
   (boolean or schema, standard default true);
 - homogeneous `items` (boolean or schema, standard default unconstrained);
-- `anyOf`: at least one complete structural **and content-reference** branch;
-- `title`, `description`, full-ID `$ref`, `x-content-ref`.
+- `anyOf`: at least one matching structural branch;
+- `title`, `description`, full-ID `$ref`.
 
 Nested boolean schemas are supported. Unknown keywords at schema nodes are
 rejected (including `$schema`, `$defs`, pattern, scalar constraints, tuples,
@@ -72,42 +73,22 @@ oneOf/allOf, examples/default); property names and enum/const data are not
 schema nodes. Productive recursive types may descend through data children; pure
 same-data `$ref`/anyOf cycles are rejected.
 
-## Content references
+## Entry-only contract
 
-`x-content-ref` requires `type: string` and one of:
+The embedded Schema Bundle describes the entry's data type. Its exact directory
+CID is used for Schema-to-App registration; it does not declare a contract for
+the entire resource tree. JSONL's whole array is validated normally, including
+through anyOf/$ref rather than requiring a direct root `type: array`.
 
-```json
-{ "type": "string", "x-content-ref": "file:urn:example:events" }
-```
+Applications define dependency formats and reference syntax, and read and
+validate those resources themselves. Strings do not trigger file reads or child
+Bundle validation, regardless of their spelling. `$ref` only reuses schema
+definitions for entry validation; it does not refer to content files.
 
-```text
-json:/details.json
-yaml:/details.yaml
-jsonl:/events.jsonl
-```
-
-The data chooses the format/path, not the target schema. JSONL's whole array is
-validated normally, including through anyOf/$ref rather than requiring a direct
-root `type: array`.
-
-```json
-{ "type": "string", "x-content-ref": "bundle" }
-```
-
-```text
-/child/path
-```
-
-Child Bundles self-describe with their own embedded Schema Bundle; the parent
-does not impose a schema. Entering the child switches both content root and ID
-namespace. Paths cannot escape that root. Non-reference strings are opaque.
-
-AnyOf evaluates full branches; failed structure does not force its references.
-Target `CONTENT_INVALID` makes that branch false, but unavailable/corrupt reads,
-cancellation, path/reference errors and limits propagate. Content tasks
-deduplicate by root, target, contract and format; bounded ordinary cycles are
-accepted. Cyclic anyOf dependencies on pending content tasks are explicitly
-rejected in v1.
+`x-content-ref` is no longer supported and is rejected as an unknown schema
+keyword, not silently treated as an annotation. Its parser and the `references`
+budget have been removed. Existing schemas using this extension must be updated;
+the resulting Schema Bundle CID changes and requires a new registration.
 
 ## API
 
@@ -128,16 +109,16 @@ const bundle = await openBundle(rootCid, options);
 const stream = await bundle.readFile(bundle.manifest.entry.path);
 ```
 
-- `openBundle`: complete validation before success; `kind` is content/schema,
+- `openBundle`: verify storage, paths, manifest, embedded schemas and entry
+  before success; no dependency content validation. `kind` is content/schema,
   `schemaKey` is the exact embedded directory CID or fixed builtin.
 - `openSchemaBundle`: require/return loaded `SchemaBundle`, exposing descriptor
   and its full-ID `definitions` index.
 - `validateContentBundle(root, schemaBundle, options)`: require ordinary content
   and verify its embedded Schema Bundle CID equals the explicit validator's CID.
 - `inspectSchemaBundle(descriptor, files, options?)`: pure closed-profile check.
-- `canonicalJson`, `parseData`, `parseBundleManifest`,
-  `parseContentRef(value, rule)`, `safePath`, `bundleLimits`,
-  `resolveBundleLimits`, `SCHEMA_PROFILE`.
+- `canonicalJson`, `parseData`, `parseBundleManifest`, `safePath`,
+  `bundleLimits`, `resolveBundleLimits`, `SCHEMA_PROFILE`.
 
 `readFile` returns original bytes with backpressure/cancellation. The opening
 signal does not bind future streams; reads have their own signal. There is no
@@ -148,12 +129,11 @@ Errors preserve `code`, `path`, JSON Pointer `pointer`, `referenceChain`,
 `cause`: MANIFEST_INVALID, SCHEMA_INVALID, REFERENCE_INVALID, PATH_INVALID,
 CONTENT_INVALID, CONTENT_UNAVAILABLE, LIMIT_EXCEEDED, OPTIONS_INVALID, ABORTED.
 
-Defaults apply to the **whole operation**, without child/branch resets: 64 MiB
-unique blocks, 16384 blocks, 2 MiB/block; 64 MiB parsing; 64 KiB manifest and
-descriptor each; 1 MiB/schema file; 8 MiB/data file; 2048 files, 128 schema
-files, 4096 content tasks, 100000 work nodes. Tree, JSON and validation depths
-are independently 64. Cached work is not recharged; repeated work is. Overrides
-must be explicit positive safe integers.
+Defaults apply to the **whole operation**: 64 MiB unique blocks, 16384 blocks, 2
+MiB/block; 64 MiB parsing; 64 KiB manifest and descriptor each; 1 MiB/schema
+file; 8 MiB/data file; 2048 files, 128 schema files, 100000 work nodes. Tree,
+JSON and validation depths are independently 64. Cached work is not recharged;
+repeated work is. Overrides must be explicit positive safe integers.
 
 Construction lives in private `@ipab/bundle-builder` and
 `@ipab/schema-bundle-builder`, not a separate Schema runtime.

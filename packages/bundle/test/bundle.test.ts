@@ -11,7 +11,6 @@ import {
   openBundle,
   openSchemaBundle,
   parseBundleManifest,
-  parseContentRef,
   parseData,
   safePath,
   SCHEMA_PROFILE,
@@ -288,32 +287,7 @@ describe("unified immutable Bundle runtime", () => {
       code: "SCHEMA_INVALID",
     });
   });
-  it("reads YAML and complete JSONL arrays through unions and full IDs", async () => {
-    const root = {
-      type: "object",
-      properties: {
-        yaml: { type: "string", "x-content-ref": `file:${targetId}` },
-        lines: { type: "string", "x-content-ref": `file:${targetId}` },
-      },
-    };
-    const f = await fixture(
-      root,
-      { yaml: "yaml:/values.yaml", lines: "jsonl:/values.jsonl" },
-      {
-        "values.yaml": text("- 1\n- 2\n"),
-        "values.jsonl": text("1\r\n2\r\n"),
-      },
-      {
-        "values-schema.json": {
-          $id: targetId,
-          anyOf: [{ type: "array", items: { type: "integer" } }, false],
-        },
-      },
-    );
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
+  it("reads YAML and complete JSONL entries through unions and full IDs", async () => {
     const yaml = await fixture(
       { type: "object" },
       "n: 2",
@@ -334,241 +308,88 @@ describe("unified immutable Bundle runtime", () => {
     await expect(openBundle(empty.root, empty)).resolves.toHaveProperty(
       "manifest",
     );
-  });
-  it("evaluates target validation inside anyOf, without forcing failed-branch references", async () => {
-    const rules = {
-      anyOf: [
-        { type: "string", "x-content-ref": `file:${targetId}` },
-        { type: "string", const: "json:/value.json" },
-      ],
-    };
-    const f = await fixture(
-      rules,
-      "json:/value.json",
-      { "value.json": json("wrong") },
-      { "target.json": { $id: targetId, type: "integer" } },
+    const lines = await fixture(
+      { $ref: targetId },
+      "1\r\n2\r\n",
+      {},
+      {
+        "target.json": {
+          $id: targetId,
+          anyOf: [false, { type: "array", items: { type: "integer" } }],
+        },
+      },
+      "application/jsonl",
     );
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
+    await expect(openBundle(lines.root, lines)).resolves.toHaveProperty(
       "kind",
       "content",
     );
-    const failed = await fixture(
-      {
-        anyOf: [
-          {
-            const: "not-this",
-            type: "string",
-            "x-content-ref": `file:${targetId}`,
-          },
-          { type: "string" },
-        ],
-      },
-      "json:/absent.json",
-      {},
-      { "target.json": { $id: targetId } },
-    );
-    await expect(openBundle(failed.root, failed)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-    const missing = await fixture(
-      rules,
-      "json:/value.json",
-      {},
-      { "target.json": { $id: targetId } },
-    );
-    await expect(openBundle(missing.root, missing)).rejects.toMatchObject({
-      code: "CONTENT_UNAVAILABLE",
-      pointer: "",
-      referenceChain: expect.arrayContaining([
-        expect.stringContaining("value.json"),
-      ]) as unknown,
-    });
   });
-  it("preserves JSONL depth exhaustion through an anyOf content reference despite a valid alternative", async () => {
+  it("preserves JSONL entry depth errors and their line context", async () => {
     const f = await fixture(
-      {
-        anyOf: [
-          { type: "string", "x-content-ref": `file:${targetId}` },
-          { type: "string" },
-        ],
-      },
-      "jsonl:/deep.jsonl",
-      {
-        "deep.jsonl": text(`1\n${"[".repeat(65)}0${"]".repeat(65)}\n`),
-      },
-      { "target.json": { $id: targetId } },
+      { anyOf: [true, { type: "array" }] },
+      `1\n${"[".repeat(65)}0${"]".repeat(65)}\n`,
+      {},
+      {},
+      "application/jsonl",
     );
     await expect(openBundle(f.root, f)).rejects.toMatchObject({
       code: "LIMIT_EXCEEDED",
-      path: "deep.jsonl",
+      path: "data.json",
       pointer: "/1",
       message: expect.stringContaining("JSONL line 2") as unknown,
     });
   });
 
-  it("deduplicates bounded file cycles and rejects pending anyOf dependencies", async () => {
-    const rule = { type: "string", "x-content-ref": `file:${mainId}` };
-    const f = await fixture(rule, "json:/back.json", {
-      "back.json": json("json:/data.json"),
-    });
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-    const branch = await fixture(
-      { anyOf: [rule, { type: "string" }] },
-      "json:/data.json",
-    );
-    await expect(openBundle(branch.root, branch)).rejects.toMatchObject({
-      code: "REFERENCE_INVALID",
-    });
-    const fail = await fixture(
-      { type: "object", properties: { back: rule, n: { type: "integer" } } },
-      { back: "json:/data.json", n: "bad" },
-    );
-    await expect(openBundle(fail.root, fail)).rejects.toMatchObject({
-      code: "CONTENT_INVALID",
-    });
-  });
-  it("does not treat completed tasks with pending transitive dependencies as anyOf success", async () => {
-    const fileRule = { type: "string", "x-content-ref": `file:${targetId}` };
+  it("leaves dependency formats, paths and child contracts to the application", async () => {
     const f = await fixture(
       {
         type: "object",
+        required: ["file", "missing", "child"],
         properties: {
-          first: fileRule,
-          branch: { anyOf: [fileRule, { type: "string" }] },
+          file: { type: "string" },
+          missing: { anyOf: [{ type: "integer" }, { type: "string" }] },
+          child: { type: "string" },
         },
       },
-      { first: "json:/target.json", branch: "json:/target.json" },
       {
-        "target.json": json({ back: "json:/data.json" }),
+        file: "json:/invalid.json",
+        missing: "yaml:/../absent.yaml",
+        child: "/child",
       },
       {
-        "target-schema.json": {
-          $id: targetId,
-          type: "object",
-          properties: {
-            back: { type: "string", "x-content-ref": `file:${mainId}` },
-          },
-        },
+        "invalid.json": new Uint8Array(1024).fill(255),
+        "child/.bundle.yaml": manifest(),
+        "child/data.json": json("not an integer"),
+        ...schemaFiles({ type: "integer" }, {}, "child/schema/"),
       },
     );
-    await expect(openBundle(f.root, f)).rejects.toMatchObject({
-      code: "REFERENCE_INVALID",
-    });
-  });
-  it("skips all references in structurally failed object branches and propagates target limits", async () => {
-    const rule = { type: "string", "x-content-ref": `file:${targetId}` };
-    const f = await fixture(
-      {
-        anyOf: [
-          { properties: { first: rule, later: { type: "integer" } } },
-          { type: "object" },
-        ],
-      },
-      { first: "json:/absent.json", later: "bad" },
-      {},
-      { "target.json": { $id: targetId } },
+    const bundle = await openBundle(f.root, f);
+    expect(await read(await bundle.readFile("invalid.json"))).toEqual(
+      new Uint8Array(1024).fill(255),
     );
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-    const limit = await fixture(
-      { anyOf: [rule, { type: "string" }] },
-      "json:/v",
-      {
-        v: json("x".repeat(100)),
-      },
-      { "target.json": { $id: targetId } },
+    expect(await read(await bundle.readFile("child/data.json"))).toEqual(
+      json("not an integer"),
     );
     await expect(
-      openBundle(limit.root, { ...limit, limits: { documentBytes: 16 } }),
-    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+      openBundle(f.root, { ...f, limits: { documentBytes: 128 } }),
+    ).resolves.toHaveProperty("kind", "content");
   });
-  it("child Bundle switches both content root and schema namespace, self-describes independently", async () => {
-    const f = await fixture(
-      { type: "string", "x-content-ref": "bundle" },
-      "/child",
-      {
-        "child/.bundle.yaml": manifest(),
-        "child/data.json": json("json:/child-value.json"),
-        "child/child-value.json": json(8),
-        ...schemaFiles(
-          { type: "string", "x-content-ref": `file:${targetId}` },
-          { "target.json": { $id: targetId, type: "integer" } },
-          "child/schema/",
-        ),
-      },
-    );
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-    const invalid = await fixture(
-      { type: "string", "x-content-ref": "bundle" },
-      "/child",
-      {
-        "child/.bundle.yaml": manifest(),
-        "child/data.json": json("bad"),
-        ...schemaFiles({ type: "integer" }, {}, "child/schema/"),
-      },
-    );
-    await expect(openBundle(invalid.root, invalid)).rejects.toMatchObject({
-      code: "CONTENT_INVALID",
-    });
-    const cyclic = await fixture(
-      { anyOf: [{ type: "string", "x-content-ref": "bundle" }] },
-      "/child",
-      {
-        "child/.bundle.yaml": manifest(),
-        "child/data.json": json(1),
-        ...schemaFiles({ type: "integer" }, {}, "child/schema/"),
-      },
-    );
-    await expect(openBundle(cyclic.root, cyclic)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-  });
-  it.each([
-    "json:relative",
-    "json:urn:old:/file",
-    "yaml:/../bad",
-    "json:/a%20b",
-    "unknown:/foo",
-    "bundle:/child",
-  ])("rejects malformed file references %s", async (value) => {
-    const f = await fixture(
-      { type: "string", "x-content-ref": `file:${targetId}` },
-      value,
-      {},
-      { "target.json": { $id: targetId } },
-    );
-    await expect(openBundle(f.root, f)).rejects.toBeInstanceOf(
-      ContentBundleError,
-    );
-  });
-  it("rejects mismatched format and malformed child paths", async () => {
-    const f = await fixture(
-      { type: "string", "x-content-ref": `file:${targetId}` },
-      "json:/v.yaml",
-      { "v.yaml": text("a: 1") },
-      { "target.json": { $id: targetId } },
-    );
-    await expect(openBundle(f.root, f)).rejects.toMatchObject({
-      code: "CONTENT_INVALID",
-    });
-    const bad = await fixture(
-      { type: "string", "x-content-ref": "bundle" },
-      "bundle:/child",
-    );
-    await expect(openBundle(bad.root, bad)).rejects.toMatchObject({
-      code: "PATH_INVALID",
-    });
-  });
+  it.each([true, "bundle", `file:${targetId}`])(
+    "rejects removed x-content-ref rules %s",
+    async (rule) => {
+      const f = await fixture(
+        { type: "string", "x-content-ref": rule },
+        "json:/target.json",
+        {},
+        { "target.json": { $id: targetId } },
+      );
+      await expect(openBundle(f.root, f)).rejects.toMatchObject({
+        code: "SCHEMA_INVALID",
+        message: "Unsupported schema keyword x-content-ref.",
+      });
+    },
+  );
   it("preserves unavailable, corrupt and cancellation failures and checks opaque storage", async () => {
     const f = await fixture(
       {},
@@ -634,7 +455,6 @@ describe("unified immutable Bundle runtime", () => {
     "schemaBytes",
     "documentBytes",
     "schemas",
-    "references",
     "nodes",
   ] satisfies (keyof BundleLimits)[])(
     "shares and enforces the %s budget",
@@ -643,7 +463,7 @@ describe("unified immutable Bundle runtime", () => {
         {
           properties: {
             x: {
-              anyOf: [{ type: "string", "x-content-ref": `file:${targetId}` }],
+              anyOf: [{ $ref: targetId }],
             },
           },
         },
@@ -721,7 +541,8 @@ describe("closed schema profile and safe parsing", () => {
     { $ref: `${mainId}#fragment` },
     { $ref: targetId },
     { "x-content-ref": true, type: "string" },
-    { "x-content-ref": `file:${mainId}` },
+    { "x-content-ref": `file:${mainId}`, type: "string" },
+    { "x-content-ref": "bundle", type: "string" },
     { "x-content-ref": "file:relative", type: "string" },
     { "x-content-ref": "unknown", type: "string" },
     { additionalProperties: null },
@@ -845,7 +666,7 @@ describe("closed schema profile and safe parsing", () => {
   ])("rejects unsafe paths", (path) => {
     expect(() => safePath(path)).toThrow();
   });
-  it("rejects the old manifest and content-ref syntax, external schema URIs and root escapes", () => {
+  it("rejects the old manifest, external schema URIs and root escapes", () => {
     for (const entry of [
       { path: "x", schemaCid: "old", contentType: "application/json" },
       { path: "x", schema: "ipfs://cid", contentType: "application/json" },
@@ -859,15 +680,6 @@ describe("closed schema profile and safe parsing", () => {
       );
     expect(() => parseBundleManifest(text("entry: {}\nextra: true"))).toThrow();
     expect(() => parseBundleManifest(text("entry: {}"), 1)).toThrow("manifest");
-    expect(parseContentRef("json:/foo", `file:${targetId}`)).toEqual({
-      kind: "json",
-      path: "foo",
-      target: targetId,
-    });
-    expect(parseContentRef("/child", "bundle")).toEqual({
-      kind: "bundle",
-      path: "child",
-    });
   });
   it("enforces duplicate keys, Unicode, finite safe JSON and deterministic JCS", () => {
     expect(

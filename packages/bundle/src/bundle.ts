@@ -5,7 +5,6 @@ import { ContentBundleError } from "./errors.js";
 import {
   SCHEMA_PROFILE,
   parseBundleManifest,
-  parseContentRef,
   parseData,
   rootPath,
   safePath,
@@ -15,7 +14,6 @@ import type {
   BundleLimits,
   BundleManifest,
   ContentBundle,
-  ContentType,
   OpenBundleOptions,
   SchemaBundle,
 } from "./types.js";
@@ -34,7 +32,6 @@ export const bundleLimits: Readonly<BundleLimits> = Object.freeze({
   schemaBytes: 1024 * 1024,
   documentBytes: 8 * 1024 * 1024,
   schemas: 128,
-  references: 4096,
   nodes: 100_000,
 });
 export function resolveBundleLimits(
@@ -246,17 +243,9 @@ async function operation(
   const directories = new Map<string, CID>();
   const manifests = new Map<string, BundleManifest>();
   const schemas = new Map<string, SchemaBundle>();
-  const bundles = new Map<string, ContentBundle>();
-  const tasks = new Map<
-    string,
-    { state: "pending" | "done"; dependencies: ReadonlySet<string> }
-  >();
-  const pending = new Set<string>();
-  const bundleDependencies = new Map<string, ReadonlySet<string>>();
   let parsed = 0,
     work = 0,
-    schemaFiles = 0,
-    references = 0;
+    schemaFiles = 0;
   const charge = () => {
     if (options.signal?.aborted)
       throw new ContentBundleError(
@@ -434,7 +423,6 @@ async function operation(
         readFile: fileReader(base),
       });
       schemas.set(base, bundle);
-      bundles.set(base, bundle);
       return bundle;
     } catch (cause) {
       if (
@@ -452,151 +440,7 @@ async function operation(
       throw contextual(cause, base, "", [], options.signal);
     }
   };
-  const content = async (
-    base: string,
-    path: string,
-    schema: SchemaBundle,
-    id: string,
-    type: ContentType,
-    depth: number,
-    chain: readonly string[],
-    branch: boolean,
-  ): Promise<ReadonlySet<string>> => {
-    const absolute = join(base, path);
-    const key = JSON.stringify([
-      base,
-      absolute,
-      schema.cid.toString(),
-      id,
-      type,
-    ]);
-    const cached = tasks.get(key);
-    if (cached?.state === "done") {
-      const dependencies = new Set(
-        [...cached.dependencies].filter((dependency) =>
-          pending.has(dependency),
-        ),
-      );
-      if (branch && dependencies.size)
-        throw new ContentBundleError(
-          "REFERENCE_INVALID",
-          "Cyclic anyOf content dependency is unsupported.",
-          absolute,
-          "",
-          chain,
-        );
-      return dependencies;
-    }
-    if (cached?.state === "pending") {
-      if (branch)
-        throw new ContentBundleError(
-          "REFERENCE_INVALID",
-          "Cyclic anyOf content dependency is unsupported.",
-          absolute,
-          "",
-          chain,
-        );
-      return new Set([key]);
-    }
-    if (++references > limits.references || depth > limits.validationDepth)
-      throw new ContentBundleError(
-        "LIMIT_EXCEEDED",
-        "Content task/depth budget exceeded.",
-        absolute,
-      );
-    const dependencies = new Set<string>();
-    tasks.set(key, { state: "pending", dependencies });
-    pending.add(key);
-    try {
-      const value = parseData(
-        await bytesAt(absolute, limits.documentBytes),
-        type,
-        limits.nodes,
-        limits.jsonDepth,
-        charge,
-      );
-      await validateValue(schema, id, value, {
-        charge,
-        depth: limits.validationDepth,
-        async reference(rule, text, pointer, inBranch) {
-          const next = [...chain, `${absolute}#${pointer} -> ${text}`];
-          try {
-            const ref = parseContentRef(text, rule);
-            if (ref.kind === "bundle") {
-              const childBase = join(base, ref.path);
-              await validateBundle(
-                childBase,
-                depth + 1,
-                next,
-                branch || inBranch,
-              );
-              for (const dependency of bundleDependencies.get(childBase) ?? [])
-                if (pending.has(dependency)) dependencies.add(dependency);
-            } else {
-              const childDependencies = await content(
-                base,
-                ref.path,
-                schema,
-                ref.target,
-                `application/${ref.kind}`,
-                depth + 1,
-                next,
-                branch || inBranch,
-              );
-              for (const dependency of childDependencies)
-                dependencies.add(dependency);
-            }
-          } catch (cause) {
-            throw contextual(cause, absolute, pointer, next, options.signal);
-          }
-        },
-      });
-      tasks.set(key, { state: "done", dependencies });
-      pending.delete(key);
-      return dependencies;
-    } catch (cause) {
-      tasks.delete(key);
-      pending.delete(key);
-      throw contextual(cause, absolute, "", chain, options.signal);
-    }
-  };
-  const pendingBundles = new Set<string>();
-  const validateBundle = async (
-    base: string,
-    depth: number,
-    chain: readonly string[],
-    branch: boolean,
-  ): Promise<ContentBundle> => {
-    const cached = bundles.get(base);
-    if (cached && !pendingBundles.has(base)) {
-      if (
-        branch &&
-        [...(bundleDependencies.get(base) ?? [])].some((dependency) =>
-          pending.has(dependency),
-        )
-      )
-        throw new ContentBundleError(
-          "REFERENCE_INVALID",
-          "Cyclic anyOf bundle dependency is unsupported.",
-          base,
-        );
-      return cached;
-    }
-    if (pendingBundles.has(base)) {
-      if (branch)
-        throw new ContentBundleError(
-          "REFERENCE_INVALID",
-          "Cyclic anyOf bundle dependency is unsupported.",
-          base,
-        );
-      return bundles.get(base)!;
-    }
-    if (depth > limits.validationDepth)
-      throw new ContentBundleError(
-        "LIMIT_EXCEEDED",
-        "Bundle reference depth exceeded.",
-        base,
-      );
+  const validateBundle = async (base: string): Promise<ContentBundle> => {
     const manifest = await manifestAt(base);
     if (manifest.entry.schema === SCHEMA_PROFILE) return loadSchema(base);
     const schemaBase = join(base, rootPath(manifest.entry.schema));
@@ -617,38 +461,28 @@ async function operation(
       schemaBundle: schema,
       readFile: fileReader(base),
     });
-    bundles.set(base, bundle);
-    pendingBundles.add(base);
-    const bundleKey = `bundle:${base}`;
-    pending.add(bundleKey);
-    bundleDependencies.set(base, new Set([bundleKey]));
+    const path = join(base, manifest.entry.path);
     try {
-      const dependencies = await content(
-        base,
-        manifest.entry.path,
-        schema,
-        schema.descriptor.main,
+      const value = parseData(
+        await bytesAt(path, limits.documentBytes),
         manifest.entry.contentType,
-        depth,
-        chain,
-        branch,
+        limits.nodes,
+        limits.jsonDepth,
+        charge,
       );
-      bundleDependencies.set(base, dependencies);
-      pendingBundles.delete(base);
-      pending.delete(bundleKey);
+      validateValue(schema, schema.descriptor.main, value, {
+        charge,
+        depth: limits.validationDepth,
+      });
       return bundle;
     } catch (cause) {
-      bundles.delete(base);
-      pendingBundles.delete(base);
-      pending.delete(bundleKey);
-      bundleDependencies.delete(base);
-      throw contextual(cause, base, "", chain, options.signal);
+      throw contextual(cause, path, "", [], options.signal);
     }
   };
   try {
     await store.prepare(cid, request);
     await index("", 0);
-    const result = await validateBundle("", 0, [], false);
+    const result = await validateBundle("");
     if (expected && result.kind !== "content")
       throw new ContentBundleError(
         "SCHEMA_INVALID",

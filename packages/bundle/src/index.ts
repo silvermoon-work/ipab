@@ -7,7 +7,6 @@ export {
 } from "./bundle.js";
 export {
   parseBundleManifest,
-  parseContentRef,
   parseData,
   canonicalJson,
   safePath,

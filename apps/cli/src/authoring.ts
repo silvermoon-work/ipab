@@ -40,6 +40,7 @@ import {
 } from "@ipab/bundle-builder";
 import type { EncodedBundleCar } from "@ipab/bundle-builder";
 import { filesystemTree } from "@ipab/bundle-builder/node";
+import type { IpfsStore } from "@ipab/ipfs-store";
 import { HostError } from "./errors.js";
 import {
   appBuiltinAlias,
@@ -75,6 +76,14 @@ export interface InitResult {
   name: string;
   entry: { path: string; contentType: string };
   files: string[];
+}
+export interface ImportResult {
+  kind: "bundle-import";
+  cid: string;
+  schemaCid: string;
+  source: string;
+  blocks: number;
+  bytes: number;
 }
 export function nodeError(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
@@ -160,9 +169,9 @@ async function readCar(path: string, options: AuthoringOptions) {
   const tree = await filesystemTree(dirname(path));
   const input = await tree.read(basename(path), options);
   const chunks = streamChunks(input, options);
+  let bytes = 0;
   try {
     const bounded = async function* () {
-      let bytes = 0;
       for await (const chunk of chunks) {
         bytes += chunk.length;
         if (bytes > bundleLimits.bytes + bundleLimits.blocks * 128)
@@ -207,6 +216,8 @@ async function readCar(path: string, options: AuthoringOptions) {
     }
     return {
       root: roots[0]!,
+      blocks,
+      bytes,
       resolveCid: (cid: CID) => {
         const bytes = blocks.get(cid.toV1().toString());
         if (!bytes)
@@ -336,6 +347,36 @@ export async function inspectBundle(
       status: "valid",
       storage: loaded.kind === "content-bundle" ? "verified" : "not-applicable",
     },
+  };
+}
+export async function importBundle(
+  source: string,
+  getStore: () => Promise<IpfsStore>,
+  options: AuthoringOptions = {},
+): Promise<ImportResult> {
+  const path = resolve(source);
+  const stat = await lstat(path);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    !path.toLowerCase().endsWith(".car")
+  )
+    throw new HostError("Import requires a regular .car file.");
+  const car = await readCar(path, options);
+  const loaded = await fromRoot(car.root, car.resolveCid, "car", options);
+  options.signal?.throwIfAborted();
+  const store = await getStore();
+  const cid = car.root.toV1().toString();
+  for (const [key, bytes] of car.blocks)
+    await store.put(CID.parse(key), bytes, options);
+  options.signal?.throwIfAborted();
+  return {
+    kind: "bundle-import",
+    cid,
+    schemaCid: loaded.schema.cid.toString(),
+    source: path,
+    blocks: car.blocks.size,
+    bytes: car.bytes,
   };
 }
 export async function outputAvailable(

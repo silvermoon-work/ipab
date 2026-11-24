@@ -12,7 +12,7 @@ import { buildApp, initApp } from "../src/app-authoring.js";
 import { appSchema, appSchemaCid } from "../src/space.js";
 import { appDescription, schemaAlias } from "../src/app-definition.js";
 import { object } from "../src/errors.js";
-import { cli, fixture } from "./helpers.js";
+import { cli, fixture, subprocess } from "./helpers.js";
 
 const require = createRequire(import.meta.url);
 vi.mock("node:fs/promises", async () => {
@@ -50,11 +50,15 @@ describe("App-first authoring", () => {
   let project: string;
   beforeEach(async () => {
     work = await fixture();
+    const config = join(work.root, "store.json");
+    await writeFile(config, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", config);
     project = join(work.root, "hello");
   });
   afterEach(async () => {
     vi.mocked(filesystem.lstat).mockReset();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await work.cleanup();
   });
   it("preserves compiler filesystem failures and locale validation causes", async () => {
@@ -253,6 +257,7 @@ describe("App-first authoring", () => {
     expect(response.code, response.err).toBe(0);
     expect(result(response.out)).toMatchObject({
       kind: "app-bundle",
+      imported: true,
       schemaCid: appSchemaCid.toString(),
       output: join(project, "dist", "app.car"),
     });
@@ -293,6 +298,14 @@ describe("App-first authoring", () => {
     ])
       await expect(bundle.readFile(path)).rejects.toThrow();
     const firstCar = await readFile(join(project, "dist", "app.car"));
+    const storeConfig = join(work.root, "store.json");
+    expect(work.store.pins()).toEqual([]);
+    const executed = await subprocess(
+      ["--state-dir", work.stateDir, "exec", String(result(response.out).cid)],
+      storeConfig,
+    );
+    expect(executed.code, executed.stderr).toBe(0);
+    expect(executed.stdout.toString().trim()).toBe("Bundled dependency hello");
     expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
     const defaultBuild = await promisify(execFile)(
       process.execPath,
@@ -301,18 +314,37 @@ describe("App-first authoring", () => {
         "--state-dir",
         work.stateDir,
         "--json",
+        "--store-rpc",
+        "http://127.0.0.1:1",
         "build",
         "--replace",
+        "--no-import",
       ],
       { cwd: project },
     );
     expect(result(defaultBuild.stdout).output).toBe(
       join(project, "dist", "app.car"),
     );
+    expect(result(defaultBuild.stdout).imported).toBe(false);
     expect(
       (await cli(work.stateDir, ["build", project, "--replace"])).code,
     ).toBe(0);
     expect(await readFile(join(project, "dist", "app.car"))).toEqual(firstCar);
+    const imported = await subprocess(
+      [
+        "--state-dir",
+        work.stateDir,
+        "--json",
+        "bundle",
+        "import",
+        join(project, "dist", "app.car"),
+      ],
+      storeConfig,
+    );
+    expect(imported.code, imported.stderr).toBe(0);
+    expect(result(imported.stdout.toString()).cid).toBe(
+      result(response.out).cid,
+    );
     await writeFile(
       join(project, "src", "main.ts"),
       'const invalid: number = "not a number";\n',

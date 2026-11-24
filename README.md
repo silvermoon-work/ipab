@@ -95,8 +95,13 @@ Set-Location .\hello
 npm install
 npm run typecheck
 ipab --json build
+ipab exec <app-cid>
 # 修改后重新构建已有产物：
 ipab build --replace
+# 只生成 CAR，不写 Store：
+ipab build --no-import
+# 已有 CAR 也可单独导入（不 pin）：
+ipab bundle import .\dist\app.car
 ```
 
 `init NAME [DIR]` 创建普通 private TypeScript npm package；NAME 为不带 scope
@@ -107,7 +112,8 @@ ipab build --replace
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
 
-`build [DIR] [-o FILE | --output FILE] [--replace]` 默认使用当前项目，
+`build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]`
+默认使用当前项目，
 读取数据配置（不加载 JS 配置、npm lifecycle hooks 或用户插件）：
 
 ```json
@@ -143,7 +149,10 @@ ipab build --replace
   `--output` 相对当前工作目录解析。已有普通 CAR 需 `--replace`，
   类型检查／编译／资源失败保留原产物；不能用 replace 覆盖源码。
 - `--json` 输出单个含 kind=`app-bundle`、cid、schemaCid、output、bytes 的结果，
-  诊断／进度在 stderr。没有自动执行、导入、上传、pin、watch 或另一个任务系统。
+  另有 imported 布尔值，诊断／进度在 stderr。默认把构建 CAR 的原始 block 写入
+  当前 Store，**不 pin／retain**；`--no-import` 仅生成 CAR，不访问 Store。
+  写入失败命令非零、保留已生成 CAR，可用 `bundle import FILE.car` 重试。
+  没有自动执行、pin、watch 或另一个任务系统；未 pin 内容可能被外部 GC 回收。
 
 ### App 元数据与内置类型
 
@@ -188,15 +197,18 @@ Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 
 `node .\apps\cli\dist\main.js`）：
 
 ```powershell
-ipab bundle build .\examples\note-type\.bundle.yaml --schema-only
+ipab bundle build .\examples\note-type\.bundle.yaml --schema-only --no-import
 ipab bundle init .\examples\note-type\dist\schema.car .\my-note
-ipab bundle build .\my-note
+ipab bundle build .\my-note --no-import
 ipab --json bundle inspect .\my-note\dist\bundle.car
 ```
 
 - `bundle build SOURCE` 校验实际入口，产出默认 `dist/bundle.car`；
   `--schema-only` 只读取完整定义并校验默认值，产出单 block `dist/schema.car`
   和准确类型 CID，不要求实际入口存在。SOURCE 此时也可为定义文件。
+  两种构建默认把结果写入当前 Store、不 pin／retain；`--no-import` 关闭写入，
+  保留纯离线构建。`--json` 的 imported 表示是否已写入；写入失败保留 CAR，
+  命令非零且不输出成功结果，可通过 `bundle import FILE.car` 重试。
 - `bundle init TYPE DIR` 接受类型 CID、完整定义文件或 `.car` 类型产物，
   创建定义、默认数据和 `.bundle-ignore`。DIR 必须不存在或为空，不覆盖源码；
   这不保证 App 已具备可执行资源。
@@ -207,8 +219,20 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
 - `bundle inspect SOURCE` 接受目录、定义文件、`.car` 或 CID；
   全部适用校验通过才报告成功。未固化目录的 JSON `cid` 为 `null`，
   不把它冒充已构建根。CAR 必须单根且自足，本地缺块不隐式联网补齐。
-- 本地构建／初始化／检查不需要 Store。只有 CID 读取复用已有 Store 配置；
-  不自动启动 daemon、执行 App、上传、导入或 pin。
+- 本地初始化／检查及 `build --no-import` 不需要 Store。默认构建导入和 CID 读取
+  复用已有 Store 配置；不自动启动 daemon、执行 App 或 pin。
+- `bundle import FILE.car` 是显式的 CAR → Store 入口，接受 App／Content Bundle
+  或类型 CAR。输入必须为普通 `.car` 文件、单根且自足；先验证全部 block 的
+  SHA-256、完整 DAG 和 Bundle／类型定义，缺块不从 Store 或网络补齐，
+  验证失败不写入 Store。沿用当前 Store 配置，默认本地 Store 无需安装 Kubo；
+  显式 `store.rpc` 则导入该 Kubo，不会启动或配置 daemon，也不换后端。
+  使用 Store put 保存原始 block 和准确 CID，不 pin／retain，重复导入安全；
+  不保证外部 GC 后仍可用。
+  不执行 App、不创建 alias／register／执行历史，也不执行 GC。失败停止后续
+  写入，不删除共享 block 或已有保留，部分 block 可能已写入；存储／关闭失败不报告成功，
+  可重试同一 CAR。`--json` 输出 kind=`bundle-import`、cid、schemaCid、
+  source（输入绝对路径）、blocks（唯一 block 数）和 bytes（CAR 文件字节数）；
+  人类输出给出根 CID，诊断／进度进入 stderr。
 - `--output FILE`／`-o FILE` 覆盖具体产物位置，相对当前目录；
   `--replace` 仅授权原子替换普通产物文件，不能覆盖定义或入口。没有二进制
   stdout／stdin 模式；`--json` 输出单个结果对象，诊断与进度进入 stderr。

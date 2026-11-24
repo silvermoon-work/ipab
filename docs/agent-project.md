@@ -62,7 +62,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   新建自有 staging、再调用内部通用 Bundle Builder 输出默认 dist/app.car。
   ipab.json 仅声明 src/ 下的 .ts 入口、明确 assets/ 非隐藏资源文件和 app 元数据覆盖；
   入口必须被 tsconfig 实际检查。只允许 Node builtin 外置，不安装依赖或执行 npm
-  hooks／JS 配置／App，不上传或 pin。CLI private，生成项目不得声明虚构 registry
+  hooks／JS 配置／App，不 pin。CLI 默认将构建 CAR 导入当前 Store，
+  --no-import 关闭导入；CLI private，生成项目不得声明虚构 registry
   @ipab/cli 版本；使用本地链接命令。输出限项目 dist/ 内或项目外，不穿过符号链接。
   builtin:node-app.v1 离线解析完整 appSchema；register
   set/remove 可接受此 alias，
@@ -71,7 +72,9 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
   SemVer／Intl locale tag／非空白／icon 存在检查在 App 专用层，license 只声明，
   不提供 DRM 或控制读写执行。准确新 CID 和有意迁移说明见 README.md。
-  下层 bundle init/build/inspect 永不编译；失败只清理本次 staging／临时 CAR，
+  下层 bundle init/build/inspect/import 永不编译；import 显式验证自足单根 CAR，
+  复用 Store put 保存原始 block，不 pin／retain，不执行 App／GC 或启动 daemon；
+  导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
   不打包或删除旧 staging。完整公共接口与资源路径见 README.md。
 
 ## Direct scripts and standard boundary

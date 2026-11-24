@@ -34,11 +34,17 @@ $defs 与本地 JSON Pointer $ref 只复用 entry.schema 内的类型定义。
 含此关键字的 Schema 必须更新并按新 CID 重新注册。统一 runtime 提供 encodeSchema，
 private Bundle Builder 支持 repeatable VFS、独立 Node 本地适配器和固定
 UnixFS/CAR；不上传或 pin，已移除 Schema Bundle Builder。
-CLI 的 bundle init/build/inspect 覆盖初始化、两种 CAR 构建和检查；
+CLI 的 bundle
+init/build/inspect/import 覆盖初始化、两种 CAR 构建、检查和显式导入；
 build
 --schema-only 复用同一命令，输出 dist/schema.car，完整构建输出 dist/bundle.car。
 根 .bundle-ignore 默认 /dist/，不按 CAR 扩展名一概排除；源码不被覆盖，产物替换
 须显式 --replace，失败只回收本次临时文件。完整离线示例见 README.md。
+`bundle import FILE.car` 先离线验证单根 CAR 的 block、完整 DAG 和 Bundle／类型，
+再使用已配置 Store 的 put 写入原始 block，不 pin／retain，重复导入幂等。
+根 build 和 bundle build 默认导入结果；--no-import 关闭写入，保持纯离线构建。
+导入失败命令非零但保留 CAR，可显式重试。导入不执行 App、不自动启动 daemon，
+不切换后端或 GC，不删除共享 block／已有保留；未 pin 内容可能被外部 GC 回收。
 
 根 `ipab init NAME [DIR]` 和 `ipab build [DIR]` 是 App-first 上层，不改变
 上述通用工具的编译自由。init 创建普通 private TypeScript npm 项目，
@@ -47,7 +53,8 @@ build 显式执行项目本地严格 tsc（入口必须参与检查），再由 
 生成自包含 Node CommonJS，使用全新自有 staging 中的准确 App 定义、
 app.json、resources/app.cjs 与显式 assets 文件，最后直接复用内部
 Bundle Builder 生成默认 dist/app.car／CID。不调用自身 CLI，不执行任意 npm
-hooks／JS 配置，不执行 App 或上传／pin，不创建 watch／任务系统。
+hooks／JS 配置，不执行 App 或 pin，不创建 watch／任务系统。
+CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，不改变 Builder 的纯构建接口。
 未知配置、动态外部依赖、源文件输出与覆盖都明确失败；覆盖已有普通 CAR
 仅由 --replace 授权。staging 与 CAR 临时文件都仅删除本次拥有的路径。
 

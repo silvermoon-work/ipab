@@ -9,11 +9,12 @@ import {
   headerLength,
   blockLength,
 } from "@ipld/car/buffer-writer";
-import type { CID } from "multiformats/cid";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
 import { encodeSchema, openBundle, openSchema, parseData } from "@ipab/bundle";
 import { encodeSchemaCar } from "@ipab/bundle-builder";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { initBundle, writeCar } from "../src/authoring.js";
+import { importBundle, initBundle, writeCar } from "../src/authoring.js";
 import { State } from "../src/state.js";
 import { object } from "../src/errors.js";
 import { cli, fixture } from "./helpers.js";
@@ -55,6 +56,9 @@ describe("bundle development CLI", () => {
   let source: string;
   beforeEach(async () => {
     work = await fixture();
+    const config = join(work.root, "store.json");
+    await writeFile(config, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", config);
     source = join(work.root, "source");
     await mkdir(source);
     await writeFile(join(source, ".bundle.yaml"), stringify(definition));
@@ -73,6 +77,7 @@ describe("bundle development CLI", () => {
       ["bundle", "init"],
       ["bundle", "build"],
       ["bundle", "inspect"],
+      ["bundle", "import"],
     ]) {
       const response = await cli(work.stateDir, [...path, "--help"]);
       expect(response.code).toBe(0);
@@ -84,11 +89,15 @@ describe("bundle development CLI", () => {
       ["bundle", "build"],
       ["bundle", "init", source],
       ["bundle", "inspect"],
+      ["bundle", "import"],
       ["bundle", "unknown"],
       ["bundle", "build", source, "--output", "-"],
       ["bundle", "build", source, "--schema-only", "--schema-only"],
+      ["bundle", "build", source, "--no-import", "--no-import"],
       ["bundle", "build", source, "-o", "a.car", "--output", "b.car"],
       ["bundle", "inspect", source, "--replace"],
+      ["bundle", "import", source, "--replace"],
+      ["bundle", "import", source, "extra.car"],
     ])
       expect((await cli(work.stateDir, args)).code).toBe(2);
   });
@@ -101,6 +110,7 @@ describe("bundle development CLI", () => {
       "build",
       join(source, ".bundle.yaml"),
       "--schema-only",
+      "--no-import",
     ]);
     expect(response.code, response.err).toBe(0);
     expect(result(response.out)).toMatchObject({
@@ -487,7 +497,276 @@ describe("bundle development CLI", () => {
     expect(failed.out).toBe("");
     expect(failed.err).toContain("close failed");
   });
+  it.each([false, true])(
+    "defaults build to unpinned import, supports opting out and preserves CAR on Store failure (schema-only=%s)",
+    async (schemaOnly) => {
+      await writeFile(join(source, "data.json"), '{"title":"Valid"}');
+      const blocks = new Map<string, Uint8Array>();
+      const calls: string[] = [];
+      const pinValues: (string | null)[] = [];
+      const rpc = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          calls.push(url.pathname);
+          if (url.pathname !== "/api/v0/block/put")
+            throw new Error(`Unexpected RPC: ${url.pathname}`);
+          pinValues.push(url.searchParams.get("pin"));
+          const file = (await request.formData()).get("file");
+          if (!(file instanceof Blob)) throw new Error("Missing block bytes.");
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const codecs: Record<string, number> = {
+            raw: 0x55,
+            "dag-pb": 0x70,
+            "dag-cbor": 0x71,
+          };
+          const code = codecs[url.searchParams.get("cid-codec") ?? ""];
+          if (code === undefined) throw new Error("Unexpected block codec.");
+          const cid = CID.createV1(code, await sha256.digest(bytes)).toString();
+          blocks.set(cid, bytes);
+          return new Response(JSON.stringify({ Key: cid }));
+        });
+      const args = [
+        "--json",
+        "bundle",
+        "build",
+        source,
+        ...(schemaOnly ? ["--schema-only"] : []),
+      ];
+      const built = await cli(work.stateDir, [
+        "--store-rpc",
+        "http://127.0.0.1:1",
+        ...args,
+      ]);
+      expect(built.code, built.err).toBe(0);
+      expect(result(built.out).imported).toBe(true);
+      const path = join(
+        source,
+        "dist",
+        schemaOnly ? "schema.car" : "bundle.car",
+      );
+      const encoded = await car(path);
+      expect(blocks).toEqual(encoded.blocks);
+      expect(calls).toEqual(
+        Array(encoded.blocks.size).fill("/api/v0/block/put"),
+      );
+      expect(pinValues).toEqual(Array(encoded.blocks.size).fill("false"));
+      rpc.mockRestore();
+      const skipped = await cli(work.stateDir, [
+        "--store-rpc",
+        "http://127.0.0.1:1",
+        ...args,
+        "--replace",
+        "--no-import",
+      ]);
+      expect(skipped.code, skipped.err).toBe(0);
+      expect(result(skipped.out).imported).toBe(false);
+      const original = await readFile(path);
+      const failed = await cli(work.stateDir, [
+        "--store-rpc",
+        "http://127.0.0.1:1",
+        ...args,
+        "--replace",
+      ]);
+      expect(failed.code).toBe(1);
+      expect(failed.out).toBe("");
+      expect(failed.err).toContain("CAR remains at");
+      expect(failed.err).toContain("bundle import");
+      expect(await readFile(path)).toEqual(original);
+      const imported = await cli(work.stateDir, ["bundle", "import", path]);
+      expect(imported.code, imported.err).toBe(0);
+      expect(work.store.pins()).toEqual([]);
+    },
+  );
+  it.each([false, true])(
+    "imports a self-contained CAR without pins, preserving its CID and bytes (schema-only=%s)",
+    async (schemaOnly) => {
+      await writeFile(
+        join(source, "data.json"),
+        JSON.stringify(definition.entry.defaultValue),
+      );
+      const built = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "build",
+        source,
+        "--no-import",
+        ...(schemaOnly ? ["--schema-only"] : []),
+      ]);
+      expect(built.code, built.err).toBe(0);
+      const path = join(
+        source,
+        "dist",
+        schemaOnly ? "schema.car" : "bundle.car",
+      );
+      const original = await readFile(path);
+      const encoded = await car(path);
+      const config = join(work.root, "store.json");
+      await writeFile(config, JSON.stringify(work.store.configuration));
+      vi.stubEnv("TASK_CONTENT_CONFIG", config);
+      const imported = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "import",
+        path,
+      ]);
+      expect(imported.code, imported.err).toBe(0);
+      expect(result(imported.out)).toEqual({
+        kind: "bundle-import",
+        cid: encoded.root.toString(),
+        schemaCid: result(built.out).schemaCid,
+        source: path,
+        blocks: encoded.blocks.size,
+        bytes: original.length,
+      });
+      expect(imported.err).toContain("importing CAR");
+      const repeated = await cli(work.stateDir, ["bundle", "import", path]);
+      expect(repeated.code, repeated.err).toBe(0);
+      expect(repeated.out).toContain(
+        `Imported CID: ${encoded.root.toString()}`,
+      );
+      const reopened = new IpfsStore(work.store.configuration);
+      try {
+        for (const [cid, bytes] of encoded.blocks)
+          expect(await reopened.block.get(cid)).toEqual(bytes);
+        expect(reopened.pins()).toEqual([]);
+      } finally {
+        await reopened.close();
+      }
+      const inspected = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "inspect",
+        encoded.root.toString(),
+      ]);
+      expect(inspected.code, inspected.err).toBe(0);
+      expect(result(inspected.out)).toMatchObject({
+        sourceKind: "cid",
+        schemaCid: result(built.out).schemaCid,
+      });
+      expect(await readFile(path)).toEqual(original);
+      const state = new State(work.stateDir);
+      expect(state.aliases()).toEqual([]);
+      expect(state.registrations()).toEqual([]);
+      expect(state.runs()).toEqual([]);
+      expect(state.holds()).toEqual([]);
+      state.close();
+    },
+  );
+  it("rejects non-CAR inputs and missing DAG blocks before opening a Store", async () => {
+    const getStore = vi.fn(() => Promise.resolve(work.store));
+    const path = join(work.root, "incomplete.car");
+    await symlink(join(source, ".bundle.yaml"), path);
+    for (const input of [source, join(source, ".bundle.yaml"), path])
+      await expect(importBundle(input, getStore)).rejects.toThrow(
+        "regular .car",
+      );
+    await writeFile(join(source, "data.json"), '{"title":"Valid"}');
+    await cli(work.stateDir, ["bundle", "build", source]);
+    const encoded = await car(join(source, "dist", "bundle.car"));
+    const block = {
+      cid: encoded.root,
+      bytes: encoded.blocks.get(encoded.root.toString())!,
+    };
+    const roots = [encoded.root];
+    const writer = createWriter(
+      new ArrayBuffer(headerLength({ roots }) + blockLength(block)),
+      { roots },
+    );
+    writer.write(block);
+    const incomplete = join(work.root, "missing-dag.car");
+    await writeFile(incomplete, writer.close());
+    await expect(importBundle(incomplete, getStore)).rejects.toThrow();
+    expect(getStore).not.toHaveBeenCalled();
+  });
+  it("stops writes on cancellation and preserves existing content and pins", async () => {
+    await writeFile(join(source, "data.json"), '{"title":"Valid"}');
+    await cli(work.stateDir, ["bundle", "build", source]);
+    const path = join(source, "dist", "bundle.car");
+    const previous = await encodeSchema({ ...definition, name: "Other" });
+    await work.store.put(previous.cid, previous.bytes);
+    await work.store.retain("other-owner", [previous.cid.toString()]);
+    await work.store.confirmRetained("other-owner", [previous.cid.toString()]);
+    const controller = new AbortController();
+    const original = work.store.put.bind(work.store);
+    const put = vi
+      .spyOn(work.store, "put")
+      .mockImplementationOnce(async (...args) => {
+        await original(...args);
+        controller.abort(new Error("import cancelled"));
+      });
+    await expect(
+      importBundle(path, () => Promise.resolve(work.store), {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("import cancelled");
+    expect(work.store.pins()).toEqual([previous.cid.toString()]);
+    expect(await work.store.block.get(previous.cid.toString())).toEqual(
+      previous.bytes,
+    );
+    put.mockRejectedValueOnce(new Error("write failed"));
+    await expect(
+      importBundle(path, () => Promise.resolve(work.store)),
+    ).rejects.toThrow("write failed");
+  });
+  it("reports Store connection, write and close failures without emitting import success", async () => {
+    await cli(work.stateDir, ["bundle", "build", source, "--schema-only"]);
+    const path = join(source, "dist", "schema.car");
+    const unreachable = await cli(work.stateDir, [
+      "--json",
+      "--store-rpc",
+      "http://127.0.0.1:1",
+      "bundle",
+      "import",
+      path,
+    ]);
+    expect(unreachable.code).toBe(1);
+    expect(unreachable.out).toBe("");
+    const config = join(work.root, "store.json");
+    await writeFile(config, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", config);
+    vi.spyOn(IpfsStore.prototype, "put").mockRejectedValueOnce(
+      new Error("write failed"),
+    );
+    const unfinished = await cli(work.stateDir, [
+      "--json",
+      "bundle",
+      "import",
+      path,
+    ]);
+    expect(unfinished.code).toBe(1);
+    expect(unfinished.out).toBe("");
+    expect(unfinished.err).toContain("write failed");
+    const descriptor: TypedPropertyDescriptor<IpfsStore["close"]> | undefined =
+      Object.getOwnPropertyDescriptor(IpfsStore.prototype, "close");
+    const original = descriptor?.value;
+    if (!original) throw new Error("Missing Store close method.");
+    vi.spyOn(IpfsStore.prototype, "close").mockImplementationOnce(
+      async function (this: IpfsStore) {
+        await original.call(this);
+        throw new Error("close failed");
+      },
+    );
+    const failed = await cli(work.stateDir, [
+      "--json",
+      "bundle",
+      "import",
+      path,
+    ]);
+    expect(failed.code).toBe(1);
+    expect(failed.out).toBe("");
+    expect(failed.err).toContain("close failed");
+    const retry = await cli(work.stateDir, [
+      "--json",
+      "bundle",
+      "import",
+      path,
+    ]);
+    expect(retry.code, retry.err).toBe(0);
+  });
   it("rejects corrupt, incomplete and multi-root CARs", async () => {
+    const put = vi.spyOn(IpfsStore.prototype, "put");
     const schema = await encodeSchema(definition);
     const path = join(work.root, "bad.car");
     const roots = [schema.cid, schema.cid];
@@ -497,6 +776,9 @@ describe("bundle development CLI", () => {
     );
     expect(
       (await cli(work.stateDir, ["bundle", "inspect", path])).err,
+    ).toContain("exactly one root");
+    expect(
+      (await cli(work.stateDir, ["bundle", "import", path])).err,
     ).toContain("exactly one root");
     const block = { cid: schema.cid, bytes: Uint8Array.of(255) };
     const writer = createWriter(
@@ -510,6 +792,9 @@ describe("bundle development CLI", () => {
     expect(
       (await cli(work.stateDir, ["bundle", "inspect", path])).err,
     ).toContain("Corrupt");
+    expect(
+      (await cli(work.stateDir, ["bundle", "import", path])).err,
+    ).toContain("Corrupt");
     await writeFile(
       path,
       createWriter(new ArrayBuffer(headerLength({ roots: [schema.cid] })), {
@@ -519,10 +804,15 @@ describe("bundle development CLI", () => {
     expect(
       (await cli(work.stateDir, ["bundle", "inspect", path])).err,
     ).toContain("missing block");
+    expect(
+      (await cli(work.stateDir, ["bundle", "import", path])).err,
+    ).toContain("missing block");
     await writeFile(path, Buffer.from([1, 2, 3]));
     expect((await cli(work.stateDir, ["bundle", "inspect", path])).code).toBe(
       1,
     );
+    expect((await cli(work.stateDir, ["bundle", "import", path])).code).toBe(1);
+    expect(put).not.toHaveBeenCalled();
   });
   it("leaves old CARs intact and cleans owned temporary files when a stream fails or is cancelled", async () => {
     const output = join(work.root, "kept.car");

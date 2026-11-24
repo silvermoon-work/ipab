@@ -24,7 +24,12 @@ import {
 import { execute } from "./runtime.js";
 import { validatedBundle } from "./space.js";
 import { State, type RunRecord } from "./state.js";
-import { buildBundle, initBundle, inspectBundle } from "./authoring.js";
+import {
+  buildBundle,
+  initBundle,
+  inspectBundle,
+  importBundle,
+} from "./authoring.js";
 import { buildApp, initApp } from "./app-authoring.js";
 import { builtinTypes, schemaAlias } from "./app-definition.js";
 
@@ -62,11 +67,12 @@ export const processIO: IO = {
 };
 const commands: Record<string, string> = {
   init: "init NAME [DIR]",
-  build: "build [DIR] [-o FILE | --output FILE] [--replace]",
+  build: "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]",
   "bundle init": "bundle init TYPE DIR",
   "bundle build":
-    "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace]",
+    "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace] [--no-import]",
   "bundle inspect": "bundle inspect SOURCE",
+  "bundle import": "bundle import FILE.car",
   exec: "exec APP [APP_ARGS...]",
   open: "open CONTENT",
   "alias list": "alias list",
@@ -108,9 +114,20 @@ Install the generated package's dependencies explicitly; use a locally linked ip
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
 ipab.json selects src/main.ts and explicit assets/ files; default output is dist/app.car.
 --output FILE selects a .car destination; --replace replaces only a regular artifact.
-No npm hooks, installs, execution, uploads or pins. --json emits result metadata.
+build imports the result into the configured Store without pinning; --no-import emits only CAR.
+Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
+No npm hooks, installs, execution or pins. --json emits result metadata, including imported for builds.
 Global flags precede COMMAND. Use -h/--help for help.`;
   if (usage && path.startsWith("bundle ")) {
+    if (path === "bundle import")
+      return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
+Example: ipab bundle import hello\\dist\\app.car
+Validates a self-contained single-root Bundle or type CAR before writing to the configured Store.
+Uses the default local Store or explicit Kubo RPC; no daemon is started.
+Writes original blocks without pinning or retaining; repeated imports are safe.
+Does not execute Apps or change aliases/register. Unpinned blocks may be garbage-collected externally.
+--json emits kind, cid, schemaCid, source, blocks and bytes; progress goes to stderr.
+Global flags precede COMMAND. Use -h/--help for help.`;
     const examples =
       path === "bundle init"
         ? "ipab bundle init types\\dist\\schema.car note"
@@ -122,6 +139,7 @@ Example: ${examples}
 Global flags precede COMMAND: --state-dir PATH, --store-rpc URL, --json.
 TYPE is a complete definition file, type CAR, exact type CID or builtin:node-app.v1; local sources need no Store.
 build --schema-only validates defaults and emits dist/schema.car; full build emits dist/bundle.car.
+build imports the result into the configured Store without pinning; --no-import emits only CAR.
 --output FILE overrides the destination; --replace authorizes replacing an artifact, never source.
 init writes .bundle.yaml, .bundle-ignore (/dist/) and the default entry into a new/empty directory.
 inspect reads a folder, definition, CAR or CID; no App execution, uploads, imports or pins.
@@ -379,9 +397,9 @@ export function parse(argv: readonly string[]): Parsed {
   }
   const booleans =
     result.path === "bundle build"
-      ? ["replace", "schema-only"]
+      ? ["replace", "schema-only", "no-import"]
       : result.path === "build"
-        ? ["replace"]
+        ? ["replace", "no-import"]
         : result.path === "alias set" || result.path === "register set"
           ? ["replace"]
           : result.path === "history remove"
@@ -415,6 +433,7 @@ export function parse(argv: readonly string[]): Parsed {
     "bundle init": [2, 2],
     "bundle build": [1, 1],
     "bundle inspect": [1, 1],
+    "bundle import": [1, 1],
     open: [1, 1],
     "alias list": [0, 0],
     "alias set": [2, 2],
@@ -497,7 +516,8 @@ async function performCli(
       case "build":
       case "bundle init":
       case "bundle build":
-      case "bundle inspect": {
+      case "bundle inspect":
+      case "bundle import": {
         const controller = new AbortController();
         let cancelled = 0;
         const interrupt = () => {
@@ -512,16 +532,19 @@ async function performCli(
         process.once("SIGTERM", terminate);
         try {
           let pendingStore: Promise<IpfsStore> | undefined;
+          const getStore = () => {
+            pendingStore ??= storeConfiguration(value("store.rpc")).then(
+              (configuration) => {
+                store = new IpfsStore(configuration);
+                return store;
+              },
+            );
+            return pendingStore;
+          };
           const request = {
             signal: controller.signal,
             resolveCid: async (cid: CID, options: { signal?: AbortSignal }) => {
-              pendingStore ??= storeConfiguration(value("store.rpc")).then(
-                (configuration) => {
-                  store = new IpfsStore(configuration);
-                  return store;
-                },
-              );
-              return (await pendingStore).block.get(cid.toString(), options);
+              return (await getStore()).block.get(cid.toString(), options);
             },
           };
           if (parsed.path === "bundle build" || parsed.path === "build")
@@ -530,6 +553,8 @@ async function performCli(
                 ? "Typechecking, bundling and building App..."
                 : "Validating and building bundle...",
             );
+          if (parsed.path === "bundle import")
+            io.err("Validating and importing CAR into Store...");
           const result =
             parsed.path === "init"
               ? await initApp(first!, second, request)
@@ -554,7 +579,23 @@ async function performCli(
                           : {}),
                         outputDir: String(value("bundle.outputDir")),
                       })
-                    : await inspectBundle(first!, request);
+                    : parsed.path === "bundle import"
+                      ? await importBundle(first!, getStore, request)
+                      : await inspectBundle(first!, request);
+          const importing = "output" in result && !parsed.options["no-import"];
+          if (importing) {
+            io.err("Importing build result into Store (without pinning)...");
+            try {
+              await importBundle(result.output, getStore, request);
+            } catch (cause) {
+              throw new HostError(
+                `${message(cause)} CAR remains at ${JSON.stringify(result.output)}; retry with ipab bundle import ${JSON.stringify(result.output)}, or build with --no-import.`,
+                1,
+                "IMPORT_FAILED",
+                "authoring",
+              );
+            }
+          }
           const closing = store;
           store = undefined;
           await closeStore(closing, undefined);
@@ -563,8 +604,13 @@ async function performCli(
           controller.signal.throwIfAborted();
           if ("output" in result)
             emit(
+              { ...result, imported: importing },
+              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
+            );
+          else if (result.kind === "bundle-import")
+            emit(
               result,
-              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}`,
+              `Imported CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nBlocks: ${result.blocks}\nCAR: ${result.source}`,
             );
           else if (result.kind === "app-init") {
             emit(

@@ -22,6 +22,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 - 根包及 CLI 成员 private，CLI 非 npm 交付项。验证执行实际业务源码／测试；
   没有交付成员时 lint-package 零任务不代表发布验证。
 - 沿用参考工程的 Turbo 依赖顺序与缓存，根目录统一执行 ESLint/Prettier。
+- .gitattributes 固定文本文件以 LF 检出，与 Prettier 一致；不依赖本机 core.autocrlf。
 - TypeScript strict 与 type-aware lint 覆盖所有成员源码和测试。
 - 根 typecheck 显式检查共享 TypeScript 配置；成员必须声明自己的 typecheck。
 - Vitest 在每个 code package 的 cwd 中以

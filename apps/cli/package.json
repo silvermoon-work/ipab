@@ -18,6 +18,7 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
+    "liquidjs": "catalog:",
     "@ipab/web-app": "workspace:*",
     "esbuild": "catalog:",
     "@ipab/bundle-builder": "workspace:*",

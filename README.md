@@ -176,22 +176,87 @@ ipab bundle import .\dist\app.car
 
 ### 模板与扩展
 
-`init NAME [DIR] --template TEMPLATE` 选择脚手架，不选择运行时协议：
+`init NAME [DIR] --template TEMPLATE [--param KEY=VALUE]...` 选择数据模板，
+不选择或执行 App：
 
 ```powershell
 ipab init hello
 ipab init my-web-app --template web-app
 ipab init custom-app --template .\my-template
+ipab init custom-app --template .\template.car --param description="My project"
+ipab init custom-app --template my-template-pin --param enabled=true
 ```
 
-内置 `node` 是原默认模板；`web-app` 是 Vite + 原生 TypeScript 前端及
-自包含 Node 后端。模板只创建文件，不安装、构建或执行代码，也不访问 Store。
-没有远程模板下载或自动 npm 模板安装；未知内置名明确失败。
+模板是 **Content Bundle 数据**，不是可执行 App Bundle。`node` 是离线内置默认
+Template Bundle；本地合法 Bundle 目录、自足单根 CAR、准确内容 CID 和可用具名 pin
+使用同一完整类型与渲染契约。只有 CID／pin 来源读取当前 Store；本地目录、CAR
+及默认模板完全离线。init 从不执行 hooks、安装依赖、构建、运行 App 或自动 pin。
+成功 JSON 的 `templateCid` 是所选模板的准确内容 CID，`schemaCid`
+仍是生成 App 的类型，
+不是模板类型；未固化目录由同一确定性 Builder 计算身份，不写 CAR 或 Store。
+
+专用完整 `.bundle.yaml` 定义由 `template-definition.ts` 的 `templateSchema`
+唯一确定，入口固定为 `template.yaml`（YAML）。其准确类型 CID 为
+`bafyreifrpcmpq6d4yw7vgusylt4cabij6orf5fioiwcfr5t2znykay4y5u`；
+离线类型快捷名为 `builtin:project-template.v1`，不是可执行 App／模板内容选择器。
+可用普通 Bundle 命令创建其定义和默认入口，再自行添加 `project/` 数据树：
+
+```powershell
+ipab bundle init builtin:project-template.v1 .\my-template
+New-Item -ItemType Directory .\my-template\project
+# 添加 project 下的模板文件，再构建／导入（不执行模板）：
+ipab bundle build .\my-template --no-import
+ipab init demo --template .\my-template\dist\bundle.car
+```
+
+`template.yaml` 完整 v1 结构如下；不支持其他 root、suffix 或 render 选项：
+
+```yaml
+version: 1
+root: project
+render:
+  suffix: .liquid
+parameters:
+  name:
+    type: string
+    required: true
+  description:
+    type: string
+    default: ""
+  enabled:
+    type: boolean
+    default: false
+```
+
+`name` 必须是 required string，由 `init NAME` 提供且不能用 `--param name=...`
+覆盖；`description` 必须声明 string 和空字符串默认值。可额外声明最多 64 个参数，
+类型仅 `string`／`number`／`boolean`／`json`，允许 `required` 和 `default`；
+未知、重复、缺少必填参数或错误类型均失败。字符串值原样接受，其他类型必须是合法
+JSON（number 必须有限）；不接受函数、特殊原型键或深度超过 32 的 JSON。
+参数输入总计最多 64 KiB；可选且无默认值的参数为 null。
+
+`project/` 就是输出目录布局；不渲染文件名。`*.liquid` 使用真实 **LiquidJS**
+渲染后去掉一个 `.liquid` 后缀，如 `project/package.json.liquid` →
+`package.json`。文本不做 HTML 自动转义；生成 JSON 请显式使用
+`{{ name | json }}`。
+支持条件、循环、赋值、capture、case、comment、raw 等数据标签和固定文本／数值／
+数组 filters；未知标签或 filter 失败，include/render/layout/tablerow、文件 IO、
+date 及任意自定义 JavaScript filter 不支持。未带后缀的普通文件原字节复制，
+包括二进制与 dotfiles；控制定义和入口不输出。
+拒绝穿越、符号链接、Windows 保留名和不分大小写的文件／目录／后缀碰撞；
+不输出 `.git`／`node_modules`／`dist` 路径。项目最多 256 个路径、深度 32，
+单文件 1 MiB、输入与渲染输出总计 8 MiB。Liquid 每文件限制 10000 个渲染步骤、
+1 MiB 分配与累计输出，以及 1 秒渲染时间；定期让出事件循环检查取消，
+失败或取消不留下已创建项目文件。
+
+`web-app` 暂时保留旧本地映射模板，是 Vite + 原生 TypeScript 前端及
+自包含 Node 后端；此时 `templateCid` 为 null，不冒充 Template Bundle。
 Web 模板依赖尚未发布的 private `@ipab/web-app`，使用当前本地包的 `file:`
 引用，不生成虚构的 registry 版本。移动项目到另一台设备前须更新本地依赖来源。
 
-新增内置模板应在 `app-templates.ts` 明确登记。无需改 CLI 即可使用本地目录模板，
-目录包含以下 `ipab-template.json`，源文件按明确清单复制：
+旧显式本地目录中的 `ipab-template.json` v1 暂时兼容（不接受 `--param`）；
+有 `.bundle.yaml` 时必须按新的 Bundle 契约验证，不能降级绕过校验。
+旧源文件按明确清单复制：
 
 ```json
 {

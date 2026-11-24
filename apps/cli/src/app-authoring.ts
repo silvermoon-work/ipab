@@ -30,7 +30,10 @@ const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 export async function initApp(
   name: string,
   directory = name,
-  options: AuthoringOptions & { template?: string } = {},
+  options: AuthoringOptions & {
+    template?: string;
+    parameters?: readonly string[];
+  } = {},
 ) {
   if (
     !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
@@ -40,7 +43,11 @@ export async function initApp(
     throw new HostError(
       "App NAME must be an unscoped lowercase npm package name.",
     );
-  const files = await appTemplate(options.template ?? "node", name, options);
+  const { files, cid: templateCid } = await appTemplate(
+    options.template ?? "node",
+    name,
+    options,
+  );
   const schemaCid = (await builtinAppSchema()).cid.toString();
   const root = await scaffoldFiles(directory, files, options);
   return {
@@ -48,6 +55,7 @@ export async function initApp(
     directory: root,
     name,
     template: options.template ?? "node",
+    templateCid,
     schemaCid,
     files: [...files.keys()],
   };

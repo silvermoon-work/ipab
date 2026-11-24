@@ -1,29 +1,44 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { readBytes } from "@ipab/bundle-builder";
+import { lstat } from "node:fs/promises";
+import { stringify } from "yaml";
+import { Liquid, type Template } from "liquidjs";
+import {
+  encodeBundleCar,
+  listTree,
+  memoryTree,
+  readBytes,
+  type ReadonlyFileTree,
+} from "@ipab/bundle-builder";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import { HostError, object } from "./errors.js";
 import type { AuthoringOptions } from "./authoring.js";
 import { relativePath } from "./space.js";
+import {
+  templateDefinition,
+  templateParameters,
+  templateSchema,
+} from "./template-definition.js";
+import { templateSource } from "./template-source.js";
+import { nodeError } from "./authoring.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
-function nodeTemplate(name: string): Map<string, string | Uint8Array> {
+function nodeTemplate(): Map<string, string | Uint8Array> {
   return new Map([
     [
-      "package.json",
-      json({
-        name,
-        version: "0.0.0",
-        private: true,
-        type: "module",
-        engines: { node: ">=22.15.0" },
-        scripts: { typecheck: "tsc --noEmit", build: "ipab build" },
-        devDependencies: {
-          "@types/node": "26.6.6",
-          typescript: "6.0.3",
-        },
-      }),
+      "package.json.liquid",
+      `{
+  "name": {{ name | json }},
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": {{ description | json }},
+  "engines": { "node": ">=22.15.0" },
+  "scripts": { "typecheck": "tsc --noEmit", "build": "ipab build" },
+  "devDependencies": { "@types/node": "26.6.6", "typescript": "6.0.3" }
+}
+`,
     ],
     [
       "tsconfig.json",
@@ -46,22 +61,12 @@ function nodeTemplate(name: string): Map<string, string | Uint8Array> {
   ]);
 }
 
-export async function appTemplate(
+async function legacyTemplate(
   selector: string,
   name: string,
   options: AuthoringOptions,
 ): Promise<Map<string, string | Uint8Array>> {
-  if (selector === "node") return nodeTemplate(name);
   const builtin = selector === "web-app";
-  if (
-    !builtin &&
-    !selector.includes("/") &&
-    !selector.includes("\\") &&
-    !selector.startsWith(".")
-  )
-    throw new HostError(
-      `Unknown template "${selector}". Built-ins: node, web-app. Use an explicit local directory for custom templates.`,
-    );
   const directory = builtin
     ? fileURLToPath(new URL("../templates/web-app/", import.meta.url))
     : resolve(selector);
@@ -147,4 +152,277 @@ export async function appTemplate(
       "App template must produce package.json and ipab.json.",
     );
   return files;
+}
+
+function templateEngine() {
+  const engine = new Liquid({
+    strictVariables: true,
+    strictFilters: true,
+    ownPropertyOnly: true,
+    templates: {},
+    parseLimit: 1024 * 1024,
+    renderLimit: 1000,
+    memoryLimit: 1024 * 1024,
+  });
+  const tags = new Set([
+    "assign",
+    "capture",
+    "if",
+    "unless",
+    "case",
+    "for",
+    "break",
+    "continue",
+    "cycle",
+    "increment",
+    "decrement",
+    "comment",
+    "#",
+    "raw",
+    "liquid",
+    "echo",
+  ]);
+  for (const name of Object.keys(engine.tags))
+    if (!tags.has(name)) delete engine.tags[name];
+  const filters = new Set([
+    "default",
+    "append",
+    "prepend",
+    "capitalize",
+    "downcase",
+    "upcase",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "replace",
+    "replace_first",
+    "remove",
+    "remove_first",
+    "split",
+    "join",
+    "size",
+    "first",
+    "last",
+    "reverse",
+    "sort",
+    "uniq",
+    "concat",
+    "slice",
+    "plus",
+    "minus",
+    "times",
+    "divided_by",
+    "modulo",
+    "round",
+    "ceil",
+    "floor",
+    "abs",
+    "at_least",
+    "at_most",
+    "json",
+  ]);
+  for (const name of Object.keys(engine.filters))
+    if (!filters.has(name)) engine.unregisterFilter(name);
+  return engine;
+}
+async function liquidText(
+  text: string,
+  values: Record<string, unknown>,
+  options: AuthoringOptions,
+): Promise<string> {
+  const engine = templateEngine();
+  const render = engine.renderer.renderTemplates.bind(engine.renderer);
+  let steps = 0,
+    emittedBytes = 0;
+  engine.renderer.renderTemplates = function* (templates, context, emitter) {
+    const bounded: Template[] = templates.map((template) => ({
+      token: template.token,
+      *render(ctx, output): Generator<unknown, unknown, unknown> {
+        if (++steps > 10_000)
+          throw new HostError("Liquid exceeds 10000 rendering steps.");
+        if (steps % 100 === 0)
+          yield new Promise<void>((resolve) => setImmediate(resolve));
+        options.signal?.throwIfAborted();
+        const guarded = {
+          get buffer() {
+            return output.buffer;
+          },
+          set buffer(value: string) {
+            output.buffer = value;
+          },
+          write(value: unknown) {
+            emittedBytes += Buffer.byteLength(
+              typeof value === "string"
+                ? value
+                : value === undefined
+                  ? ""
+                  : JSON.stringify(value),
+            );
+            if (emittedBytes > 1024 * 1024)
+              throw new HostError(
+                "Rendered template file exceeds 1 MiB emission budget.",
+              );
+            output.write(value);
+          },
+        };
+        return yield template.render(ctx, guarded) as unknown;
+      },
+    }));
+    return yield* render(bounded, context, emitter) as Generator<
+      unknown,
+      unknown,
+      unknown
+    >;
+  };
+  return (await engine.parseAndRender(text, values)) as string;
+}
+export async function renderTemplate(
+  tree: ReadonlyFileTree,
+  name: string,
+  options: AuthoringOptions & { parameters?: readonly string[] },
+) {
+  const definition = templateDefinition(
+    await readBytes(tree, "template.yaml", 64 * 1024, options),
+  );
+  const values = templateParameters(definition, name, options.parameters);
+  const files = new Map<string, string | Uint8Array>();
+  const paths = new Map<string, string>();
+  let count = 0,
+    total = 0;
+  const collect = async (directory: string, depth: number): Promise<void> => {
+    if (depth > 32)
+      throw new HostError("Template project tree exceeds depth 32.");
+    for (const entry of await listTree(tree, directory, options)) {
+      if (++count > 256)
+        throw new HostError("Template exceeds 256 project paths.");
+      const source = `${directory}/${entry.name}`;
+      relativePath(source);
+      const original = source.slice("project/".length);
+      const rendered = entry.kind === "file" && original.endsWith(".liquid");
+      const target = relativePath(
+        rendered ? original.slice(0, -".liquid".length) : original,
+      );
+      if (
+        target
+          .split("/")
+          .some(
+            (part) =>
+              ["node_modules", ".git", "dist"].includes(part.toLowerCase()) ||
+              /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part),
+          )
+      )
+        throw new HostError(`Unsafe template output path: ${target}.`);
+      const key = target.toLowerCase();
+      if (
+        paths.has(key) ||
+        [...paths].some(
+          ([existing, kind]) =>
+            (kind === "file" && key.startsWith(`${existing}/`)) ||
+            (entry.kind === "file" && existing.startsWith(`${key}/`)),
+        )
+      )
+        throw new HostError(
+          `Duplicate or overlapping template output path: ${target}.`,
+        );
+      paths.set(key, entry.kind);
+      if (entry.kind === "directory") {
+        await collect(source, depth + 1);
+        continue;
+      }
+      const input = await readBytes(tree, source, 1024 * 1024, options);
+      total += input.length;
+      let output: string | Uint8Array = input;
+      if (rendered) {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(input);
+        options.signal?.throwIfAborted();
+        output = await liquidText(text, values, options);
+        options.signal?.throwIfAborted();
+        if (Buffer.byteLength(output) > 1024 * 1024)
+          throw new HostError("Rendered template file exceeds 1 MiB.");
+        total += Buffer.byteLength(output);
+      }
+      if (total > 8 * 1024 * 1024)
+        throw new HostError(
+          "Template exceeds the 8 MiB input/output byte limit.",
+        );
+      files.set(target, output);
+    }
+  };
+  await collect("project", 0);
+  if (!files.size)
+    throw new HostError("Template project tree must contain files.");
+  return files;
+}
+export async function appTemplate(
+  selector: string,
+  name: string,
+  options: AuthoringOptions & { parameters?: readonly string[] },
+): Promise<{ files: Map<string, string | Uint8Array>; cid: string | null }> {
+  options.signal?.throwIfAborted();
+  if (selector === "node") {
+    const project = nodeTemplate();
+    const encoder = new TextEncoder();
+    const tree = memoryTree(
+      new Map([
+        [".bundle.yaml", encoder.encode(stringify(templateSchema))],
+        [
+          "template.yaml",
+          encoder.encode(stringify(templateSchema.entry.defaultValue)),
+        ],
+        ...[...project].map(
+          ([path, bytes]) =>
+            [
+              `project/${path}`,
+              typeof bytes === "string" ? encoder.encode(bytes) : bytes,
+            ] as const,
+        ),
+      ]),
+    );
+    const encoded = await encodeBundleCar(tree, options);
+    try {
+      return {
+        files: await renderTemplate(tree, name, options),
+        cid: encoded.cid.toString(),
+      };
+    } finally {
+      await encoded.close();
+    }
+  }
+  let legacy = selector === "web-app";
+  if (!legacy) {
+    try {
+      await lstat(resolve(selector, ".bundle.yaml"));
+    } catch (error) {
+      if (!nodeError(error, "ENOENT") && !nodeError(error, "ENOTDIR"))
+        throw error;
+      try {
+        legacy = (
+          await lstat(resolve(selector, "ipab-template.json"))
+        ).isFile();
+      } catch (error) {
+        if (!nodeError(error, "ENOENT") && !nodeError(error, "ENOTDIR"))
+          throw error;
+      }
+    }
+  }
+  if (legacy) {
+    if (options.parameters?.length)
+      throw new HostError(
+        "--param requires a Template Bundle, not a legacy mapping.",
+      );
+    return { files: await legacyTemplate(selector, name, options), cid: null };
+  }
+  try {
+    const loaded = await templateSource(selector, options);
+    return {
+      files: await renderTemplate(loaded.tree, name, options),
+      cid: loaded.cid,
+    };
+  } catch (error) {
+    if (nodeError(error, "ENOENT"))
+      throw new HostError(
+        `Unknown template "${selector}". Use node, web-app, a valid Bundle directory, single-root CAR, exact CID or named pin.`,
+      );
+    throw error;
+  }
 }

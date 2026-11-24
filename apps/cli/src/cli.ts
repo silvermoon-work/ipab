@@ -67,7 +67,7 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
-  init: "init NAME [DIR] [--template TEMPLATE]",
+  init: "init NAME [DIR] [--template TEMPLATE] [--param KEY=VALUE]...",
   build: "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]",
   "bundle init": "bundle init TYPE DIR",
   "bundle build":
@@ -115,7 +115,10 @@ Examples: ipab init hello
           ipab init my-web-app --template web-app
           ipab --json build hello --replace
 init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
---template selects node (default), web-app, or an explicit local directory with ipab-template.json.
+--template selects node (offline default), a Template Bundle directory, single-root CAR, exact CID or named pin.
+--param KEY=VALUE is repeatable: strings are literal; number, boolean and json parameters use JSON.
+NAME supplies the required name parameter; description defaults to ''. Includes and executable hooks are unsupported.
+Legacy web-app and ipab-template.json directories remain temporarily supported.
 Local templates are data-only, explicitly selected, and never installed or executed by init.
 Install the generated package's dependencies explicitly; use a locally linked ipab.
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
@@ -326,6 +329,7 @@ interface Parsed {
   positional: string[];
   options: Record<string, string | boolean>;
   template?: string[];
+  parameters?: string[];
   help: boolean;
   version: boolean;
 }
@@ -446,6 +450,13 @@ export function parse(argv: readonly string[]): Parsed {
     const value = tokens.shift()!;
     if (value.startsWith("--") || value === "-o") {
       const option = value === "-o" ? "output" : value.slice(2);
+      if (result.path === "init" && option === "param") {
+        const input = tokens.shift();
+        if (!input || input.startsWith("--") || input.indexOf("=") < 1)
+          syntax("--param requires KEY=VALUE.");
+        (result.parameters ??= []).push(input);
+        continue;
+      }
       if (Object.hasOwn(result.options, option))
         syntax(`Duplicate option ${value}.`);
       if (booleans.includes(option)) result.options[option] = true;
@@ -604,7 +615,14 @@ async function performCli(
               ? await initApp(first!, second, {
                   ...request,
                   ...(typeof parsed.options.template === "string"
-                    ? { template: parsed.options.template }
+                    ? {
+                        template: state.pin(parsed.options.template)
+                          ? state.resolve(parsed.options.template)
+                          : parsed.options.template,
+                      }
+                    : {}),
+                  ...(parsed.parameters
+                    ? { parameters: parsed.parameters }
                     : {}),
                 })
               : parsed.path === "build"

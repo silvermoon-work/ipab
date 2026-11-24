@@ -1,6 +1,10 @@
 import { CID } from "multiformats/cid";
 import { encodeSchema } from "@ipab/bundle";
 import { HostError, object } from "./errors.js";
+import {
+  templateBuiltinAlias,
+  templateSchemaCid,
+} from "./template-definition.js";
 
 export const appBuiltinAlias = "builtin:node-app.v1";
 export const appSchema = {
@@ -56,6 +60,7 @@ export const appSchemaCid = CID.parse(
 );
 export const builtinTypes: ReadonlyMap<string, string> = new Map([
   [appBuiltinAlias, appSchemaCid.toString()],
+  [templateBuiltinAlias, templateSchemaCid.toString()],
 ]);
 export async function builtinAppSchema() {
   const block = await encodeSchema(appSchema);

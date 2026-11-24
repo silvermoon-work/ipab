@@ -94,6 +94,20 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   Web 模板依赖本地 private 框架的 file 引用，Vite 只在项目构建期执行。
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
   不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。
+- Template 新契约是专用 Content Bundle 数据，不是 App。完整 templateSchema
+  用 encodeSchema 编码，离线类型 alias builtin:project-template.v1 对应
+  bafyreifrpcmpq6d4yw7vgusylt4cabij6orf5fioiwcfr5t2znykay4y5u；
+  入口 template.yaml 固定 version:1/root:project/render.suffix:.liquid。
+  默认 node 是离线内存 Bundle；init 的 --template 接受同类型本地目录、
+  自足单根 CAR、准确 CID 或 ready named pin，templateCid 返回准确内容身份。
+  project/ 是输出布局，LiquidJS 渲染 .liquid 后去后缀，其他文件原字节复制，
+  包括 binary/dotfiles；不做 HTML autoescape，json filter 负责 JSON 引号。
+  name 为 init NAME 提供的 required string，description 为 string/default:""；
+  额外参数由 repeatable --param KEY=VALUE 提供，string literal，其余 JSON。
+  严格参数、路径／大小写碰撞、UTF8、字节／路径／渲染预算和取消校验；
+  无 include/render/layout/file IO、自定义 JS filters、hooks 或 install。
+  旧 web-app 与 ipab-template.json 仅临时兼容，不创建 Web Template Bundle；
+  同时有 .bundle.yaml 必须走新类型校验，不能降级到旧映射。
 - 用户 Alias 由具名 pin 替代；旧 aliases 表保留但不作为 pin 解析或自动迁移。
   pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
   原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，

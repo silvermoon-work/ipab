@@ -42,11 +42,11 @@ import type { EncodedBundleCar } from "@ipab/bundle-builder";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import type { IpfsStore } from "@ipab/ipfs-store";
 import { HostError } from "./errors.js";
+import { builtinAppSchema, schemaAlias } from "./app-definition.js";
 import {
-  appBuiltinAlias,
-  builtinAppSchema,
-  schemaAlias,
-} from "./app-definition.js";
+  builtinTemplateSchema,
+  templateBuiltinAlias,
+} from "./template-definition.js";
 
 export interface AuthoringOptions {
   signal?: AbortSignal;
@@ -113,7 +113,7 @@ async function definitionAt(path: string, options: AuthoringOptions) {
     await localFile(path, bundleLimits.parsingBytes, options),
   );
 }
-async function selectedTree(
+export async function selectedTree(
   root: string,
   output: string | undefined,
   outputDirectory: string | undefined,
@@ -166,7 +166,7 @@ async function selectedTree(
       );
   return filesystemTree(root, { exclude: excluded });
 }
-async function readCar(path: string, options: AuthoringOptions) {
+export async function readCar(path: string, options: AuthoringOptions) {
   const tree = await filesystemTree(dirname(path));
   const input = await tree.read(basename(path), options);
   const chunks = streamChunks(input, options);
@@ -243,7 +243,9 @@ function cidInput(source: string): CID | undefined {
 async function artifact(source: string, options: AuthoringOptions) {
   if (source.startsWith("builtin:")) {
     schemaAlias(source);
-    const schema = await builtinAppSchema();
+    const schema = await (source === templateBuiltinAlias
+      ? builtinTemplateSchema()
+      : builtinAppSchema());
     return {
       schema,
       kind: "bundle-schema" as const,
@@ -318,7 +320,7 @@ export async function inspectBundle(
   if (source.startsWith("builtin:")) schemaAlias(source);
   const cid = cidInput(source);
   if (
-    source !== appBuiltinAlias &&
+    !source.startsWith("builtin:") &&
     !cid &&
     (await lstat(resolve(source))).isDirectory()
   ) {

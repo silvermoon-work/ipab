@@ -1,6 +1,6 @@
 export {
   openBundle,
-  openSchemaBundle,
+  openSchema,
   validateContentBundle,
   bundleLimits,
   resolveBundleLimits,
@@ -10,9 +10,9 @@ export {
   parseData,
   canonicalJson,
   safePath,
-  SCHEMA_PROFILE,
 } from "./parsing.js";
-export { inspectSchemaBundle } from "./schema.js";
+export { inspectSchema, encodeSchema, schemaBlockBytes } from "./schema.js";
+export type { SchemaOptions } from "./schema.js";
 export { ContentBundleError } from "./errors.js";
 export type {
   ContentBundle,
@@ -21,8 +21,7 @@ export type {
   BundleManifest,
   ContentType,
   JsonSchema,
-  SchemaBundle,
-  SchemaDescriptor,
+  SchemaBlock,
   SchemaDefinitions,
   ContentBundleErrorCode,
 } from "./types.js";

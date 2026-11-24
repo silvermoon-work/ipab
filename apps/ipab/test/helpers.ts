@@ -3,15 +3,10 @@ import { mkdir, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { canonicalJson, type JsonSchema } from "@ipab/bundle";
-import { memoryTree, readBytes } from "@ipab/bundle-builder";
-import {
-  createSchemaBundleTree,
-  encodeSchemaBundleCar,
-} from "@ipab/schema-bundle-builder";
+import { encodeSchema, type JsonSchema } from "@ipab/bundle";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
-import { appSchemaFiles } from "../src/space.js";
+import { appSchema } from "../src/space.js";
 import type { RunRecord } from "../src/state.js";
 import { runCli, type IO } from "../src/cli.js";
 
@@ -74,46 +69,27 @@ export async function content(
   value: unknown = { hello: "world" },
   schema: JsonSchema = { type: "object" },
 ): Promise<{ root: string; schema: string }> {
-  const definition =
-    typeof schema === "boolean"
-      ? { $id: "urn:fixture:main", anyOf: [schema] }
-      : { $id: "urn:fixture:main", ...schema };
-  const source = memoryTree(
-    new Map([
-      [
-        "schema.json",
-        canonicalJson({ schemas: ["main.json"], main: definition.$id }),
-      ],
-      ["main.json", canonicalJson(definition)],
-    ]),
-  );
-  const tree = await createSchemaBundleTree(source);
-  const encoded = await encodeSchemaBundleCar(source);
+  const encoded = await encodeSchema(schema);
   const schemaCid = encoded.cid.toString();
-  await encoded.close();
-  const files: Record<string, Uint8Array> = {};
-  for (const path of [".bundle.yaml", "schema.json", "main.json"])
-    files[`schema/${path}`] = await readBytes(tree, path, 64 * 1024);
+  await store.put(encoded.cid, encoded.bytes);
   const root = await importFiles(store, {
-    ".bundle.yaml": `entry:\n  path: data.json\n  schema: /schema\n  contentType: application/json\n`,
+    ".bundle.yaml": `entry:\n  path: data.json\n  schemaCid: ${schemaCid}\n  contentType: application/json\n`,
     "data.json": JSON.stringify(value),
-    ...files,
   });
   return { root, schema: schemaCid };
 }
 
 export async function app(store: IpfsStore, source: string): Promise<string> {
+  const schema = await encodeSchema(appSchema);
+  await store.put(schema.cid, schema.bytes);
   return importFiles(store, {
-    ".bundle.yaml": `entry:\n  path: app.json\n  schema: /schema\n  contentType: application/json\n`,
+    ".bundle.yaml": `entry:\n  path: app.json\n  schemaCid: ${schema.cid.toString()}\n  contentType: application/json\n`,
     "app.json": JSON.stringify({
       profile: "ipab.node.v1",
       runtime: "node",
       entry: "resources/app.cjs",
     }),
     "resources/app.cjs": source,
-    ...Object.fromEntries(
-      [...appSchemaFiles].map(([path, bytes]) => [`schema/${path}`, bytes]),
-    ),
   });
 }
 

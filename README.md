@@ -64,14 +64,14 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
 - `open CONTENT`
-  校验存储完整性、路径、manifest、内嵌 Schema 和入口数据，读取嵌入 Schema
-  Bundle 目录的准确 CID，使用保存的
+  校验存储完整性、路径、manifest、独立 Schema block 和入口数据，读取
+  `entry.schemaCid` 的准确 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
   `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
   只替换整个参数，不展开 shell 字符串。其他资源与子 Bundle 不接受宿主的业务校验，
   引用格式、依赖读取与验证由 App 自行处理。
-- Schema Bundle 自身使用 `builtin:bundle-schema.v1` 注册键；`register set`
-  接受该固定字符串或 UnixFS 目录 SHA-256 CID，不再接受 DAG-CBOR Schema CID。
+- `register set` 的 Schema 必须是 CIDv1/DAG-CBOR/SHA-256 block CID；
+  不接受 UnixFS 目录 CID 或旧 builtin 注册键。
 - `alias list/set/remove` 只维护准确 CID 引用，不构成 alias 链，不 pin 或执行。
   `register list/set/remove` 保存解析后的准确 CID。改变已有目标需要
   `--replace`；
@@ -169,8 +169,8 @@ APP／OUTPUT 优先显示当前匹配的 alias；
 
 ## 设计概览
 
-[IPAB Design Overview](docs/design-overview.md) 汇总内容包、内嵌 UnixFS Schema
-Bundle、
+[IPAB Design Overview](docs/design-overview.md) 汇总内容包、单 block DAG-CBOR
+Schema、
 入口类型契约、App Bundle、默认应用关联、快照及 Store 的设计方向，
 并记录当前 Node profile、CLI、Space、输出保留与信任边界；
 已确认 CLI 的普通 argv 语义取代早期“App 唯一输入 CID”假设。
@@ -203,7 +203,6 @@ Node 选择依据为 2026-11-23 搭建时读取的
 apps/ipab/             @ipab/cli：private CLI、Node runtime、IPC context 与回归测试
 packages/bundle/       @ipab/bundle：private 存储完整性、入口校验和 Schema
 packages/bundle-builder/ @ipab/bundle-builder：repeatable VFS 与确定性 UnixFS/CAR
-packages/schema-bundle-builder/ @ipab/schema-bundle-builder：本地 Schema 标准化与构建
 packages/ipfs-store/   @ipab/ipfs-store：private Local/Kubo Store 与保留协调
 scripts/lib/           成员共享工具启动逻辑
 docs/agent-project.md  项目工程指导
@@ -216,10 +215,15 @@ vitest.config.ts       各 code package 共用的测试与覆盖率配置
 
 当前协议、结构化 Schema 方言、引用和共享预算见
 [Bundle runtime](packages/bundle/README.md)，构建接口见
-[Bundle builder](packages/bundle-builder/README.md) 和
-[Schema Bundle builder](packages/schema-bundle-builder/README.md)。
-旧 `schemaCid` manifest、DAG-CBOR Schema 和数据内携带 Schema CID 的引用语法
-均已移除，不提供兼容或注册表迁移。`x-content-ref` 扩展和递归内容依赖校验
+[Bundle builder](packages/bundle-builder/README.md)。
+Schema 是单个自包含 JSON Schema，直接编码为 DAG-CBOR block；编码后最多
+1 MiB，超限不分块。支持 `$defs` 与本地 JSON Pointer `$ref`，不接受外部 Schema
+引用。使用 `encodeSchema` 编码，通过 `entry.schemaCid` 标识。
+CAR 包含独立 Schema block；manifest 的 CID 字符串不是 IPLD link，
+保留根 CID 不会自动保留 Schema，调用者须单独保留 Schema CID。
+旧 Schema Bundle 目录、descriptor、builtin 注册键和专用 Builder 已移除，
+旧包须重建、更新 manifest 并按新 CID 重新注册，不提供自动迁移。
+`x-content-ref` 扩展和递归内容依赖校验
 也已移除；含该关键字的 Schema 必须更新，并按新 CID 重新注册。
 
 成员 build/typecheck/test/test-coverage 均执行真实代码与测试，包括本地 writable

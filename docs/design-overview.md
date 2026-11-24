@@ -10,24 +10,26 @@ Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
-Content Bundle 校验存储完整性、路径、`.bundle.yaml`、入口内容和内嵌 UnixFS
-Schema Bundle；同一目录 DAG 已包含全部定义。其他资源及子 Bundle 的业务语义、
+Content Bundle 校验存储完整性、路径、`.bundle.yaml`、入口内容和独立 DAG-CBOR
+Schema block。其他资源及子 Bundle 的业务语义、
 引用格式与依赖校验完全交给 App，不通过 `x-content-ref` 递归验证。当前协议详见
-[Bundle runtime](../packages/bundle/README.md)。旧 DAG-CBOR Schema 协议及
-`schemaCid` manifest 已移除，无兼容或注册表迁移。
+[Bundle runtime](../packages/bundle/README.md)。旧 Schema Bundle 目录及 builtin
+profile 已移除，无兼容或注册表自动迁移。
 
-普通 entry 的 `schema: /schema` 指向当前根内嵌的 Schema Bundle 目录；
-其准确目录 CID 是 register 键。Schema Bundle 的 entry.schema 必须准确为
-`builtin:bundle-schema.v1`，入口 JSON descriptor 明确列出内部无起始斜杠路径
-和必需 main。所有 Schema 文件根 $id 为独一的作者自选 absolute URI；$ref
-仅准确匹配当前 Schema Bundle 完整 $id，用于复用入口类型定义，不引用内容文件。
-无网络、fragment/pointer/相对引用。
-Schema 集合可通过 builtin 注册键打开。
+普通 entry 的 `schemaCid` 指向单个自包含 JSON Schema 的
+CIDv1/DAG-CBOR/SHA-256 block；准确 block CID 是 register 键。
+Schema 对象直接编码为规范 DAG-CBOR，不保存 JSON 字符串或 UnixFS 包装；
+编码后最多 1 MiB（含边界），超限直接失败，不分块。没有 descriptor 或 main 索引。
+`$defs` 和本地 JSON Pointer `$ref` 用于单文档内复用入口类型定义；
+外部引用、anchor、嵌套 $id 和 x-content-ref 不受支持。
+CAR 包含独立 Schema block；manifest 中的 CID 字符串不是 IPLD link，
+保留 UnixFS 根时必须另行保留 Schema CID，CLI owner 对读取的 block 分别 retain。
 
 当前最小结构方言及 anyOf 结构匹配、入口校验、
 共享预算、确定性 Builder 规则以上述 runtime 文档为准。`x-content-ref` 不再支持，
-含此关键字的 Schema 必须更新并按新 CID 重新注册。两个 private Builder
-支持 repeatable VFS、独立 Node 本地适配器和固定 UnixFS/CAR；不上传或 pin。
+含此关键字的 Schema 必须更新并按新 CID 重新注册。统一 runtime 提供 encodeSchema，
+private Bundle Builder 支持 repeatable VFS、独立 Node 本地适配器和固定
+UnixFS/CAR；不上传或 pin，已移除 Schema Bundle Builder。
 
 <a id="node-app-profile"></a>
 
@@ -39,7 +41,7 @@ App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化
 ```yaml
 entry:
   path: app.json
-  schema: /schema
+  schemaCid: bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm
   contentType: application/json
 ```
 
@@ -53,13 +55,10 @@ entry:
 }
 ```
 
-`schema/` 是使用固定 Builder 参数和下述 Schema 生成的完整 Schema Bundle；
-准确目录 CID 为 `bafybeidq5zd7tzccgueniq5fnv2yugw45ijmifw76sknpem7mz5jynmaxe`。
-descriptor 为 `{"schemas":["node-app.json"],"main":"urn:ipab:node-app.v1"}`，
-entry 指向 `schema.json` 并使用 builtin profile；schema 文件为：
-
-CLI runtime 只保存固定 CID 与三个准确 canonical 文件字节，不在启动时加载
-Bundle Builder 或构造 VFS/CAR。Builder 仅用于开发测试，重新构建验证该身份。
+下述 Schema 通过 encodeSchema 直接生成单个 DAG-CBOR block；
+准确 CID 为 `bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm`。
+CLI runtime 只保存 Schema 定义与固定 CID，不在启动时构造 VFS/CAR；
+测试重新编码并验证该身份。创建 App Bundle 时须存储并保留此 Schema block。
 
 ```json
 {
@@ -75,7 +74,7 @@ Bundle Builder 或构造 VFS/CAR。Builder 仅用于开发测试，重新构建�
 }
 ```
 
-嵌入的 Schema Bundle 必须完整可读且 CID 准确。宿主 runtime 另行强制 entry
+Schema block 必须完整可读且 CID 准确。宿主 runtime 另行强制 entry
 为安全 `resources/` 下的 `.cjs` 相对路径，不使用方言不支持的 pattern。entry 是
 普通 JS 文件，最大 8 MiB；程序是自包含 CommonJS bundle，可使用普通 Node
 builtins，不自动安装外部依赖。作者在外部构建程序；Bundle Builder 不编译 JS。
@@ -191,8 +190,9 @@ callback 在 Store participant mutex 内重新读持久根，不捕获旧数组�
 
 下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
 其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
-和“迁移公共库”均已被上述实现及确认决定取代。下文所有 DAG-CBOR Schema、
-schemaCid、旧外部 $ref 及 content refs 也是历史协议，禁止用于当前构建。
+和“迁移公共库”均已被上述实现及确认决定取代。单 block DAG-CBOR 和 schemaCid
+已恢复，但下文完整方言、旧外部 $ref 及 content
+refs 仍是历史协议，不用于当前构建。
 
 ## 历史设计草案（实现前）
 

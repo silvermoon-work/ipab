@@ -1,9 +1,5 @@
 export { encodeBundleCar } from "./car.js";
-export type {
-  BundleCarOptions,
-  EncodedBundleCar,
-  EmbeddedSchema,
-} from "./car.js";
+export type { BundleCarOptions, EncodedBundleCar } from "./car.js";
 export {
   memoryTree,
   fileTree,

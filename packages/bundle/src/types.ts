@@ -6,22 +6,17 @@ export type ContentType =
 export interface BundleManifest {
   readonly entry: {
     readonly path: string;
-    readonly schema: string;
+    readonly schemaCid: string;
     readonly contentType: ContentType;
   };
 }
-export interface SchemaDescriptor {
-  readonly schemas: readonly string[];
-  readonly main: string;
-  readonly title?: string;
-  readonly description?: string;
-}
 export interface SchemaDefinitions {
-  readonly descriptor: SchemaDescriptor;
+  readonly schema: JsonSchema;
   readonly definitions: ReadonlyMap<string, JsonSchema>;
 }
-export interface SchemaBundle extends ContentBundle, SchemaDefinitions {
-  readonly kind: "schema";
+export interface SchemaBlock extends SchemaDefinitions {
+  readonly cid: CID;
+  readonly bytes: Uint8Array;
 }
 export interface BundleLimits {
   bytes: number;
@@ -33,10 +28,8 @@ export interface BundleLimits {
   jsonDepth: number;
   validationDepth: number;
   manifestBytes: number;
-  descriptorBytes: number;
   schemaBytes: number;
   documentBytes: number;
-  schemas: number;
   nodes: number;
 }
 export interface OpenBundleOptions {
@@ -45,12 +38,11 @@ export interface OpenBundleOptions {
   limits?: Partial<BundleLimits>;
 }
 export interface ContentBundle {
-  readonly kind: "content" | "schema";
+  readonly kind: "content";
   readonly cid: CID;
   readonly manifest: BundleManifest;
-  /** Registry key: the embedded directory CID, or the fixed builtin profile. */
   readonly schemaKey: string;
-  readonly schemaBundle?: SchemaBundle;
+  readonly schema: SchemaBlock;
   readFile(
     path: string,
     options?: { signal?: AbortSignal },

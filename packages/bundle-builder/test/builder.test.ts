@@ -4,9 +4,8 @@ import { resolve, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { CarBlockIterator } from "@ipld/car/iterator";
 import * as dagPb from "@ipld/dag-pb";
-import { CID } from "multiformats/cid";
-import { sha256 } from "multiformats/hashes/sha2";
-import { canonicalJson, openBundle, SCHEMA_PROFILE } from "@ipab/bundle";
+import type { CID } from "multiformats/cid";
+import { canonicalJson, encodeSchema, openBundle } from "@ipab/bundle";
 import {
   encodeBundleCar,
   fileTree,
@@ -17,26 +16,29 @@ import {
   streamChunks,
 } from "../src/index.js";
 import { filesystemTree } from "../src/node.js";
-import type { ReadonlyFileTree, TreeEntry } from "../src/index.js";
+import type {
+  ReadonlyFileTree,
+  TreeEntry,
+  BundleCarOptions,
+} from "../src/index.js";
 
 const text = (value: string) => new TextEncoder().encode(value);
+const schema = await encodeSchema({ type: "object" });
+const unusedSchema = await encodeSchema({ type: "integer" });
 const controls = new Map([
   [
     ".bundle.yaml",
     canonicalJson({
       entry: {
-        path: "schema.json",
-        schema: SCHEMA_PROFILE,
+        path: "data.json",
+        schemaCid: schema.cid.toString(),
         contentType: "application/json",
       },
     }),
   ],
-  [
-    "schema.json",
-    canonicalJson({ schemas: ["main.json"], main: "urn:builder:main" }),
-  ],
-  ["main.json", canonicalJson({ $id: "urn:builder:main", type: "object" })],
+  ["data.json", text("{}")],
 ]);
+const options: BundleCarOptions = { schemaBlocks: [schema] };
 async function consume(
   stream: ReadableStream<Uint8Array>,
 ): Promise<Uint8Array> {
@@ -86,24 +88,20 @@ async function directory() {
   return path;
 }
 describe("deterministic bounded UnixFS CAR construction", () => {
-  it("repeats identical root and CAR bytes, root-first, unique binary sorted reachable blocks", async () => {
-    const input = memoryTree(controls);
-    const first = await encodeBundleCar(input);
+  it("repeats identical roots and CAR bytes, root-first, unique binary sorted blocks including the schema", async () => {
+    const first = await encodeBundleCar(memoryTree(controls), options);
     const root = first.cid;
     first.cid.bytes.fill(0);
     expect(first.cid.equals(root)).toBe(true);
     expect(first.retainedBytes).toBeGreaterThan(0);
     const bytes = await consume(first.stream);
-    expect(root.toString()).toBe(
-      "bafybeic63uienavfj5xpshvnlkkpeuy4qambnouzhva24xy5fmmplcymxa",
-    );
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
-      "1e84f2b7716778061b81b8ac2c7bd099623230a356e603659ce0148e966153ab",
-    );
     expect(first.retainedBytes).toBe(0);
     await first.close();
     const second = await encodeBundleCar(
       memoryTree(new Map([...controls].reverse())),
+      {
+        schemaBlocks: [unusedSchema, schema, schema],
+      },
     );
     expect(second.cid.equals(root)).toBe(true);
     expect(await consume(second.stream)).toEqual(bytes);
@@ -121,9 +119,24 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         .map((cid) => Buffer.from(cid.bytes).toString("hex"))
         .sort(),
     );
-    expect((await openBundle(root, decoded)).kind).toBe("schema");
+    expect(decoded.blocks.get(schema.cid.toString())).toEqual(schema.bytes);
+    expect(decoded.blocks.has(unusedSchema.cid.toString())).toBe(false);
+    expect((await openBundle(root, decoded)).schemaKey).toBe(
+      schema.cid.toString(),
+    );
+    expect(
+      dagPb
+        .decode(decoded.blocks.get(root.toString())!)
+        .Links.every((link) => link.Hash.code !== 0x71),
+    ).toBe(true);
+    expect(root.toString()).toBe(
+      "bafybeifwcpa4ny2o4hulh3fn3mx2mddqmlhw3r3uox5qrt4u43km46ibqq",
+    );
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      "d4aa07f4967308f88ab9279faad646a1c897712df17a8a4a99e59c70279b94de",
+    );
   });
-  it("fixes 256KiB raw leaves, 174-child balanced layout, no path/mode/mtime identity", async () => {
+  it("fixes 256KiB raw leaves and 174-child balanced layout", async () => {
     const attachment = new Uint8Array(262_144 * 175 + 17);
     for (let index = 0; index < 176; index++)
       attachment.fill(
@@ -134,22 +147,21 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     const input = memoryTree(
       new Map([...controls, ["resources/large.bin", attachment]]),
     );
-    const encoded = await encodeBundleCar(input);
+    const encoded = await encodeBundleCar(input, options);
     const archive = await consume(encoded.stream);
     expect(encoded.cid.toString()).toBe(
-      "bafybeid3jm4aczkwqanzd356fehwc3fdg67rma5t57z74zvm5h25z4q5oi",
+      "bafybeihxl36ivzebj7uxufjokjamwrjk6ync5vllywjmlmyjk5ae46uvly",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "dfab0715f5b19b58af0be239165f1ca007433a4d292e10c73aaeb70077f84914",
+      "69038e965abeff4ec6fde13e655b05b6da2ca5ecb2b7940ed47a1051535a0b3d",
     );
     const decoded = await decode(archive);
     const bundle = await openBundle(encoded.cid, decoded);
-    const actual = await consume(await bundle.readFile("resources/large.bin"));
-    expect(actual).toEqual(attachment);
-    const directory = dagPb.decode(
-      decoded.blocks.get(decoded.root.toString())!,
+    expect(await consume(await bundle.readFile("resources/large.bin"))).toEqual(
+      attachment,
     );
-    const resources = directory.Links.find(
+    const root = dagPb.decode(decoded.blocks.get(decoded.root.toString())!);
+    const resources = root.Links.find(
       (link) => link.Name === "resources",
     )!.Hash;
     const file = dagPb.decode(
@@ -165,64 +177,58 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     );
     expect(internal.Links.length).toBe(174);
     expect(internal.Links.every((link) => link.Hash.code === 0x55)).toBe(true);
-    const again = await encodeBundleCar(input);
+    const again = await encodeBundleCar(input, options);
     expect(again.cid.equals(encoded.cid)).toBe(true);
     await again.close();
   }, 30000);
-  it("preserves an existing embedded Schema Bundle exact subtree CID", async () => {
-    const schema = await encodeBundleCar(memoryTree(controls));
-    const source = await decode(await consume(schema.stream));
-    const files = new Map([
-      [
-        ".bundle.yaml",
-        canonicalJson({
-          entry: {
-            path: "data.json",
-            contentType: "application/json",
-            schema: "/nested/schema",
-          },
-        }),
-      ],
-      ["data.json", text("{}")],
-      ["nested/other.txt", text("opaque")],
-    ]);
-    const encoded = await encodeBundleCar(memoryTree(files), {
-      embeddedSchemas: new Map([
-        ["nested/schema", { cid: source.root, resolveCid: source.resolveCid }],
-      ]),
-    });
-    const output = await decode(await consume(encoded.stream));
-    const bundle = await openBundle(output.root, output);
-    expect(bundle.schemaKey).toBe(source.root.toString());
-    expect(bundle.schemaBundle!.cid.equals(source.root)).toBe(true);
-    const standalone = await encodeBundleCar(memoryTree(controls));
-    expect(standalone.cid.equals(source.root)).toBe(true);
-    await standalone.close();
+  it("preserves the raw-leaf to chunked-file boundary", async () => {
+    for (const size of [262_144, 262_145]) {
+      const encoded = await encodeBundleCar(
+        memoryTree(
+          new Map([...controls, ["large.bin", new Uint8Array(size).fill(1)]]),
+        ),
+        options,
+      );
+      const decoded = await decode(await consume(encoded.stream));
+      const link = dagPb
+        .decode(decoded.blocks.get(decoded.root.toString())!)
+        .Links.find((link) => link.Name === "large.bin")!;
+      expect(link.Hash.code).toBe(size === 262_144 ? 0x55 : 0x70);
+      if (size > 262_144)
+        expect(
+          dagPb.decode(decoded.blocks.get(link.Hash.toString())!).Links,
+        ).toHaveLength(2);
+    }
   });
-  it("fixes the raw-leaf to chunked-file boundary vector", async () => {
-    const attachment = new Uint8Array(262_145);
-    attachment[262_144] = 1;
-    const encoded = await encodeBundleCar(
-      memoryTree(new Map([...controls, ["resources/large.bin", attachment]])),
+  it("fixes the chunked-file boundary CAR vector with its standalone schema block", async () => {
+    const data = new Uint8Array(262_145);
+    data[262_144] = 1;
+    const output = await encodeBundleCar(
+      memoryTree(new Map([...controls, ["resources/large.bin", data]])),
+      options,
     );
-    const archive = await consume(encoded.stream);
-    expect(encoded.cid.toString()).toBe(
-      "bafybeiao56tfl5ri6qurxt4uuhkk4mtbk5ffwddohfao5cphli4s652ueu",
+    const archive = await consume(output.stream);
+    expect(output.cid.toString()).toBe(
+      "bafybeigogk3lzouhepqd2ighuecqpkausmolad7oejusvtekqollmqqv34",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "02557a51500b3f8f1c7d6089a8bac2f042f02df9db26cc0c90e523ef5733ae69",
+      "da9f88acf8f875a314efc376d8e1d73253073b88a768900408a1a6eab55cf5df",
     );
   });
-  it("does not normalize control or attachment bytes in the generic builder", async () => {
+  it("does not normalize manifest or attachment bytes", async () => {
     const manifest = text(
-      "entry:\r\n  path: schema.json\r\n  schema: builtin:bundle-schema.v1\r\n  contentType: application/json\r\n",
+      `entry:\r\n  path: data.json\r\n  schemaCid: ${schema.cid.toString()}\r\n  contentType: application/json\r\n`,
     );
-    const files = new Map([
-      ...controls,
-      [".bundle.yaml", manifest],
-      ["opaque", Uint8Array.of(0, 255, 13)],
-    ]);
-    const encoded = await encodeBundleCar(memoryTree(files));
+    const encoded = await encodeBundleCar(
+      memoryTree(
+        new Map([
+          ...controls,
+          [".bundle.yaml", manifest],
+          ["opaque", Uint8Array.of(0, 255, 13)],
+        ]),
+      ),
+      options,
+    );
     const decoded = await decode(await consume(encoded.stream));
     const bundle = await openBundle(decoded.root, decoded);
     expect(await consume(await bundle.readFile(".bundle.yaml"))).toEqual(
@@ -232,7 +238,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       Uint8Array.of(0, 255, 13),
     );
   });
-  it("fully consumes input before success and cancellation stops streams", async () => {
+  it("fully consumes input before success and cancellation stops input/output streams", async () => {
     let consumed = false,
       cancelled = false;
     const input = fileTree(
@@ -261,7 +267,9 @@ describe("deterministic bounded UnixFS CAR construction", () => {
             })
           : input.read(path, options),
     };
-    await expect(encodeBundleCar(broken)).rejects.toThrow("input failed");
+    await expect(encodeBundleCar(broken, options)).rejects.toThrow(
+      "input failed",
+    );
     expect(consumed).toBe(true);
     const abort = new AbortController();
     const hanging = new ReadableStream<Uint8Array>({
@@ -270,227 +278,68 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       },
     });
     const reading = (async () => {
-      for await (const chunk of streamChunks(hanging, {
-        signal: abort.signal,
-      })) {
+      for await (const chunk of streamChunks(hanging, { signal: abort.signal }))
         expect(chunk).toBeInstanceOf(Uint8Array);
-      }
     })();
     abort.abort(new Error("abort"));
     await expect(reading).rejects.toThrow();
     expect(cancelled).toBe(true);
-    const encoded = await encodeBundleCar(input);
+    const encoded = await encodeBundleCar(input, options);
     await encoded.stream.cancel();
     expect(encoded.retainedBytes).toBe(0);
     await encoded.close();
     const live = new AbortController();
-    const output = await encodeBundleCar(input, { signal: live.signal });
+    const output = await encodeBundleCar(input, {
+      ...options,
+      signal: live.signal,
+    });
     live.abort(new Error("output abort"));
     await expect(consume(output.stream)).rejects.toThrow("output abort");
     expect(output.retainedBytes).toBe(0);
     await expect(
-      encodeBundleCar(input, { signal: live.signal }),
+      encodeBundleCar(input, { ...options, signal: live.signal }),
     ).rejects.toThrow();
   });
   it.each([
-    ["blocks", 1],
-    ["bytes", 1],
-    ["blockBytes", 1],
-    ["files", 1],
-    ["depth", 1],
-    ["parsingBytes", 1],
-  ] as const)("enforces output/input %s bounds", async (name, limit) => {
+    "blocks",
+    "bytes",
+    "blockBytes",
+    "files",
+    "depth",
+    "parsingBytes",
+    "nodes",
+  ] as const)("enforces output/input %s bounds", async (name) => {
     await expect(
       encodeBundleCar(
         memoryTree(new Map([...controls, ["nested/file", text("test")]])),
-        { limits: { [name]: limit } },
+        { ...options, limits: { [name]: 1 } },
       ),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
   });
-  it("rejects invalid manifests, file trees and embedded conflicts", async () => {
+  it("requires the exact schema block and rejects corrupted bytes rather than trusting supplied metadata", async () => {
+    await expect(encodeBundleCar(memoryTree(controls))).rejects.toMatchObject({
+      code: "CONTENT_UNAVAILABLE",
+    });
+    await expect(
+      encodeBundleCar(memoryTree(controls), { schemaBlocks: [unusedSchema] }),
+    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
+    await expect(
+      encodeBundleCar(memoryTree(controls), {
+        schemaBlocks: [{ ...schema, bytes: Uint8Array.of(255) }],
+      }),
+    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
     await expect(encodeBundleCar(memoryTree(new Map()))).rejects.toMatchObject({
       code: "MANIFEST_INVALID",
     });
-  });
-  it("accepts existing directory placeholders and rejects missing or unsupported embedded DAGs", async () => {
-    const schema = await encodeBundleCar(memoryTree(controls));
-    const source = await decode(await consume(schema.stream));
-    const input = memoryTree(
-      new Map([
-        [
-          ".bundle.yaml",
-          canonicalJson({
-            entry: {
-              path: "data.json",
-              schema: "/schema",
-              contentType: "application/json",
-            },
-          }),
-        ],
-        ["data.json", text("{}")],
-        ["schema/placeholder", text("not imported")],
-      ]),
-    );
-    const embeddedSchemas = new Map([
-      ["schema", { cid: source.root, resolveCid: source.resolveCid }],
-    ]);
-    const result = await encodeBundleCar(input, { embeddedSchemas });
-    expect(
-      (await openBundle(result.cid, await decode(await consume(result.stream))))
-        .schemaKey,
-    ).toBe(source.root.toString());
     await expect(
-      encodeBundleCar(input, {
-        embeddedSchemas: new Map([
-          [
-            "schema",
-            {
-              cid: source.root,
-              resolveCid: () => Promise.reject(new Error("missing schema")),
-            },
-          ],
-        ]),
-      }),
-    ).rejects.toThrow("missing schema");
-    const unsupported = CID.createV1(0x71, source.root.multihash);
-    await expect(
-      encodeBundleCar(input, {
-        embeddedSchemas: new Map([
-          [
-            "schema",
-            {
-              cid: unsupported,
-              resolveCid: () =>
-                Promise.resolve(source.blocks.get(source.root.toString())!),
-            },
-          ],
-        ]),
-      }),
-    ).rejects.toThrow();
-    const shallow = {
-      limits: { depth: 1 },
-      embeddedSchemas: new Map([
-        ["schema", { cid: source.root, resolveCid: source.resolveCid }],
-      ]),
-    };
-    await expect(encodeBundleCar(input, shallow)).rejects.toMatchObject({
-      code: "LIMIT_EXCEEDED",
-    });
-  });
-  it("accepts alternate legitimate directory layout with omitted size hints", async () => {
-    const encoded = await encodeBundleCar(memoryTree(controls));
-    const source = await decode(await consume(encoded.stream));
-    const node = dagPb.decode(source.blocks.get(source.root.toString())!);
-    const bytes = dagPb.encode(
-      dagPb.prepare({
-        Data: node.Data,
-        Links: node.Links.map((link) => ({ Hash: link.Hash, Name: link.Name })),
-      }),
-    );
-    const root = CID.createV1(dagPb.code, await sha256.digest(bytes));
-    source.blocks.set(root.toString(), bytes);
-    const input = memoryTree(
-      new Map([
-        [
-          ".bundle.yaml",
-          canonicalJson({
-            entry: {
-              path: "data.json",
-              schema: "/schema",
-              contentType: "application/json",
-            },
-          }),
-        ],
-        ["data.json", text("{}")],
-      ]),
-    );
-    const result = await encodeBundleCar(input, {
-      embeddedSchemas: new Map([
-        ["schema", { cid: root, resolveCid: source.resolveCid }],
-      ]),
-    });
-    expect(
-      (await openBundle(result.cid, await decode(await consume(result.stream))))
-        .schemaKey,
-    ).toBe(root.toString());
-  });
-  it("bounds both directory work and deeper input/embedded DAGs", async () => {
-    const input = memoryTree(
-      new Map([...controls, ["deep/more/file", text("x")]]),
-    );
-    await expect(
-      encodeBundleCar(input, { limits: { nodes: 1 } }),
-    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-    await expect(
-      encodeBundleCar(input, { limits: { nodes: 2 } }),
-    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-    await expect(
-      encodeBundleCar(input, { limits: { depth: 1 } }),
-    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-    const nestedControls = new Map([
-      [".bundle.yaml", controls.get(".bundle.yaml")!],
-      [
-        "schema.json",
-        canonicalJson({
-          schemas: ["deep/main.json"],
-          main: "urn:builder:main",
-        }),
-      ],
-      ["deep/main.json", controls.get("main.json")!],
-    ]);
-    const encoded = await encodeBundleCar(memoryTree(nestedControls));
-    const source = await decode(await consume(encoded.stream));
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        limits: { depth: 1 },
-        embeddedSchemas: new Map([
-          ["schema", { cid: source.root, resolveCid: source.resolveCid }],
-        ]),
-      }),
-    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-  });
-  it("rejects invalid manifests and embedded conflicts", async () => {
-    await expect(
-      encodeBundleCar(memoryTree(new Map([["plain", text("x")]]))),
+      encodeBundleCar(memoryTree(new Map([["plain", text("x")]])), options),
     ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
     await expect(
-      encodeBundleCar(memoryTree(controls), { limits: { bytes: 0 } }),
+      encodeBundleCar(memoryTree(controls), {
+        ...options,
+        limits: { bytes: 0 },
+      }),
     ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
-    const encoded = await encodeBundleCar(memoryTree(controls));
-    const source = await decode(await consume(encoded.stream));
-    const embed = { cid: source.root, resolveCid: source.resolveCid };
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        embeddedSchemas: new Map([["main.json", embed]]),
-      }),
-    ).rejects.toMatchObject({ code: "PATH_INVALID" });
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        embeddedSchemas: new Map([
-          ["a", embed],
-          ["a/b", embed],
-        ]),
-      }),
-    ).rejects.toMatchObject({ code: "PATH_INVALID" });
-    const corrupt = {
-      ...embed,
-      resolveCid: () => Promise.resolve(Uint8Array.of(255)),
-    };
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        embeddedSchemas: new Map([["schema", corrupt]]),
-      }),
-    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
-    const raw = CID.parse(
-      source.order.find((cid) => cid.code === 0x55)!.toString(),
-    );
-    await expect(
-      encodeBundleCar(memoryTree(controls), {
-        embeddedSchemas: new Map([
-          ["schema", { cid: raw, resolveCid: source.resolveCid }],
-        ]),
-      }),
-    ).rejects.toMatchObject({ code: "CONTENT_INVALID" });
   });
 });
 describe("repeatable VFS and explicit local adapter", () => {
@@ -597,7 +446,7 @@ describe("repeatable VFS and explicit local adapter", () => {
       consume(ReadableStream.from(streamChunks(invalid))),
     ).rejects.toMatchObject({ code: "CONTENT_INVALID" });
   });
-  it("reads local files repeatedly, rejects symlinks and preserves cancellation/backpressure", async () => {
+  it("reads local files repeatedly, rejects symlinks and preserves cancellation", async () => {
     const root = await directory();
     await mkdir(join(root, "nested"));
     await writeFile(join(root, "nested", "file"), text("value"));
@@ -618,8 +467,7 @@ describe("repeatable VFS and explicit local adapter", () => {
     const stream = await tree.read("nested/file", { signal: abort.signal });
     abort.abort(new Error("cancel"));
     await expect(consume(stream)).rejects.toThrow("cancel");
-    const cancelled = await tree.read("nested/file");
-    await cancelled.cancel();
+    await (await tree.read("nested/file")).cancel();
     await symlink(join(root, "nested"), join(root, "linked"), "junction");
     await expect(tree.list("")).rejects.toMatchObject({ code: "PATH_INVALID" });
     await expect(tree.read("linked/file")).rejects.toMatchObject({
@@ -645,8 +493,8 @@ describe("repeatable VFS and explicit local adapter", () => {
     for (const [path, bytes] of controls)
       await writeFile(join(root, path), bytes);
     await mkdir(join(root, "empty"));
-    const output = await encodeBundleCar(await filesystemTree(root));
+    const output = await encodeBundleCar(await filesystemTree(root), options);
     const decoded = await decode(await consume(output.stream));
-    expect((await openBundle(decoded.root, decoded)).kind).toBe("schema");
+    expect((await openBundle(decoded.root, decoded)).kind).toBe("content");
   });
 });

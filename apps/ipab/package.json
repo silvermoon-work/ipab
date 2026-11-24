@@ -28,7 +28,6 @@
   },
   "devDependencies": {
     "@ipab/bundle-builder": "workspace:*",
-    "@ipab/schema-bundle-builder": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",

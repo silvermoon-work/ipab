@@ -1,10 +1,18 @@
 import { ContentBundleError } from "./errors.js";
-import { assertJson, record, safePath } from "./parsing.js";
-import type {
-  JsonSchema,
-  SchemaDefinitions,
-  SchemaDescriptor,
-} from "./types.js";
+import { assertJson, record } from "./parsing.js";
+import * as dagCbor from "@ipld/dag-cbor";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
+import type { JsonSchema, SchemaDefinitions, SchemaBlock } from "./types.js";
+
+export const schemaBlockBytes = 1024 * 1024;
+export interface SchemaOptions {
+  nodes?: number;
+  depth?: number;
+  jsonDepth?: number;
+  schemaBytes?: number;
+  charge?: () => void;
+}
 
 export function pointerPart(value: string): string {
   return value.replaceAll("~", "~0").replaceAll("/", "~1");
@@ -24,6 +32,7 @@ function invalid(message: string, pointer = ""): never {
 const keywords = new Set([
   "$id",
   "$ref",
+  "$defs",
   "type",
   "enum",
   "const",
@@ -45,23 +54,15 @@ const types = new Set([
   "array",
 ]);
 
-/** Check every listed definition, including definitions not reachable from main. */
-export function inspectSchemaBundle(
-  descriptor: unknown,
-  files: ReadonlyMap<string, unknown>,
-  options: {
-    nodes?: number;
-    depth?: number;
-    jsonDepth?: number;
-    schemas?: number;
-    charge?: () => void;
-  } = {},
+export function inspectSchema(
+  value: unknown,
+  options: SchemaOptions = {},
 ): SchemaDefinitions {
   for (const [key, value] of Object.entries(options))
     if (
       key === "charge"
         ? typeof value !== "function"
-        : !["nodes", "depth", "jsonDepth", "schemas"].includes(key) ||
+        : !["nodes", "depth", "jsonDepth", "schemaBytes"].includes(key) ||
           !Number.isSafeInteger(value) ||
           (value as number) <= 0
     )
@@ -70,26 +71,13 @@ export function inspectSchemaBundle(
         "Schema limits must be positive safe integers.",
       );
   const charge = options.charge ?? (() => {});
-  assertJson(descriptor, options.nodes, options.jsonDepth, charge);
-  if (
-    !record(descriptor) ||
-    Object.keys(descriptor).some(
-      (key) => !["schemas", "main", "title", "description"].includes(key),
-    ) ||
-    !Array.isArray(descriptor.schemas) ||
-    !descriptor.schemas.length ||
-    !absoluteId(descriptor.main)
-  )
-    invalid("Descriptor requires explicit schemas and an absolute main ID.");
-  for (const key of ["title", "description"])
-    if (descriptor[key] !== undefined && typeof descriptor[key] !== "string")
-      invalid(`Invalid descriptor ${key}.`);
-  if (descriptor.schemas.length > (options.schemas ?? 128))
-    throw new ContentBundleError(
-      "LIMIT_EXCEEDED",
-      "Schema file count exceeded.",
-    );
-  const paths = new Set<string>();
+  try {
+    assertJson(value, options.nodes, options.jsonDepth, charge);
+  } catch (cause) {
+    if (cause instanceof ContentBundleError && cause.code === "CONTENT_INVALID")
+      invalid(cause.message);
+    throw cause;
+  }
   const definitions = new Map<string, JsonSchema>();
   const references: string[] = [];
   const visit = (
@@ -101,7 +89,10 @@ export function inspectSchemaBundle(
     charge();
     if (depth > (options.depth ?? 64))
       throw new ContentBundleError("LIMIT_EXCEEDED", "Schema depth exceeded.");
-    if (typeof schema === "boolean") return;
+    if (typeof schema === "boolean") {
+      definitions.set(pointer, schema);
+      return;
+    }
     if (!record(schema))
       invalid("Expected a schema object or boolean.", pointer);
     for (const key of Object.keys(schema))
@@ -109,6 +100,9 @@ export function inspectSchemaBundle(
         invalid(`Unsupported schema keyword ${key}.`, pointer);
     if (!root && Object.hasOwn(schema, "$id"))
       invalid("Nested $id is not supported.", pointer);
+    if (root && schema.$id !== undefined && !absoluteId(schema.$id))
+      invalid("$id must be an absolute URI.", pointer);
+    definitions.set(pointer, schema);
     if (
       schema.type !== undefined &&
       (typeof schema.type !== "string" || !types.has(schema.type))
@@ -132,21 +126,25 @@ export function inspectSchemaBundle(
     )
       invalid("enum values must be unique.", pointer);
     if (schema.$ref !== undefined) {
-      if (!absoluteId(schema.$ref))
-        invalid("$ref must be a full explicit absolute ID.", pointer);
+      if (
+        typeof schema.$ref !== "string" ||
+        (schema.$ref !== "#" && !/^#\/(?:[^~%]|~[01])*$/u.test(schema.$ref))
+      )
+        invalid("$ref must be a local JSON Pointer.", pointer);
       references.push(schema.$ref);
     }
-    if (schema.properties !== undefined) {
-      if (!record(schema.properties))
-        invalid("properties requires a schema map.", pointer);
-      for (const [name, child] of Object.entries(schema.properties))
-        visit(
-          child,
-          false,
-          `${pointer}/properties/${pointerPart(name)}`,
-          depth + 1,
-        );
-    }
+    for (const key of ["properties", "$defs"])
+      if (schema[key] !== undefined) {
+        if (!record(schema[key]))
+          invalid(`${key} requires a schema map.`, pointer);
+        for (const [name, child] of Object.entries(schema[key]))
+          visit(
+            child,
+            false,
+            `${pointer}/${key}/${pointerPart(name)}`,
+            depth + 1,
+          );
+      }
     if (
       schema.required !== undefined &&
       (!Array.isArray(schema.required) ||
@@ -164,25 +162,9 @@ export function inspectSchemaBundle(
         visit(child, false, `${pointer}/anyOf/${String(index)}`, depth + 1);
     }
   };
-  for (const path of descriptor.schemas) {
-    if (typeof path !== "string")
-      invalid("Schema paths must be relative strings.");
-    safePath(path);
-    if (paths.has(path)) invalid("Duplicate schema file path.");
-    paths.add(path);
-    const schema = files.get(path);
-    if (!record(schema) || !absoluteId(schema.$id))
-      invalid(`Schema file ${path} requires a root absolute $id.`);
-    if (definitions.has(schema.$id))
-      invalid(`Duplicate schema ID ${schema.$id}.`);
-    assertJson(schema, options.nodes, options.jsonDepth, charge);
-    definitions.set(schema.$id, schema);
-    visit(schema, true, path, 0);
-  }
-  if (!definitions.has(descriptor.main))
-    invalid("main is not an exact schema ID in this bundle.");
+  visit(value, true, "#", 0);
   for (const ref of references)
-    if (!definitions.has(ref)) invalid(`Unknown schema ID ${ref}.`);
+    if (!definitions.has(ref)) invalid(`Unknown schema pointer ${ref}.`);
   const active = new Set<JsonSchema>();
   const done = new Set<JsonSchema>();
   const productive = (schema: JsonSchema, depth = 0): void => {
@@ -202,27 +184,96 @@ export function inspectSchemaBundle(
         productive(child as JsonSchema, depth + 1);
     active.delete(schema);
     done.add(schema);
-    if (record(schema.properties))
-      for (const child of Object.values(schema.properties))
-        productive(child as JsonSchema, depth + 1);
-    for (const key of ["items", "additionalProperties"])
-      if (schema[key] !== undefined)
-        productive(schema[key] as JsonSchema, depth + 1);
   };
   for (const schema of definitions.values()) productive(schema);
   return {
-    descriptor: Object.freeze({
-      schemas: Object.freeze([...paths]),
-      main: descriptor.main,
-      ...(descriptor.title === undefined
-        ? {}
-        : { title: descriptor.title as string }),
-      ...(descriptor.description === undefined
-        ? {}
-        : { description: descriptor.description as string }),
-    }) satisfies SchemaDescriptor,
+    schema: definitions.get("#")!,
     definitions,
   };
+}
+
+function checkSize(bytes: Uint8Array, options: SchemaOptions): void {
+  if (
+    bytes.byteLength >
+    Math.min(schemaBlockBytes, options.schemaBytes ?? schemaBlockBytes)
+  )
+    throw new ContentBundleError(
+      "LIMIT_EXCEEDED",
+      "Schema exceeds its single-block byte limit.",
+    );
+}
+
+function schemaBlock(
+  cid: CID,
+  bytes: Uint8Array,
+  definitions: SchemaDefinitions,
+): SchemaBlock {
+  const identity = Uint8Array.from(cid.bytes);
+  const encoded = Uint8Array.from(bytes);
+  return Object.freeze({
+    ...definitions,
+    get cid() {
+      return CID.decode(Uint8Array.from(identity));
+    },
+    get bytes() {
+      return Uint8Array.from(encoded);
+    },
+  });
+}
+
+export async function encodeSchema(
+  value: unknown,
+  options: SchemaOptions = {},
+): Promise<SchemaBlock> {
+  const definitions = inspectSchema(value, options);
+  const bytes = dagCbor.encode(definitions.schema);
+  checkSize(bytes, options);
+  const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+  return schemaBlock(cid, bytes, inspectSchema(dagCbor.decode(bytes), options));
+}
+
+export async function decodeSchema(
+  cid: CID,
+  bytes: Uint8Array,
+  options: SchemaOptions = {},
+): Promise<SchemaBlock> {
+  if (
+    cid.version !== 1 ||
+    cid.code !== dagCbor.code ||
+    cid.multihash.code !== sha256.code
+  )
+    invalid("Schema must be a CIDv1 DAG-CBOR SHA-256 block.");
+  checkSize(bytes, options);
+  const digest = await sha256.digest(bytes);
+  if (
+    digest.digest.length !== cid.multihash.digest.length ||
+    !digest.digest.every((byte, index) => byte === cid.multihash.digest[index])
+  )
+    throw new ContentBundleError(
+      "CONTENT_UNAVAILABLE",
+      "Corrupt schema block.",
+    );
+  let value: unknown;
+  try {
+    value = dagCbor.decode(bytes);
+  } catch (cause) {
+    throw new ContentBundleError(
+      "SCHEMA_INVALID",
+      "Invalid DAG-CBOR schema.",
+      "",
+      "",
+      [],
+      { cause },
+    );
+  }
+  const definitions = inspectSchema(value, options);
+  const canonical = dagCbor.encode(definitions.schema);
+  if (
+    canonical.length !== bytes.length ||
+    !canonical.every((byte, index) => byte === bytes[index])
+  )
+    invalid("Schema block must use canonical DAG-CBOR encoding.");
+  return schemaBlock(cid, bytes, definitions);
 }
 
 function equal(a: unknown, b: unknown, charge: () => void): boolean {
@@ -249,7 +300,6 @@ export interface ValidationContext {
 
 export function validateValue(
   definitions: SchemaDefinitions,
-  id: string,
   value: unknown,
   context: ValidationContext,
 ): void {
@@ -351,7 +401,5 @@ export function validateValue(
       if (!success) fail(pointer);
     }
   };
-  const schema = definitions.definitions.get(id);
-  if (schema === undefined) invalid(`Unknown schema ID ${id}.`);
-  visit(schema, value, "", 0);
+  visit(definitions.schema, value, "", 0);
 }

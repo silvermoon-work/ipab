@@ -5,29 +5,21 @@ import {
 } from "@ipld/car/buffer-writer";
 import * as dagPb from "@ipld/dag-pb";
 import { CID } from "multiformats/cid";
-import { sha256 } from "multiformats/hashes/sha2";
 import { importer } from "ipfs-unixfs-importer";
 import { fixedSize } from "ipfs-unixfs-importer/chunker";
 import { balanced } from "ipfs-unixfs-importer/layout";
 import {
   ContentBundleError,
   openBundle,
-  openSchemaBundle,
   resolveBundleLimits,
-  safePath,
 } from "@ipab/bundle";
-import type { BundleLimits, OpenBundleOptions } from "@ipab/bundle";
+import type { BundleLimits, SchemaBlock } from "@ipab/bundle";
 import { listTree, streamChunks } from "./tree.js";
 import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 
-export interface EmbeddedSchema {
-  readonly cid: CID;
-  readonly resolveCid: OpenBundleOptions["resolveCid"];
-}
 export interface BundleCarOptions extends ReadOptions {
   readonly limits?: Partial<BundleLimits>;
-  /** Graft existing Schema Bundle DAGs without reserializing or changing their directory identity. */
-  readonly embeddedSchemas?: ReadonlyMap<string, EmbeddedSchema>;
+  readonly schemaBlocks?: readonly SchemaBlock[];
 }
 export interface EncodedBundleCar {
   readonly cid: CID;
@@ -97,18 +89,6 @@ export async function encodeBundleCar(
     retained = 0;
   };
   try {
-    const imports =
-      options.embeddedSchemas ?? new Map<string, EmbeddedSchema>();
-    const paths = [...imports.keys()].sort();
-    for (const [index, path] of paths.entries()) {
-      safePath(path);
-      if (paths.slice(0, index).some((parent) => path.startsWith(`${parent}/`)))
-        throw new ContentBundleError(
-          "PATH_INVALID",
-          "Embedded schema paths must not overlap.",
-          path,
-        );
-    }
     const candidates: { path: string; content?: AsyncIterable<Uint8Array> }[] =
       [];
     let nodes = 0,
@@ -150,15 +130,6 @@ export async function encodeBundleCar(
             path,
           );
         const child = path ? `${path}/${entry.name}` : entry.name;
-        if (imports.has(child)) {
-          if (entry.kind !== "directory")
-            throw new ContentBundleError(
-              "PATH_INVALID",
-              "Embedded schema conflicts with a file.",
-              child,
-            );
-          continue;
-        }
         if (entry.kind === "directory") {
           candidates.push({ path: child });
           await walk(child, depth + 1);
@@ -173,7 +144,6 @@ export async function encodeBundleCar(
       }
     };
     await walk("", 0);
-    for (const path of paths) candidates.push({ path });
     if (!candidates.length)
       throw new ContentBundleError(
         "MANIFEST_INVALID",
@@ -202,86 +172,9 @@ export async function encodeBundleCar(
         "MANIFEST_INVALID",
         "Bundle requires a nonempty file tree.",
       );
-    const copy = async (
-      cid: CID,
-      resolve: EmbeddedSchema["resolveCid"],
-      depth: number,
-    ): Promise<void> => {
-      if (blocks.has(cid.toV1().toString())) return;
-      if (depth > limits.depth)
-        throw new ContentBundleError(
-          "LIMIT_EXCEEDED",
-          "Embedded DAG depth exceeded.",
-        );
-      const bytes = await resolve(cid, { signal });
-      if (
-        cid.multihash.code !== sha256.code ||
-        ![dagPb.code, 0x55].includes(cid.code)
-      )
-        throw new ContentBundleError(
-          "CONTENT_INVALID",
-          "Unsupported embedded block codec/hash.",
-        );
-      const digest = await sha256.digest(bytes);
-      if (
-        !digest.digest.every(
-          (byte, index) => byte === cid.multihash.digest[index],
-        )
-      )
-        throw new ContentBundleError(
-          "CONTENT_UNAVAILABLE",
-          "Corrupt embedded block.",
-        );
-      await put(cid, bytes);
-      if (cid.code === dagPb.code)
-        for (const link of dagPb.decode(bytes).Links)
-          await copy(link.Hash, resolve, depth + 1);
-    };
-    const size = async (cid: CID): Promise<number> => {
-      const bytes = await get(cid);
-      return (
-        bytes.length +
-        (cid.code === dagPb.code
-          ? dagPb
-              .decode(bytes)
-              .Links.reduce((sum, link) => sum + (link.Tsize ?? 0), 0)
-          : 0)
-      );
-    };
-    const graft = async (
-      cid: CID,
-      path: readonly string[],
-      replacement: CID,
-    ): Promise<CID> => {
-      const node = dagPb.decode(await get(cid));
-      const name = path[0]!;
-      const index = node.Links.findIndex((link) => link.Name === name);
-      if (index < 0)
-        throw new ContentBundleError(
-          "PATH_INVALID",
-          "Missing embedded schema parent.",
-          path.join("/"),
-        );
-      const child =
-        path.length === 1
-          ? replacement
-          : await graft(node.Links[index]!.Hash, path.slice(1), replacement);
-      const links = [...node.Links];
-      links[index] = { Name: name, Hash: child, Tsize: await size(child) };
-      const bytes = dagPb.encode(
-        dagPb.prepare({ Data: node.Data, Links: links }),
-      );
-      const result = CID.createV1(dagPb.code, await sha256.digest(bytes));
-      await put(result, bytes);
-      return result;
-    };
-    for (const path of paths) {
-      const embedded = imports.get(path)!;
-      await copy(embedded.cid, embedded.resolveCid, 0);
-      await openSchemaBundle(embedded.cid, { resolveCid: get, signal, limits });
-      root = await graft(root, path.split("/"), embedded.cid);
-    }
-    await openBundle(root, { resolveCid: get, signal, limits });
+    for (const schema of options.schemaBlocks ?? [])
+      await put(schema.cid, schema.bytes);
+    const bundle = await openBundle(root, { resolveCid: get, signal, limits });
     const reached = new Map<string, { cid: CID; bytes: Uint8Array }>();
     const reach = async (cid: CID, depth: number): Promise<void> => {
       const key = cid.toV1().toString();
@@ -298,6 +191,7 @@ export async function encodeBundleCar(
           await reach(link.Hash, depth + 1);
     };
     await reach(root, 0);
+    await reach(bundle.schema.cid, 0);
     const ordered = [...reached.values()]
       .filter((block) => !block.cid.equals(root))
       .sort((a, b) => {

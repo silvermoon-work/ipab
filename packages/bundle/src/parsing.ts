@@ -1,8 +1,7 @@
 import { isMap, isSeq, parseAllDocuments } from "yaml";
+import { CID } from "multiformats/cid";
 import { ContentBundleError } from "./errors.js";
 import type { BundleManifest, ContentType } from "./types.js";
-
-export const SCHEMA_PROFILE = "builtin:bundle-schema.v1";
 
 export function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -27,16 +26,6 @@ export function safePath(path: string): string {
       path,
     );
   return path;
-}
-
-export function rootPath(value: string): string {
-  if (!value.startsWith("/"))
-    throw new ContentBundleError(
-      "PATH_INVALID",
-      "Expected a root-relative / path.",
-      value,
-    );
-  return safePath(value.slice(1));
 }
 
 export function assertJson(
@@ -296,13 +285,16 @@ export function parseBundleManifest(
       Object.keys(value).some((key) => key !== "entry") ||
       !record(value.entry) ||
       Object.keys(value.entry).some(
-        (key) => !["path", "schema", "contentType"].includes(key),
+        (key) => !["path", "schemaCid", "contentType"].includes(key),
       )
     )
       throw new Error("Expected only an entry descriptor.");
-    const { path, schema, contentType } = value.entry;
-    if (typeof path !== "string" || typeof schema !== "string")
+    const { path, schemaCid, contentType } = value.entry;
+    if (typeof path !== "string" || typeof schemaCid !== "string")
       throw new Error("Invalid entry fields.");
+    const cid = CID.parse(schemaCid);
+    if (cid.version !== 1 || cid.code !== 0x71 || cid.multihash.code !== 0x12)
+      throw new Error("Schema must be a CIDv1 DAG-CBOR SHA-256 block.");
     if (
       contentType !== "application/json" &&
       contentType !== "application/yaml" &&
@@ -312,7 +304,7 @@ export function parseBundleManifest(
     return Object.freeze({
       entry: Object.freeze({
         path: safePath(path),
-        schema: schema === SCHEMA_PROFILE ? schema : `/${rootPath(schema)}`,
+        schemaCid: cid.toString(),
         contentType,
       }),
     });

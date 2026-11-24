@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFile, readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
+import { encodeSchema } from "@ipab/bundle";
 import * as dagPb from "@ipld/dag-pb";
 import { UnixFS } from "ipfs-unixfs";
 import { CID } from "multiformats/cid";
@@ -15,7 +15,7 @@ import {
   validatedBundle,
   loadApp,
   appSchemaCid,
-  appSchemaFiles,
+  appSchema,
   CHUNK_BYTES,
 } from "../src/space.js";
 import { Ownership } from "../src/history.js";
@@ -56,14 +56,32 @@ describe("real UnixFS and Node subprocess runtime", () => {
     vi.unstubAllEnvs();
   });
 
-  it("rebuilds the fixed runtime Node profile identity from its exact canonical file bytes", async () => {
-    const encoded = await encodeBundleCar(memoryTree(appSchemaFiles));
+  it("rebuilds the fixed runtime Node profile identity as one DAG-CBOR block", async () => {
+    const encoded = await encodeSchema(appSchema);
+    expect(encoded.cid.equals(appSchemaCid)).toBe(true);
+  });
+
+  it("retains the standalone schema block independently of the content directory root", async () => {
+    const input = await content(work.store);
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "schema-retention",
+      null,
+    );
     try {
-      expect(encoded.cid.equals(appSchemaCid)).toBe(true);
-      await bytes(encoded.stream, 64 * 1024);
+      const bundle = await validatedBundle(input.root, work.store, owner);
+      expect(bundle.manifest.entry.schemaCid).toBe(input.schema);
+      expect(state.hold(owner.owner)?.roots).toEqual(
+        expect.arrayContaining([input.root, input.schema]),
+      );
+      expect(await work.store.block.get(input.schema)).toEqual(
+        bundle.schema.bytes,
+      );
     } finally {
-      await encoded.close();
+      await owner.release();
     }
+    expect(state.hold(owner.owner)).toBeUndefined();
   });
 
   it("ordinary argv/stdin/binary stdout are exact and output is the entire finalized directory", async () => {
@@ -243,33 +261,16 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(missing.stderr).toContain("register set or ipab exec");
     expect(state.runs()).toHaveLength(1);
   }, 20000);
-  it("opens Schema Bundle collections through the fixed builtin registration key", async () => {
-    const schema = await importFiles(
-      work.store,
-      Object.fromEntries(appSchemaFiles),
-    );
-    const root = await app(
-      work.store,
-      "process.stdout.write(process.argv[2]);",
-    );
-    state.setAssociation("builtin:bundle-schema.v1", root, ["%"], false);
-    const result = await subprocess(
-      ["--state-dir", work.stateDir, "open", schema],
-      config,
-    );
-    expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout.toString()).toBe(schema);
-    expect(state.runs()[0]?.origin).toBe("open");
-    state.removeAssociation("builtin:bundle-schema.v1");
-  }, 20000);
   it.each(["other/app.cjs", "resources/app.js"])(
     "enforces Node entry paths outside the structural schema: %s",
     async (entry) => {
+      const schema = await encodeSchema(appSchema);
+      await work.store.put(schema.cid, schema.bytes);
       const root = await importFiles(work.store, {
         ".bundle.yaml": JSON.stringify({
           entry: {
             path: "app.json",
-            schema: "/schema",
+            schemaCid: schema.cid.toString(),
             contentType: "application/json",
           },
         }),
@@ -279,9 +280,6 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
           entry,
         }),
         [entry]: "throw new Error('must not execute');",
-        ...Object.fromEntries(
-          [...appSchemaFiles].map(([path, bytes]) => [`schema/${path}`, bytes]),
-        ),
       });
       const owner = await Ownership.create(
         state,
@@ -658,7 +656,7 @@ process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{}); setInterval(()=>{},10
       loadApp((await content(work.store)).root, work.store, validationOwner),
     ).rejects.toThrow("App");
     await validationOwner.release();
-    expect(appSchemaCid.code).toBe(0x70);
+    expect(appSchemaCid.code).toBe(0x71);
     expect(JSON.parse(await readFile(config, "utf8")) as unknown).toEqual(
       work.store.configuration,
     );

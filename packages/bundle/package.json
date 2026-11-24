@@ -2,7 +2,7 @@
   "name": "@ipab/bundle",
   "version": "0.1.0-rc.0",
   "private": true,
-  "description": "Validated immutable UnixFS Content and Schema Bundles.",
+  "description": "Validated UnixFS Content Bundles and single-block DAG-CBOR schemas.",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
@@ -30,6 +30,7 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
+    "@ipld/dag-cbor": "catalog:",
     "@ipab/ipfs-store": "workspace:*",
     "multiformats": "catalog:",
     "yaml": "catalog:"

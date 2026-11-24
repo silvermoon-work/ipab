@@ -613,13 +613,19 @@ describe("management contract", () => {
         aliasName(name);
       }).toThrow();
     expect(() => exactCid("bad")).toThrow();
-    expect(() => exactCid(another, true)).toThrow("UnixFS directory");
-    expect(exactCid("builtin:bundle-schema.v1", true)).toBe(
-      "builtin:bundle-schema.v1",
+    expect(() => exactCid(another, true)).toThrow("DAG-CBOR");
+    expect(() => exactCid("builtin:bundle-schema.v1", true)).toThrow(
+      "valid CID",
     );
+    expect(() =>
+      exactCid(
+        "bafybeidq5zd7tzccgueniq5fnv2yugw45ijmifw76sknpem7mz5jynmaxe",
+        true,
+      ),
+    ).toThrow("DAG-CBOR");
     const state = new State(work.stateDir);
     expect(() => state.resolve("unknown")).toThrow("Unknown");
-    expect(() => state.resolve(another, true)).toThrow("UnixFS directory");
+    expect(() => state.resolve(another, true)).toThrow("DAG-CBOR");
     state.close();
   });
 

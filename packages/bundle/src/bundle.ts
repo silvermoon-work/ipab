@@ -2,20 +2,13 @@ import { ContentError, IpfsStore, openContent } from "@ipab/ipfs-store";
 import type { UnixfsNode } from "@ipab/ipfs-store";
 import { CID } from "multiformats/cid";
 import { ContentBundleError } from "./errors.js";
-import {
-  SCHEMA_PROFILE,
-  parseBundleManifest,
-  parseData,
-  rootPath,
-  safePath,
-} from "./parsing.js";
-import { inspectSchemaBundle, validateValue } from "./schema.js";
+import { parseBundleManifest, parseData, safePath } from "./parsing.js";
+import { decodeSchema, schemaBlockBytes, validateValue } from "./schema.js";
 import type {
   BundleLimits,
-  BundleManifest,
   ContentBundle,
   OpenBundleOptions,
-  SchemaBundle,
+  SchemaBlock,
 } from "./types.js";
 
 export const bundleLimits: Readonly<BundleLimits> = Object.freeze({
@@ -28,10 +21,8 @@ export const bundleLimits: Readonly<BundleLimits> = Object.freeze({
   jsonDepth: 64,
   validationDepth: 64,
   manifestBytes: 64 * 1024,
-  descriptorBytes: 64 * 1024,
-  schemaBytes: 1024 * 1024,
+  schemaBytes: schemaBlockBytes,
   documentBytes: 8 * 1024 * 1024,
-  schemas: 128,
   nodes: 100_000,
 });
 export function resolveBundleLimits(
@@ -210,7 +201,7 @@ function reader(
 async function operation(
   rootCid: CID,
   options: OpenBundleOptions,
-  expected?: SchemaBundle,
+  expected?: SchemaBlock,
 ): Promise<ContentBundle> {
   const limits = resolveBundleLimits(options.limits);
   if (typeof options.resolveCid !== "function")
@@ -240,12 +231,9 @@ async function operation(
   );
   const request = options.signal ? { signal: options.signal } : {};
   const files = new Set<string>();
-  const directories = new Map<string, CID>();
-  const manifests = new Map<string, BundleManifest>();
-  const schemas = new Map<string, SchemaBundle>();
+  const directories = new Set<string>();
   let parsed = 0,
-    work = 0,
-    schemaFiles = 0;
+    work = 0;
   const charge = () => {
     if (options.signal?.aborted)
       throw new ContentBundleError(
@@ -299,7 +287,7 @@ async function operation(
           "Duplicate directory.",
           path,
         );
-      directories.set(path, node.cid);
+      directories.add(path);
       for await (const child of node.entries()) {
         if (child.name.includes("/"))
           throw new ContentBundleError(
@@ -325,143 +313,40 @@ async function operation(
       files.add(path);
     }
   };
-  const manifestAt = async (base: string) => {
-    let manifest = manifests.get(base);
-    if (!manifest) {
-      if (!directories.has(base))
-        throw new ContentBundleError(
-          "REFERENCE_INVALID",
-          "Bundle must identify a directory.",
-          base,
-        );
-      manifest = parseBundleManifest(
-        await bytesAt(join(base, ".bundle.yaml"), limits.manifestBytes),
-        limits.manifestBytes,
-        charge,
-      );
-      manifests.set(base, manifest);
-    }
-    return manifest;
-  };
-  const fileReader = (base: string) =>
-    reader(
-      directories.get(base)!,
-      new Set(
-        [...files]
-          .filter((path) => !base || path.startsWith(`${base}/`))
-          .map((path) => (base ? path.slice(base.length + 1) : path)),
-      ),
-      options,
-      limits,
+  try {
+    await store.prepare(cid, request);
+    await index("", 0);
+    const manifest = parseBundleManifest(
+      await bytesAt(".bundle.yaml", limits.manifestBytes),
+      limits.manifestBytes,
+      charge,
     );
-  const loadSchema = async (base: string): Promise<SchemaBundle> => {
-    const cached = schemas.get(base);
-    if (cached) return cached;
-    try {
-      const manifest = await manifestAt(base);
-      if (
-        manifest.entry.schema !== SCHEMA_PROFILE ||
-        manifest.entry.contentType !== "application/json"
-      )
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          "Expected a Schema Bundle using the fixed builtin profile.",
-        );
-      const descriptor = parseData(
-        await bytesAt(join(base, manifest.entry.path), limits.descriptorBytes),
-        "application/json",
-        limits.nodes,
-        limits.jsonDepth,
-        charge,
+    const schemaCid = CID.parse(manifest.entry.schemaCid);
+    if (expected && !schemaCid.equals(expected.cid))
+      throw new ContentBundleError(
+        "SCHEMA_INVALID",
+        "Schema CID differs from the explicit validator.",
       );
-      const listed =
-        typeof descriptor === "object" &&
-        descriptor !== null &&
-        "schemas" in descriptor
-          ? descriptor.schemas
-          : undefined;
-      const values = new Map<string, unknown>();
-      if (Array.isArray(listed))
-        for (const path of listed) {
-          if (typeof path !== "string")
-            throw new ContentBundleError(
-              "SCHEMA_INVALID",
-              "Schema paths must be strings.",
-            );
-          if (++schemaFiles > limits.schemas)
-            throw new ContentBundleError(
-              "LIMIT_EXCEEDED",
-              "Shared schema file budget exceeded.",
-            );
-          values.set(
-            path,
-            parseData(
-              await bytesAt(join(base, path), limits.schemaBytes),
-              "application/json",
-              limits.nodes,
-              limits.jsonDepth,
-              charge,
-            ),
-          );
-        }
-      const definitions = inspectSchemaBundle(descriptor, values, {
+    let schema: SchemaBlock;
+    try {
+      const bytes = await store.block.get(schemaCid.toString(), request);
+      parsed += bytes.byteLength;
+      if (parsed > limits.parsingBytes)
+        throw new ContentBundleError(
+          "LIMIT_EXCEEDED",
+          "Parsing byte budget exceeded.",
+        );
+      schema = await decodeSchema(schemaCid, bytes, {
         nodes: limits.nodes,
         depth: limits.validationDepth,
         jsonDepth: limits.jsonDepth,
-        schemas: limits.schemas,
+        schemaBytes: limits.schemaBytes,
         charge,
       });
-      const schemaCid = directories.get(base)!;
-      const bundle: SchemaBundle = Object.freeze({
-        kind: "schema",
-        get cid() {
-          return CID.decode(Uint8Array.from(schemaCid.bytes));
-        },
-        manifest,
-        schemaKey: SCHEMA_PROFILE,
-        ...definitions,
-        readFile: fileReader(base),
-      });
-      schemas.set(base, bundle);
-      return bundle;
     } catch (cause) {
-      if (
-        cause instanceof ContentBundleError &&
-        cause.code === "CONTENT_INVALID"
-      )
-        throw new ContentBundleError(
-          "SCHEMA_INVALID",
-          cause.message,
-          cause.path || base,
-          cause.pointer,
-          cause.referenceChain,
-          { cause },
-        );
-      throw contextual(cause, base, "", [], options.signal);
+      throw contextual(cause, schemaCid.toString(), "", [], options.signal);
     }
-  };
-  const validateBundle = async (base: string): Promise<ContentBundle> => {
-    const manifest = await manifestAt(base);
-    if (manifest.entry.schema === SCHEMA_PROFILE) return loadSchema(base);
-    const schemaBase = join(base, rootPath(manifest.entry.schema));
-    const schema = await loadSchema(schemaBase);
-    if (!base && expected && !schema.cid.equals(expected.cid))
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Embedded Schema Bundle CID differs from the explicit validator.",
-      );
-    const bundleCid = directories.get(base)!;
-    const bundle: ContentBundle = Object.freeze({
-      kind: "content",
-      get cid() {
-        return CID.decode(Uint8Array.from(bundleCid.bytes));
-      },
-      manifest,
-      schemaKey: schema.cid.toV1().toString(),
-      schemaBundle: schema,
-      readFile: fileReader(base),
-    });
-    const path = join(base, manifest.entry.path);
+    const path = manifest.entry.path;
     try {
       const value = parseData(
         await bytesAt(path, limits.documentBytes),
@@ -470,25 +355,20 @@ async function operation(
         limits.jsonDepth,
         charge,
       );
-      validateValue(schema, schema.descriptor.main, value, {
-        charge,
-        depth: limits.validationDepth,
-      });
-      return bundle;
+      validateValue(schema, value, { charge, depth: limits.validationDepth });
     } catch (cause) {
       throw contextual(cause, path, "", [], options.signal);
     }
-  };
-  try {
-    await store.prepare(cid, request);
-    await index("", 0);
-    const result = await validateBundle("");
-    if (expected && result.kind !== "content")
-      throw new ContentBundleError(
-        "SCHEMA_INVALID",
-        "Explicit content validation requires an ordinary Bundle.",
-      );
-    return result;
+    return Object.freeze({
+      kind: "content",
+      get cid() {
+        return CID.decode(Uint8Array.from(cid.bytes));
+      },
+      manifest,
+      schemaKey: schemaCid.toString(),
+      schema,
+      readFile: reader(cid, files, options, limits),
+    });
   } catch (cause) {
     throw contextual(cause, cid.toString(), "", [], options.signal);
   } finally {
@@ -501,18 +381,57 @@ export async function openBundle(
 ): Promise<ContentBundle> {
   return operation(root, options);
 }
-export async function openSchemaBundle(
+export async function openSchema(
   root: CID,
   options: OpenBundleOptions,
-): Promise<SchemaBundle> {
-  const bundle = await operation(root, options);
-  if (bundle.kind !== "schema")
-    throw new ContentBundleError("SCHEMA_INVALID", "Expected a Schema Bundle.");
-  return bundle as SchemaBundle;
+): Promise<SchemaBlock> {
+  const limits = resolveBundleLimits(options.limits);
+  if (typeof options.resolveCid !== "function")
+    throw new ContentBundleError(
+      "OPTIONS_INVALID",
+      "A CID block resolver is required.",
+    );
+  if (root.version !== 1 || root.code !== 0x71 || root.multihash.code !== 0x12)
+    throw new ContentBundleError(
+      "SCHEMA_INVALID",
+      "Schema must be a CIDv1 DAG-CBOR SHA-256 block.",
+    );
+  let work = 0;
+  try {
+    options.signal?.throwIfAborted();
+    const bytes = await options.resolveCid(
+      root,
+      options.signal ? { signal: options.signal } : {},
+    );
+    if (
+      bytes.length >
+      Math.min(limits.blockBytes, limits.bytes, limits.parsingBytes)
+    )
+      throw new ContentBundleError(
+        "LIMIT_EXCEEDED",
+        "Schema read byte budget exceeded.",
+      );
+    return await decodeSchema(root, bytes, {
+      nodes: limits.nodes,
+      depth: limits.validationDepth,
+      jsonDepth: limits.jsonDepth,
+      schemaBytes: limits.schemaBytes,
+      charge() {
+        options.signal?.throwIfAborted();
+        if (++work > limits.nodes)
+          throw new ContentBundleError(
+            "LIMIT_EXCEEDED",
+            "Schema work budget exceeded.",
+          );
+      },
+    });
+  } catch (cause) {
+    throw contextual(cause, root.toString(), "", [], options.signal);
+  }
 }
 export async function validateContentBundle(
   root: CID,
-  schema: SchemaBundle,
+  schema: SchemaBlock,
   options: OpenBundleOptions,
 ): Promise<ContentBundle> {
   return operation(root, options, schema);

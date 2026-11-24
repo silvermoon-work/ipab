@@ -1,56 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { importer } from "ipfs-unixfs-importer";
 import * as dagPb from "@ipld/dag-pb";
+import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import {
-  bundleLimits,
   canonicalJson,
   ContentBundleError,
-  inspectSchemaBundle,
+  encodeSchema,
+  inspectSchema,
   openBundle,
-  openSchemaBundle,
+  openSchema,
   parseBundleManifest,
   parseData,
   safePath,
-  SCHEMA_PROFILE,
+  schemaBlockBytes,
   validateContentBundle,
 } from "../src/index.js";
 import type { BundleLimits, JsonSchema } from "../src/index.js";
 
 const text = (value: string) => new TextEncoder().encode(value);
-const mainId = "urn:example:main";
-const targetId = "https://example.test/types:target";
+const json = (value: unknown) => canonicalJson(value);
 const manifest = (
-  schema = "/schema",
+  schemaCid: string,
   path = "data.json",
   contentType = "application/json",
-) => canonicalJson({ entry: { schema, path, contentType } });
-const json = (value: unknown) => canonicalJson(value);
-function schemaFiles(
-  schema: JsonSchema,
-  extra: Record<string, unknown> = {},
-  prefix = "schema/",
-) {
-  const definitions = {
-    "main.json":
-      typeof schema === "boolean"
-        ? { $id: mainId, anyOf: [schema] }
-        : { $id: mainId, ...schema },
-    ...extra,
-  };
-  return Object.fromEntries([
-    [`${prefix}.bundle.yaml`, manifest(SCHEMA_PROFILE, "schema.json")],
-    [
-      `${prefix}schema.json`,
-      json({ schemas: Object.keys(definitions), main: mainId }),
-    ],
-    ...Object.entries(definitions).map(([path, value]) => [
-      `${prefix}${path}`,
-      json(value),
-    ]),
-  ]) as Record<string, Uint8Array>;
-}
+) => json({ entry: { schemaCid, path, contentType } });
 async function tree(files: Record<string, Uint8Array>) {
   const blocks = new Map<string, Uint8Array>();
   let root: CID | undefined;
@@ -76,38 +51,41 @@ async function tree(files: Record<string, Uint8Array>) {
     if (!bytes) throw new Error("Missing block.");
     return Promise.resolve(bytes);
   };
-  return { root, blocks, resolveCid, calls };
+  return { root, blocks, calls, resolveCid };
 }
 async function fixture(
   schema: JsonSchema,
   value: unknown,
   files: Record<string, Uint8Array> = {},
-  extra: Record<string, unknown> = {},
   type = "application/json",
 ) {
-  return tree({
-    ".bundle.yaml": manifest("/schema", "data.json", type),
+  // Raw encoding lets the loader tests exercise malformed schemas too.
+  const bytes = dagCbor.encode(schema);
+  const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+  const f = await tree({
+    ".bundle.yaml": manifest(cid.toString(), "data.json", type),
     "data.json":
       type === "application/json" ? json(value) : text(String(value)),
-    ...schemaFiles(schema, extra),
     ...files,
   });
+  f.blocks.set(cid.toString(), bytes);
+  return { ...f, schemaCid: cid };
 }
 async function read(stream: ReadableStream<Uint8Array>) {
   const parts: Uint8Array[] = [];
   for await (const part of stream) parts.push(part);
-  const result = new Uint8Array(
+  const bytes = new Uint8Array(
     parts.reduce((sum, part) => sum + part.length, 0),
   );
   let offset = 0;
   for (const part of parts) {
-    result.set(part, offset);
+    bytes.set(part, offset);
     offset += part.length;
   }
-  return result;
+  return bytes;
 }
-describe("unified immutable Bundle runtime", () => {
-  it("validates entire DAG, indexes exact embedded schema CID and streams unchanged attachments", async () => {
+describe("single-block schemas and immutable content", () => {
+  it("verifies the entire storage DAG, exact schema block and unchanged streaming attachments", async () => {
     const attachment = new Uint8Array(700_000).fill(17);
     const f = await fixture(
       {
@@ -119,9 +97,8 @@ describe("unified immutable Bundle runtime", () => {
       { "assets/photo.bin": attachment },
     );
     const bundle = await openBundle(f.root, f);
-    expect(bundle.kind).toBe("content");
-    expect(bundle.schemaKey).toBe(bundle.schemaBundle!.cid.toString());
-    expect(bundle.schemaBundle!.descriptor.main).toBe(mainId);
+    expect(bundle.schemaKey).toBe(f.schemaCid.toString());
+    expect(bundle.schema.cid.equals(f.schemaCid)).toBe(true);
     expect(
       parseData(
         await read(await bundle.readFile("data.json")),
@@ -138,28 +115,26 @@ describe("unified immutable Bundle runtime", () => {
       attachment,
     );
     bundle.cid.bytes.fill(0);
-    bundle.schemaBundle!.cid.bytes.fill(0);
+    bundle.schema.cid.bytes.fill(0);
+    bundle.schema.bytes.fill(0);
     expect(bundle.cid.equals(f.root)).toBe(true);
-    expect(bundle.schemaKey).toBe(bundle.schemaBundle!.cid.toString());
+    expect(bundle.schema.cid.equals(f.schemaCid)).toBe(true);
+    expect(bundle.schema.bytes).toEqual(f.blocks.get(f.schemaCid.toString()));
     await expect(bundle.readFile("../data.json")).rejects.toMatchObject({
       code: "PATH_INVALID",
     });
-    await expect(bundle.readFile("missing")).rejects.toMatchObject({
-      code: "CONTENT_UNAVAILABLE",
-    });
-    await expect(bundle.readFile("assets")).rejects.toMatchObject({
-      code: "CONTENT_UNAVAILABLE",
-    });
-    await expect(openSchemaBundle(f.root, f)).rejects.toMatchObject({
+    for (const path of ["missing", "assets"])
+      await expect(bundle.readFile(path)).rejects.toMatchObject({
+        code: "CONTENT_UNAVAILABLE",
+      });
+    await expect(openSchema(f.root, f)).rejects.toMatchObject({
       code: "SCHEMA_INVALID",
     });
     await expect(
-      validateContentBundle(f.root, bundle.schemaBundle!, f),
+      validateContentBundle(f.root, bundle.schema, f),
     ).resolves.toHaveProperty("schemaKey", bundle.schemaKey);
-    const other = await tree(schemaFiles({ type: "string" }, {}, ""));
-    const otherSchema = await openSchemaBundle(other.root, other);
     await expect(
-      validateContentBundle(f.root, otherSchema, f),
+      validateContentBundle(f.root, await encodeSchema({ type: "string" }), f),
     ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
   });
   it.each([
@@ -169,23 +144,17 @@ describe("unified immutable Bundle runtime", () => {
     [{ type: "boolean" }, true],
     [{ type: "null" }, null],
     [
-      {
-        type: "object",
-        properties: { x: true },
-        additionalProperties: { type: "string" },
-      },
+      { properties: { x: true }, additionalProperties: { type: "string" } },
       { x: false, y: "yes" },
     ],
     [
-      {
-        type: "object",
-        properties: { x: { enum: [{ a: [1] }, "b"], const: { a: [1] } } },
-      },
+      { properties: { x: { enum: [{ a: [1] }, "b"], const: { a: [1] } } } },
       { x: { a: [1] } },
     ],
     [{ anyOf: [{ type: "string" }, { type: "integer" }] }, 3],
+    [{ $defs: { "a/b~c": { type: "integer" } }, $ref: "#/$defs/a~1b~0c" }, 3],
   ] satisfies [JsonSchema, unknown][])(
-    "supports structural JSON semantics",
+    "supports structural semantics and local definitions",
     async (schema, value) => {
       const f = await fixture(schema, value);
       await expect(openBundle(f.root, f)).resolves.toHaveProperty(
@@ -200,155 +169,105 @@ describe("unified immutable Bundle runtime", () => {
     [{ type: "integer" }, 2.3],
     [{ const: { a: 1 } }, { b: 1 }],
     [{ enum: [[1], 2] }, [2]],
-    [{ type: "object", required: ["x"] }, {}],
+    [{ required: ["x"] }, {}],
     [{ additionalProperties: false }, { x: 1 }],
     [{ items: false }, [1]],
     [{ properties: { x: false } }, { x: 1 }],
     [{ anyOf: [false, { type: "string" }] }, 1],
+    [{ $defs: { n: { type: "integer" } }, $ref: "#/$defs/n" }, "3"],
   ] satisfies [JsonSchema, unknown][])(
-    "rejects structurally invalid data",
+    "rejects invalid entry data",
     async (schema, value) => {
       const f = await fixture(schema, value);
       await expect(openBundle(f.root, f)).rejects.toMatchObject({
         code: "CONTENT_INVALID",
+        path: "data.json",
       });
     },
   );
-  it("checks unused definitions, exact IDs, boolean children and productive recursion", async () => {
-    const recursive = {
-      type: "object",
-      properties: { next: { $ref: mainId } },
-      additionalProperties: false,
-    };
-    const f = await fixture(recursive, { next: { next: {} } });
-    await expect(openBundle(f.root, f)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-    const unused = await fixture(
-      {},
-      {},
-      {},
-      { "unused.json": { $id: targetId, $ref: "urn:missing" } },
-    );
-    await expect(openBundle(unused.root, unused)).rejects.toMatchObject({
-      code: "SCHEMA_INVALID",
-    });
-    const cycle = await fixture(
-      { $ref: targetId },
-      {},
-      {},
-      { "target.json": { $id: targetId, $ref: mainId } },
-    );
-    await expect(openBundle(cycle.root, cycle)).rejects.toMatchObject({
-      code: "SCHEMA_INVALID",
-    });
-    const anyCycle = await fixture({ anyOf: [{ $ref: mainId }, true] }, {});
-    await expect(openBundle(anyCycle.root, anyCycle)).rejects.toMatchObject({
-      code: "SCHEMA_INVALID",
-    });
-  });
-  it("uses the fixed profile only for complete Schema Bundles", async () => {
-    const f = await tree(schemaFiles({ type: "object" }, {}, ""));
-    const schema = await openSchemaBundle(f.root, f);
-    expect(schema.schemaKey).toBe(SCHEMA_PROFILE);
-    expect(schema.definitions.get(mainId)).toMatchObject({ $id: mainId });
-    expect(await read(await schema.readFile("main.json"))).toEqual(
-      json({ $id: mainId, type: "object" }),
-    );
-    await expect(
-      validateContentBundle(f.root, schema, f),
-    ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
-    const bypass = await fixture(
-      {},
-      {},
-      { ".bundle.yaml": manifest(SCHEMA_PROFILE) },
-    );
-    await expect(openBundle(bypass.root, bypass)).rejects.toMatchObject({
-      code: "SCHEMA_INVALID",
-    });
-    const file = await fixture(
-      {},
-      {},
-      { ".bundle.yaml": manifest("/data.json") },
-    );
-    await expect(openBundle(file.root, file)).rejects.toMatchObject({
-      code: "REFERENCE_INVALID",
-    });
-    const ordinary = await fixture(
-      {},
-      {},
+  it("checks unused definitions and rejects nonproductive cycles while allowing recursive data", async () => {
+    const recursive = await fixture(
       {
-        "schema/.bundle.yaml": manifest("/other"),
-        "schema/data.json": json({}),
+        type: "object",
+        properties: { next: { $ref: "#" } },
+        additionalProperties: false,
       },
+      { next: { next: {} } },
     );
-    await expect(openBundle(ordinary.root, ordinary)).rejects.toMatchObject({
-      code: "SCHEMA_INVALID",
-    });
-  });
-  it("reads YAML and complete JSONL entries through unions and full IDs", async () => {
-    const yaml = await fixture(
-      { type: "object" },
-      "n: 2",
-      {},
-      {},
-      "application/yaml",
+    await expect(openBundle(recursive.root, recursive)).resolves.toHaveProperty(
+      "kind",
     );
-    await expect(openBundle(yaml.root, yaml)).resolves.toHaveProperty(
-      "manifest",
-    );
-    const empty = await fixture(
-      { $ref: targetId },
-      "",
-      {},
-      { "target.json": { $id: targetId, type: "array" } },
-      "application/jsonl",
-    );
-    await expect(openBundle(empty.root, empty)).resolves.toHaveProperty(
-      "manifest",
-    );
-    const lines = await fixture(
-      { $ref: targetId },
-      "1\r\n2\r\n",
-      {},
+    const nullable = await fixture(
       {
-        "target.json": {
-          $id: targetId,
-          anyOf: [false, { type: "array", items: { type: "integer" } }],
+        anyOf: [
+          { type: "null" },
+          {
+            type: "object",
+            required: ["next"],
+            properties: { next: { $ref: "#" } },
+          },
+        ],
+      },
+      { next: { next: null } },
+    );
+    await expect(openBundle(nullable.root, nullable)).resolves.toHaveProperty(
+      "kind",
+    );
+    for (const schema of [
+      { $defs: { unused: { $ref: "ipfs://outside" } } },
+      { $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } } },
+      { anyOf: [{ $ref: "#" }, true] },
+      {
+        $defs: { data: { const: { type: "integer" } } },
+        $ref: "#/$defs/data/const",
+      },
+    ]) {
+      const f = await fixture(schema, {});
+      await expect(openBundle(f.root, f)).rejects.toMatchObject({
+        code: "SCHEMA_INVALID",
+      });
+    }
+  });
+  it("reads YAML and complete JSONL arrays through local references", async () => {
+    for (const [schema, value, type] of [
+      [{ type: "object" }, "n: 2", "application/yaml"],
+      [{ type: "array" }, "", "application/jsonl"],
+      [
+        {
+          $defs: {
+            values: {
+              anyOf: [false, { type: "array", items: { type: "integer" } }],
+            },
+          },
+          $ref: "#/$defs/values",
         },
-      },
-      "application/jsonl",
-    );
-    await expect(openBundle(lines.root, lines)).resolves.toHaveProperty(
-      "kind",
-      "content",
-    );
-  });
-  it("preserves JSONL entry depth errors and their line context", async () => {
-    const f = await fixture(
-      { anyOf: [true, { type: "array" }] },
+        "1\r\n2\r\n",
+        "application/jsonl",
+      ],
+    ] satisfies [JsonSchema, string, string][]) {
+      const f = await fixture(schema, value, {}, type);
+      await expect(openBundle(f.root, f)).resolves.toHaveProperty("kind");
+    }
+    const deep = await fixture(
+      {},
       `1\n${"[".repeat(65)}0${"]".repeat(65)}\n`,
       {},
-      {},
       "application/jsonl",
     );
-    await expect(openBundle(f.root, f)).rejects.toMatchObject({
+    await expect(openBundle(deep.root, deep)).rejects.toMatchObject({
       code: "LIMIT_EXCEEDED",
       path: "data.json",
       pointer: "/1",
       message: expect.stringContaining("JSONL line 2") as unknown,
     });
   });
-
-  it("leaves dependency formats, paths and child contracts to the application", async () => {
+  it("leaves dependencies and nested manifests opaque without fetching their schemas", async () => {
+    const missing = await encodeSchema({ type: "integer" });
     const f = await fixture(
       {
-        type: "object",
-        required: ["file", "missing", "child"],
         properties: {
           file: { type: "string" },
-          missing: { anyOf: [{ type: "integer" }, { type: "string" }] },
+          missing: { type: "string" },
           child: { type: "string" },
         },
       },
@@ -359,47 +278,81 @@ describe("unified immutable Bundle runtime", () => {
       },
       {
         "invalid.json": new Uint8Array(1024).fill(255),
-        "child/.bundle.yaml": manifest(),
+        "child/.bundle.yaml": manifest(missing.cid.toString()),
         "child/data.json": json("not an integer"),
-        ...schemaFiles({ type: "integer" }, {}, "child/schema/"),
       },
     );
-    const bundle = await openBundle(f.root, f);
+    const bundle = await openBundle(f.root, {
+      ...f,
+      limits: { documentBytes: 128 },
+    });
+    expect(f.calls).not.toContain(missing.cid.toString());
     expect(await read(await bundle.readFile("invalid.json"))).toEqual(
       new Uint8Array(1024).fill(255),
     );
     expect(await read(await bundle.readFile("child/data.json"))).toEqual(
       json("not an integer"),
     );
-    await expect(
-      openBundle(f.root, { ...f, limits: { documentBytes: 128 } }),
-    ).resolves.toHaveProperty("kind", "content");
   });
-  it.each([true, "bundle", `file:${targetId}`])(
-    "rejects removed x-content-ref rules %s",
-    async (rule) => {
-      const f = await fixture(
-        { type: "string", "x-content-ref": rule },
-        "json:/target.json",
-        {},
-        { "target.json": { $id: targetId } },
-      );
-      await expect(openBundle(f.root, f)).rejects.toMatchObject({
-        code: "SCHEMA_INVALID",
-        message: "Unsupported schema keyword x-content-ref.",
-      });
-    },
-  );
-  it("preserves unavailable, corrupt and cancellation failures and checks opaque storage", async () => {
+  it("reports missing/corrupt schemas, malformed CBOR and noncanonical encoding", async () => {
+    const f = await fixture({}, {});
+    f.blocks.delete(f.schemaCid.toString());
+    await expect(openBundle(f.root, f)).rejects.toMatchObject({
+      code: "CONTENT_UNAVAILABLE",
+    });
+    const schema = await encodeSchema({});
+    await expect(
+      openSchema(schema.cid, {
+        resolveCid: () => Promise.resolve(Uint8Array.of(255)),
+      }),
+    ).rejects.toMatchObject({ code: "CONTENT_UNAVAILABLE" });
+    for (const bytes of [Uint8Array.of(255), Uint8Array.of(0x18, 0x00)]) {
+      const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+      await expect(
+        openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
+      ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
+    }
+    // An unsorted map is valid CBOR but not the protocol's canonical encoding.
+    const bytes = Uint8Array.of(
+      0xa2,
+      0x65,
+      0x74,
+      0x69,
+      0x74,
+      0x6c,
+      0x65,
+      0x61,
+      0x78,
+      0x64,
+      0x74,
+      0x79,
+      0x70,
+      0x65,
+      0x66,
+      0x73,
+      0x74,
+      0x72,
+      0x69,
+      0x6e,
+      0x67,
+    );
+    const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+    await expect(
+      openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
+    ).rejects.toMatchObject({
+      code: "SCHEMA_INVALID",
+      message: expect.stringContaining("canonical") as unknown,
+    });
+  });
+  it("preserves opaque storage, corrupt root and cancellation failures", async () => {
     const f = await fixture(
       {},
       {},
       { "opaque.bin": new Uint8Array(600_000).fill(19) },
     );
-    const attachment = [...f.blocks].find(
-      ([, bytes]) => bytes.length === 262_144,
-    )!;
-    f.blocks.delete(attachment[0]);
+    f.blocks.delete(
+      [...f.blocks].find(([, bytes]) => bytes.length === 262_144)![0],
+    );
     await expect(openBundle(f.root, f)).rejects.toMatchObject({
       code: "CONTENT_UNAVAILABLE",
     });
@@ -411,9 +364,11 @@ describe("unified immutable Bundle runtime", () => {
     const fresh = await fixture({}, {});
     const abort = new AbortController();
     abort.abort(new Error("cancelled"));
-    await expect(
+    for (const opening of [
       openBundle(fresh.root, { ...fresh, signal: abort.signal }),
-    ).rejects.toMatchObject({ code: "ABORTED" });
+      openSchema(fresh.schemaCid, { ...fresh, signal: abort.signal }),
+    ])
+      await expect(opening).rejects.toMatchObject({ code: "ABORTED" });
     const valid = await openBundle(fresh.root, fresh);
     await expect(
       valid.readFile("data.json", { signal: abort.signal }),
@@ -425,13 +380,9 @@ describe("unified immutable Bundle runtime", () => {
   });
   it("rejects non-directory roots and invalid UnixFS descendants", async () => {
     const f = await fixture({}, {});
-    const raw = CID.parse(
-      [...f.blocks].find(([, bytes]) => bytes[0] === 123)![0],
-    );
-    if (raw.code === 0x55)
-      await expect(openBundle(raw, f)).rejects.toMatchObject({
-        code: "CONTENT_INVALID",
-      });
+    await expect(openBundle(f.schemaCid, f)).rejects.toMatchObject({
+      code: "CONTENT_INVALID",
+    });
     const bytes = dagPb.encode(
       dagPb.prepare({ Data: Uint8Array.of(255), Links: [] }),
     );
@@ -451,25 +402,16 @@ describe("unified immutable Bundle runtime", () => {
     "jsonDepth",
     "validationDepth",
     "manifestBytes",
-    "descriptorBytes",
     "schemaBytes",
     "documentBytes",
-    "schemas",
     "nodes",
   ] satisfies (keyof BundleLimits)[])(
-    "shares and enforces the %s budget",
+    "enforces the shared %s budget",
     async (key) => {
       const f = await fixture(
-        {
-          properties: {
-            x: {
-              anyOf: [{ $ref: targetId }],
-            },
-          },
-        },
-        { x: "json:/extra.json" },
-        { "extra.json": json(2) },
-        { "target.json": { $id: targetId } },
+        { properties: { x: { anyOf: [{ type: "string" }] } } },
+        { x: "entry" },
+        { "nested/file": text("opaque") },
       );
       await expect(
         openBundle(f.root, { ...f, limits: { [key]: 1 } }),
@@ -477,7 +419,7 @@ describe("unified immutable Bundle runtime", () => {
     },
   );
   it.each([0, -1, 1.2, Number.MAX_SAFE_INTEGER + 1, Infinity])(
-    "rejects invalid budget overrides",
+    "rejects invalid limits",
     async (bytes) => {
       const f = await fixture({}, {});
       await expect(
@@ -485,36 +427,78 @@ describe("unified immutable Bundle runtime", () => {
       ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
     },
   );
-  it("accepts explicit larger parsing limits and rejects unknown options", async () => {
+  it("rejects removed budgets and invalid resolver options", async () => {
     const f = await fixture({}, {});
-    await expect(
-      openBundle(f.root, {
-        ...f,
-        limits: { schemaBytes: bundleLimits.schemaBytes + 1 },
-      }),
-    ).resolves.toHaveProperty("kind");
-    await expect(
-      openBundle(f.root, {
-        ...f,
-        limits: { unknown: 1 } as Partial<BundleLimits>,
-      }),
-    ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
+    for (const key of ["schemas", "descriptorBytes", "references", "unknown"])
+      await expect(
+        openBundle(f.root, {
+          ...f,
+          limits: { [key]: 1 },
+        }),
+      ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
     await expect(
       openBundle(f.root, { resolveCid: null } as unknown as Parameters<
         typeof openBundle
       >[1]),
     ).rejects.toMatchObject({ code: "OPTIONS_INVALID" });
   });
+  it("canonicalizes object ordering without changing arrays, and enforces the exact encoded block boundary", async () => {
+    const a = await encodeSchema(
+      parseData(text('{"type":"string","enum":["z","a"]}'), "application/json"),
+    );
+    const b = await encodeSchema({ enum: ["z", "a"], type: "string" });
+    expect(a.cid.equals(b.cid)).toBe(true);
+    expect(a.bytes).toEqual(b.bytes);
+    expect(dagCbor.decode(a.bytes)).toEqual({
+      enum: ["z", "a"],
+      type: "string",
+    });
+    const changed = await encodeSchema({ enum: ["a", "z"], type: "string" });
+    expect(changed.cid.equals(a.cid)).toBe(false);
+    const overhead =
+      dagCbor.encode({ description: "x".repeat(schemaBlockBytes) }).length -
+      schemaBlockBytes;
+    const schema = { description: "x".repeat(schemaBlockBytes - overhead) };
+    const exact = await encodeSchema(schema);
+    expect(exact.bytes.length).toBe(schemaBlockBytes);
+    await expect(
+      openSchema(exact.cid, { resolveCid: () => Promise.resolve(exact.bytes) }),
+    ).resolves.toHaveProperty("cid");
+    await expect(
+      encodeSchema(
+        { description: `${schema.description}x` },
+        { schemaBytes: schemaBlockBytes + 1 },
+      ),
+    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    const oversized = dagCbor.encode({ description: `${schema.description}x` });
+    const cid = CID.createV1(dagCbor.code, await sha256.digest(oversized));
+    await expect(
+      openSchema(cid, {
+        resolveCid: () => Promise.resolve(oversized),
+        limits: { schemaBytes: schemaBlockBytes + 1 },
+      }),
+    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    await expect(
+      encodeSchema(schema, { schemaBytes: schemaBlockBytes - 1 }),
+    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    for (const limits of [
+      { bytes: 1 },
+      { parsingBytes: 1 },
+      { blockBytes: 1 },
+      { nodes: 1 },
+    ])
+      await expect(
+        openSchema(a.cid, {
+          resolveCid: () => Promise.resolve(a.bytes),
+          limits,
+        }),
+      ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+  });
 });
 describe("closed schema profile and safe parsing", () => {
-  const inspect = (schema: unknown) =>
-    inspectSchemaBundle(
-      { schemas: ["main.json"], main: mainId },
-      new Map([["main.json", { $id: mainId, ...(schema as object) }]]),
-    );
   it.each([
     { pattern: "x" },
-    { $defs: {} },
+    { $defs: [] },
     { $schema: "https://json-schema.org/schema" },
     { type: ["string"] },
     { type: "unknown" },
@@ -522,7 +506,7 @@ describe("closed schema profile and safe parsing", () => {
     { allOf: [true] },
     { examples: [] },
     { default: 1 },
-    { properties: { x: { $id: targetId } } },
+    { properties: { x: { $id: "urn:nested" } } },
     { properties: [] },
     { items: [] },
     { required: ["x", "x"] },
@@ -534,24 +518,29 @@ describe("closed schema profile and safe parsing", () => {
     { enum: [1, 1] },
     { title: 2 },
     { description: null },
-    { $ref: "#/properties/a" },
+    { $ref: "#/properties/absent" },
     { $ref: "relative" },
-    { $ref: "urn:bad%ZZ" },
-    { $ref: "urn:未编码" },
-    { $ref: `${mainId}#fragment` },
-    { $ref: targetId },
+    { $ref: "urn:external" },
+    { $ref: "#anchor" },
+    { $ref: "#/$defs/a~2b" },
+    { $ref: "#/%61" },
+    { $id: "relative" },
     { "x-content-ref": true, type: "string" },
-    { "x-content-ref": `file:${mainId}`, type: "string" },
     { "x-content-ref": "bundle", type: "string" },
-    { "x-content-ref": "file:relative", type: "string" },
-    { "x-content-ref": "unknown", type: "string" },
+    { "x-content-ref": "file:urn:target", type: "string" },
     { additionalProperties: null },
+    null,
+    [],
+    1,
+    { const: Infinity },
+    { const: new Uint8Array([1]) },
   ])("rejects unsupported or malformed schema nodes", (schema) => {
-    expect(() => inspect(schema)).toThrow(ContentBundleError);
+    expect(() => inspectSchema(schema)).toThrow(ContentBundleError);
   });
-  it("does not inspect enum/const data or property names as schema keywords", () => {
+  it("does not inspect data or property names as schema keywords and bounds all definitions", () => {
     expect(
-      inspect({
+      inspectSchema({
+        $id: "urn:name%20encoded",
         title: "t",
         description: "d",
         properties: { $defs: true, pattern: false },
@@ -559,95 +548,33 @@ describe("closed schema profile and safe parsing", () => {
         const: { $schema: "annotation-data" },
         additionalProperties: true,
       }),
-    ).toHaveProperty("descriptor.main", mainId);
+    ).toHaveProperty("schema.$id", "urn:name%20encoded");
     expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a", "b"], main: mainId },
-        new Map([
-          ["a", { $id: mainId }],
-          ["b", { $id: mainId }],
-        ]),
-      ),
-    ).toThrow("Duplicate schema ID");
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a", "a"], main: mainId },
-        new Map([["a", { $id: mainId }]]),
-      ),
-    ).toThrow("Duplicate schema file");
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a"], main: targetId },
-        new Map([["a", { $id: mainId }]]),
-      ),
-    ).toThrow("main");
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a"], main: mainId, title: 2 },
-        new Map(),
-      ),
-    ).toThrow("title");
-    expect(() =>
-      inspectSchemaBundle({ schemas: [1], main: mainId }, new Map()),
-    ).toThrow();
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a"], main: mainId },
-        new Map([["a", true]]),
-      ),
-    ).toThrow("$id");
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a"], main: mainId },
-        new Map([["a", { $id: "relative" }]]),
-      ),
-    ).toThrow("$id");
-    expect(() =>
-      inspectSchemaBundle({ schemas: ["a", "b"], main: mainId }, new Map(), {
-        schemas: 1,
-      }),
-    ).toThrow("count");
-    expect(() =>
-      inspectSchemaBundle(
-        { schemas: ["a"], main: mainId },
-        new Map([
-          [
-            "a",
-            { $id: mainId, properties: { x: { properties: { y: true } } } },
-          ],
-        ]),
+      inspectSchema(
+        { properties: { x: { properties: { y: true } } } },
         { depth: 1 },
       ),
     ).toThrow("depth");
-  });
-  it("bounds reference-only chains in unused definitions and validates helper overrides", () => {
-    const files = new Map<string, unknown>([
-      ["a", { $id: "urn:a", $ref: "urn:b" }],
-      ["b", { $id: "urn:b", $ref: "urn:c" }],
-      ["c", { $id: "urn:c", $ref: "urn:d" }],
-      ["d", { $id: "urn:d" }],
-    ]);
-    const descriptor = { schemas: [...files.keys()], main: "urn:d" };
-    expect(() => inspectSchemaBundle(descriptor, files, { depth: 2 })).toThrow(
+    const schema = {
+      $defs: {
+        a: { $ref: "#/$defs/b" },
+        b: { $ref: "#/$defs/c" },
+        c: { $ref: "#/$defs/d" },
+        d: {},
+      },
+    };
+    expect(() => inspectSchema(schema, { depth: 2 })).toThrow(
       "reference depth",
     );
-    expect(() => inspectSchemaBundle(descriptor, files, { depth: 0 })).toThrow(
-      "positive",
-    );
-    expect(() =>
-      inspectSchemaBundle(descriptor, files, { depth: NaN }),
-    ).toThrow("positive");
-    expect(() =>
-      inspectSchemaBundle(descriptor, files, {
-        unknown: 1,
-      } as unknown as Parameters<typeof inspectSchemaBundle>[2]),
-    ).toThrow("positive");
-    expect(
-      inspectSchemaBundle(
-        { schemas: ["a"], main: "urn:name%20encoded" },
-        new Map([["a", { $id: "urn:name%20encoded" }]]),
-      ),
-    ).toHaveProperty("descriptor.main", "urn:name%20encoded");
+    for (const options of [
+      { depth: 0 },
+      { depth: NaN },
+      { charge: 1 },
+      { unknown: 1 },
+    ])
+      expect(() =>
+        inspectSchema(schema, options as Parameters<typeof inspectSchema>[1]),
+      ).toThrow("positive");
   });
   it.each([
     "",
@@ -666,14 +593,31 @@ describe("closed schema profile and safe parsing", () => {
   ])("rejects unsafe paths", (path) => {
     expect(() => safePath(path)).toThrow();
   });
-  it("rejects the old manifest, external schema URIs and root escapes", () => {
+  it("rejects schema directory manifests, builtin keys, invalid schema codecs and invalid entry fields", async () => {
+    const schema = await encodeSchema({});
     for (const entry of [
+      { path: "x", schema: "/schema", contentType: "application/json" },
+      {
+        path: "x",
+        schemaCid: "builtin:bundle-schema.v1",
+        contentType: "application/json",
+      },
+      {
+        path: "x",
+        schemaCid: CID.createV1(0x70, schema.cid.multihash).toString(),
+        contentType: "application/json",
+      },
       { path: "x", schemaCid: "old", contentType: "application/json" },
-      { path: "x", schema: "ipfs://cid", contentType: "application/json" },
-      { path: "x", schema: "/", contentType: "application/json" },
-      { path: "x", schema: "/../schema", contentType: "application/json" },
-      { path: 2, schema: "/schema", contentType: "application/json" },
-      { path: "x", schema: "/schema", contentType: "text/plain" },
+      {
+        path: 2,
+        schemaCid: schema.cid.toString(),
+        contentType: "application/json",
+      },
+      {
+        path: "x",
+        schemaCid: schema.cid.toString(),
+        contentType: "text/plain",
+      },
     ])
       expect(() => parseBundleManifest(json({ entry }))).toThrow(
         "Invalid .bundle.yaml",
@@ -684,9 +628,14 @@ describe("closed schema profile and safe parsing", () => {
   it("enforces duplicate keys, Unicode, finite safe JSON and deterministic JCS", () => {
     expect(
       new TextDecoder().decode(
-        canonicalJson({ z: -0, a: [1e-7, 1e10], "\u20ac": "€", "\r": "line" }),
+        canonicalJson({
+          z: -0,
+          a: [1e-7, 1e10],
+          "\u20ac": "\u20ac",
+          "\r": "line",
+        }),
       ),
-    ).toBe('{"\\r":"line","a":[1e-7,10000000000],"z":0,"€":"€"}');
+    ).toBe('{"\\r":"line","a":[1e-7,10000000000],"z":0,"\u20ac":"\u20ac"}');
     expect(() => canonicalJson({ x: "\uD800" })).toThrow("surrogate");
     expect(() => canonicalJson({ "\uDC00": "x" })).toThrow("surrogate");
     expect(() => canonicalJson({ x: Infinity })).toThrow("finite");

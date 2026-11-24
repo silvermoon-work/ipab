@@ -4,7 +4,7 @@ import * as dagPb from "@ipld/dag-pb";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import type { IpfsStore } from "@ipab/ipfs-store";
-import { openBundle, canonicalJson, type ContentBundle } from "@ipab/bundle";
+import { openBundle, type ContentBundle } from "@ipab/bundle";
 import { HostError, message, object } from "./errors.js";
 import type { Ownership } from "./history.js";
 
@@ -20,25 +20,8 @@ export const appSchema = {
   },
 } as const;
 export const appSchemaCid = CID.parse(
-  "bafybeidq5zd7tzccgueniq5fnv2yugw45ijmifw76sknpem7mz5jynmaxe",
+  "bafyreigxunhdgjjj4v7gpexe745gop2gq2pbspphigduwclooevmt7egnm",
 );
-export const appSchemaFiles = new Map<string, Uint8Array>([
-  [
-    ".bundle.yaml",
-    canonicalJson({
-      entry: {
-        path: "schema.json",
-        contentType: "application/json",
-        schema: "builtin:bundle-schema.v1",
-      },
-    }),
-  ],
-  [
-    "schema.json",
-    canonicalJson({ schemas: ["node-app.json"], main: appSchema.$id }),
-  ],
-  ["node-app.json", canonicalJson(appSchema)],
-]);
 export const CHUNK_BYTES = 64 * 1024;
 export const OUTPUT_BYTES = 64 * 1024 * 1024;
 export const MAX_PATHS = 4096;

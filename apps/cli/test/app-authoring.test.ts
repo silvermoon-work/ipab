@@ -824,7 +824,10 @@ describe("App-first authoring", () => {
     );
   });
   it("builds the real Web App template with Vite, preserving front-end assets in one Node App CAR", async () => {
-    await initApp("web-demo", project, { template: "web-app" });
+    const initialized = await initApp("web-demo", project, {
+      template: "web-app",
+    });
+    expect(initialized.templateCid).toMatch(/^bafy/);
     await projectTools(project);
     for (const name of ["esbuild", "vite", "@ipab/web-app"]) {
       if (name.startsWith("@ipab/"))
@@ -866,7 +869,9 @@ describe("App-first authoring", () => {
     await expect(
       bundle.readFile("node_modules/vite/package.json"),
     ).rejects.toThrow();
-    await expect(bundle.readFile("build.config.mjs")).rejects.toThrow();
+    await expect(
+      bundle.readFile("scripts/ipab-prebuild.mjs"),
+    ).rejects.toThrow();
     const pkgPath = join(project, "package.json");
     const pkg = object(
       JSON.parse(await readFile(pkgPath, "utf8")) as unknown,

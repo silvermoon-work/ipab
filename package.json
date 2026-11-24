@@ -30,6 +30,7 @@
     "typecheck": "tsc --noEmit --project tsconfig.json && turbo run typecheck"
   },
   "devDependencies": {
+    "@ipab/web-app": "workspace:*",
     "@eslint/js": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
@@ -41,6 +42,7 @@
     "turbo": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "vite": "catalog:"
   }
 }

@@ -102,10 +102,7 @@ async function legacyTemplate(
   name: string,
   options: AuthoringOptions,
 ): Promise<Map<string, string | Uint8Array>> {
-  const builtin = selector === "web-app";
-  const directory = builtin
-    ? fileURLToPath(new URL("../templates/web-app/", import.meta.url))
-    : resolve(selector);
+  const directory = resolve(selector);
   const tree = await filesystemTree(directory);
   const definition = object(
     JSON.parse(
@@ -126,10 +123,6 @@ async function legacyTemplate(
       "Template requires version 1 and 1..256 explicit files.",
     );
   const variables: Record<string, string> = { name };
-  if (builtin) {
-    const entry = fileURLToPath(import.meta.resolve("@ipab/web-app"));
-    variables.webAppDependency = `file:${dirname(dirname(entry)).replaceAll("\\", "/")}`;
-  }
   const files = new Map<string, string | Uint8Array>();
   let total = 0;
   for (const value of definition.files) {
@@ -424,21 +417,36 @@ export async function appTemplate(
       await encoded.close();
     }
   }
-  let legacy = selector === "web-app";
-  if (!legacy) {
+  if (selector === "web-app") {
+    const directory = fileURLToPath(
+      new URL("../../../templates/web-app/", import.meta.url),
+    );
+    const entry = fileURLToPath(import.meta.resolve("@ipab/web-app"));
+    const parameters = [...(options.parameters ?? [])];
+    if (!parameters.some((value) => value.startsWith("webAppDependency=")))
+      parameters.push(
+        `webAppDependency=file:${dirname(dirname(entry)).replaceAll("\\", "/")}`,
+      );
+    const loaded = await templateSource(directory, options);
+    return {
+      files: await renderTemplate(loaded.tree, name, {
+        ...options,
+        parameters,
+      }),
+      cid: loaded.cid,
+    };
+  }
+  let legacy = false;
+  try {
+    await lstat(resolve(selector, ".bundle.yaml"));
+  } catch (error) {
+    if (!nodeError(error, "ENOENT") && !nodeError(error, "ENOTDIR"))
+      throw error;
     try {
-      await lstat(resolve(selector, ".bundle.yaml"));
+      legacy = (await lstat(resolve(selector, "ipab-template.json"))).isFile();
     } catch (error) {
       if (!nodeError(error, "ENOENT") && !nodeError(error, "ENOTDIR"))
         throw error;
-      try {
-        legacy = (
-          await lstat(resolve(selector, "ipab-template.json"))
-        ).isFile();
-      } catch (error) {
-        if (!nodeError(error, "ENOENT") && !nodeError(error, "ENOTDIR"))
-          throw error;
-      }
     }
   }
   if (legacy) {

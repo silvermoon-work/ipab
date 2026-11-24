@@ -1,18 +1,19 @@
 {
-  "name": "{{name}}",
+  "name": {{ name | json }},
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": {{ description | json }},
   "engines": {
     "node": ">=22.15.0"
   },
   "scripts": {
     "build": "ipab build",
-    "ipab-prebuild": "node build.config.mjs",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit"
+    "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
+    "typecheck": "node scripts/typecheck.mjs"
   },
   "dependencies": {
-    "@ipab/web-app": "{{webAppDependency}}"
+    "@ipab/web-app": {{ webAppDependency | json }}
   },
   "devDependencies": {
     "@types/node": "26.6.6",

@@ -1,0 +1,12 @@
+entry: app.cjs
+resources:
+  - web
+supportedSchemas: []
+build:
+  strategy: ipab-prebuild
+  typecheck:
+    - config: tsconfig.server.json
+      entry: src/server/main.ts
+    - config: tsconfig.web.json
+      entry: src/web/main.ts
+app: {}

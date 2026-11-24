@@ -111,7 +111,9 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   入口必须为有效 UTF-8 Node CJS，只解析不执行，不将 ESM 原文冒充 CJS；
   Bundle 仍只有 resources/app.cjs 一个 Node 运行入口，资源从明确选中的产物路径收集。
   流错误、诊断抛错或取消须停止本次钩子进程树并等待关闭，失败不替换旧 CAR。
-  Web 模板依赖本地 private 框架的 file 引用，Vite 只在项目构建期执行。
+  Web 模板位于 templates/web-app，是相同协议的真实 Template Bundle；
+  内置快捷名自动提供本地 private 框架的 file 引用，目录／CAR／CID 使用时
+  显式传入 webAppDependency 参数；Vite 只在项目构建期执行。
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
   不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。
 - Template 新契约是专用 Content Bundle 数据，不是 App。完整 templateSchema

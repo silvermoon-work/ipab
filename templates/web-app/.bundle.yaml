@@ -1,0 +1,66 @@
+name: IPAB Project Template
+description: Data-only Liquid project content bundle.
+entry:
+  path: template.yaml
+  contentType: application/yaml
+  defaultValue:
+    version: 1
+    root: project
+    render:
+      suffix: .liquid
+    parameters:
+      name:
+        type: string
+        required: true
+      description:
+        type: string
+        default: ""
+  schema:
+    $id: urn:ipab:project-template.v1
+    type: object
+    additionalProperties: false
+    required: [version, root, render, parameters]
+    properties:
+      version:
+        enum: [1]
+      root:
+        enum: [project]
+      render:
+        type: object
+        additionalProperties: false
+        required: [suffix]
+        properties:
+          suffix:
+            enum: [.liquid]
+      parameters:
+        type: object
+        required: [name, description]
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              enum: [string, number, boolean, json]
+            required:
+              type: boolean
+            default: true
+        properties:
+          name:
+            type: object
+            additionalProperties: false
+            required: [type, required]
+            properties:
+              type:
+                enum: [string]
+              required:
+                enum: [true]
+          description:
+            type: object
+            additionalProperties: false
+            required: [type, default]
+            properties:
+              type:
+                enum: [string]
+              default:
+                enum: [""]

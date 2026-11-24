@@ -119,7 +119,8 @@ init creates a private TypeScript npm package in NAME or explicit DIR (new/empty
 --template selects node (offline default), a Template Bundle directory, single-root CAR, exact CID or named pin.
 --param KEY=VALUE is repeatable: strings are literal; number, boolean and json parameters use JSON.
 NAME supplies the required name parameter; description defaults to ''. Includes and executable hooks are unsupported.
-Legacy web-app and ipab-template.json directories remain temporarily supported.
+web-app selects the bundled Liquid Web App template and defaults to the linked private framework.
+Legacy ipab-template.json directories remain temporarily supported.
 Local templates are data-only, explicitly selected, and never installed or executed by init.
 Install the generated package's dependencies explicitly; use a locally linked ipab.
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.

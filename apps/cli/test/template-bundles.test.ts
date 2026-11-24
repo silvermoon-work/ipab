@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { CID } from "multiformats/cid";
 import { CarWriter } from "@ipld/car/writer";
@@ -55,6 +56,49 @@ describe("Data-only Template Bundles", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await work.cleanup();
+  });
+  it("delivers the official Web App as the same extensible Bundle through builtin, CAR and CID", async () => {
+    const source = fileURLToPath(
+      new URL("../../../templates/web-app/", import.meta.url),
+    );
+    const entry = fileURLToPath(import.meta.resolve("@ipab/web-app"));
+    const parameters = [
+      `webAppDependency=file:${dirname(dirname(entry)).replaceAll("\\", "/")}`,
+      'description=Plain <text> with "quotes"',
+    ];
+    const built = await buildBundle(source, {
+      output: join(work.root, "web-template.car"),
+    });
+    const expected = await appTemplate("web-app", "web-demo", { parameters });
+    expect(expected.cid).toBe(built.cid);
+    const local = await appTemplate(source, "web-demo", { parameters });
+    const car = await appTemplate(built.output, "web-demo", { parameters });
+    const loaded = await readCar(built.output, {});
+    const remote = await appTemplate(built.cid, "web-demo", {
+      parameters,
+      resolveCid: loaded.resolveCid,
+    });
+    expect(local).toEqual(expected);
+    expect(car).toEqual(expected);
+    expect(remote).toEqual(expected);
+    expect(
+      JSON.parse(String(expected.files.get("package.json"))),
+    ).toMatchObject({
+      description: 'Plain <text> with "quotes"',
+      scripts: {
+        build: "ipab build",
+        "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
+      },
+    });
+    await expect(appTemplate(built.output, "web-demo", {})).rejects.toThrow(
+      "webAppDependency",
+    );
+    expect(
+      (await appTemplate("web-app", "web-demo", {})).files.get("package.json"),
+    ).toContain('"@ipab/web-app": "file:');
+    expect(expected.files.has("ipab.yaml")).toBe(true);
+    expect(expected.files.has("template.yaml")).toBe(false);
+    expect(expected.files.has(".bundle.yaml")).toBe(false);
   });
   async function bundle(
     entry: unknown = definition,

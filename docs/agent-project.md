@@ -82,6 +82,11 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   不触发 Store 操作，不改 register/历史 CID。执行/历史恢复必须跳过 named pin
   owner。list/show 只读本地登记；--kind 只接受 bundle/schema，普通 content
   仍可 pin；--type 支持准确 schema CID、Schema pin 短名与 builtin，按 AND 过滤。
+- history list 使用逐条记录显示完整 CID，argv 仅 join 空格后转义控制字符，
+  不截断或用 pin 替代 CID。exec --log APP / open --log CONTENT 是按次调试开关，
+  要求 history 开启；默认 stdio inherit，日志模式只接管 stdout/stderr，
+  stdin 不记录。日志按完整执行 ID 保存在状态目录，show 只关联现存文件，
+  删除历史先清理日志，失败保留记录供重试；不递归清除未知文件或触发 Store GC。
 
 ## Direct scripts and standard boundary
 

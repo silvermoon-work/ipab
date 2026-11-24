@@ -63,6 +63,8 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   `--json` 适用于管理／开发命令的结果元数据，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
+  可用 `exec --log APP [APP_ARGS...]` 或 `open --log CONTENT` 按次记录
+  stdout／stderr；exec 的宿主 `--log` 必须在 APP 之前。
 - `open CONTENT`
   校验存储完整性、路径、完整类型定义和入口数据，从 `.bundle.yaml`
   计算准确类型 CID，使用保存的
@@ -353,7 +355,7 @@ URL 禁止凭据、查询和 fragment。默认 Store 配置中的 URL 同样检�
 
 历史默认开启，保存 appCid、**实际 argv**、outputCid、起止时间、状态、
 实际应用退出值或 null、错误阶段及记录自有保留信息；不设 contentCid，
-不捕获 stdio。参数可能有秘密：使用受保护的 stdin 或关闭历史，
+默认不记录 stdio。参数可能有秘密：使用受保护的 stdin 或关闭历史，
 不能依赖自动识别任意 App 参数中的秘密。
 
 `history list` 与 `history remove` 共用 AND 筛选：`--app`、`--status`
@@ -372,18 +374,28 @@ ENDED 在不足一小时显示分钟（如 `10m`，不足一分钟为 `0m`），
 不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
 未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
 
-APP／OUTPUT 优先显示当前匹配的可用 pin 短名；
-多个 pin 时取按名称排序的第一个，没有 pin 则显示 CID 前缀。
-两列最多 16 个字符，超限以 `...` 结尾。ARGV 按命令行样式以空格连接，
-特殊参数使用 JSON 字符串引号／转义，空参数为 `""`，无参数为 `-`；
-在终端中自动使用固定列以外的剩余宽度，超限以 `...` 结尾，
-按实际显示列计算中文／emoji 宽度，不拆开组合字符。
-重定向或无法读取终端宽度时，仍最多显示 48 个字符，不截断 Unicode 码点。
-极窄终端无法容纳固定列时，保留 ARGV 标题的最小宽度，表格仍可能换行；
-不会为此截断其他列。
-这只是阅读用的摘要，不保证可以直接交给任意 shell 重放。
+人类可读的 list 使用类似 git log 的逐条记录布局：首行显示 Run ID、状态、
+结束时间，后续行显示完整 App CID、Output CID 和 argv，不截断。
+匹配的可用 pin 短名只附加在 CID 后；多个 pin 时取按名称排序的第一个。
+无输出显示 `none`；argv 使用 `join(' ')`，无参数显示为空，控制字符转义。
+窄终端自然换行，不为保持一行压缩信息。
+这是阅读用的展示，不保留参数边界，也不保证能直接交给 shell 重放。
 `--json history list` 和 `history show` 保留完整 CID 和实际 argv；
 显示 pin 名称不修改历史记录中的准确 CID。
+
+`exec --log APP`／`open --log CONTENT` 要求历史开启，默认不开日志。
+宿主将原始 stdout／stderr 分流至终端及状态目录
+`logs/<完整 Execution ID>/stdout.log`、`stderr.log`；stdin 继续继承，永不记录。
+不开日志时保留 stdio inherit；开启时 stdout／stderr 是 pipe，App 的 isTTY、
+颜色和交互行为可能不同，不提供 PTY 或沙箱。
+流式写入遵守背压，退出前排空输出；日志创建／写入／关闭失败明确报错且执行非零，
+记录标记为 `incomplete`，成功记录为 `complete`，不承诺两个流的全局先后顺序。
+show 展示现存日志的路径而不直接输出日志内容；记录日志的 JSON show 增加
+`log` 状态和 `logs: { stdout, stderr }`，手工删除的文件对应路径为 `null`。
+旧记录及未开启日志的记录兼容现有 JSON；list JSON 结构不变。
+日志可能包含秘密且无自动容量限制，仅在需要调试时开启。
+日志与历史共同管理：删除历史时删除对应两个日志文件及空目录；手工删掉日志
+不影响历史。日志清理失败保留历史供重试，不递归删除未知文件、不执行 Store GC。
 
 删除必须显式 ID 或筛选，两种方式互斥，无隐含全选，不支持分页选项；
 删除全部匹配已结束记录，不限 20。确认之前固定目标集合；TTY 展示数量和保留

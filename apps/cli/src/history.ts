@@ -2,6 +2,7 @@ import { IpfsStore, type StoreConfiguration } from "@ipab/ipfs-store";
 import type { SQLInputValue } from "node:sqlite";
 import { HostError, message, syntax } from "./errors.js";
 import type { Hold, RunRecord, State } from "./state.js";
+import { removeLogs } from "./logs.js";
 
 export interface Filters {
   app?: string;
@@ -358,6 +359,7 @@ export async function removeHistory(
             hold.owner,
             () => state.hold(hold.owner)?.roots ?? [],
           );
+          if (record.log) await removeLogs(state.directory, id);
           state.transaction(() => {
             state.deleteRun(id);
             state.deleteHold(hold.owner);
@@ -365,7 +367,10 @@ export async function removeHistory(
         } finally {
           await store.close();
         }
-      } else state.deleteRun(id);
+      } else {
+        if (record.log) await removeLogs(state.directory, id);
+        state.deleteRun(id);
+      }
       removed.push(id);
     } catch (error) {
       throw new HostError(

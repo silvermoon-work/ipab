@@ -9,6 +9,7 @@ import { Ownership, saveHistory } from "./history.js";
 import { ContextServer } from "./ipc.js";
 import { loadApp, OutputSpace } from "./space.js";
 import type { RunRecord, State } from "./state.js";
+import { ExecutionLogs } from "./logs.js";
 
 export interface Invocation {
   origin: "exec" | "open";
@@ -19,6 +20,7 @@ export interface ExecutionOptions {
   history: boolean;
   retain: boolean;
   diagnostic: (text: string) => void;
+  log?: boolean;
   signal?: AbortSignal;
 }
 
@@ -28,6 +30,8 @@ export async function execute(
   invocation: Invocation,
   options: ExecutionOptions,
 ): Promise<{ exitCode: number; record: RunRecord }> {
+  if (options.log && !options.history)
+    throw new HostError("Execution logging requires history.enabled=true.");
   const id = randomUUID();
   const session = `ipab-output:${state.identity}:${id}`;
   const record: RunRecord = {
@@ -47,6 +51,9 @@ export async function execute(
   let child: ChildProcess | undefined;
   let server: ContextServer | undefined;
   let timer: NodeJS.Timeout | undefined;
+  let logs: ExecutionLogs | undefined;
+  let forwarding: Promise<void>[] = [];
+  let logFailure: unknown;
   let exitCode = 1;
   let cancellation = 0;
   let phase = "validation";
@@ -101,6 +108,10 @@ export async function execute(
     await writeFile(entry, app.source, { flag: "wx", mode: 0o600 });
     entryCreated = true;
     controller.signal.throwIfAborted();
+    if (options.log) {
+      record.log = "incomplete";
+      logs = await ExecutionLogs.create(state.directory, id);
+    }
     child = spawn(
       process.execPath,
       [
@@ -109,11 +120,27 @@ export async function execute(
         ...invocation.argv,
       ],
       {
-        stdio: ["inherit", "inherit", "inherit", "ipc"],
+        stdio: [
+          "inherit",
+          logs ? "pipe" : "inherit",
+          logs ? "pipe" : "inherit",
+          "ipc",
+        ],
         serialization: "advanced",
         shell: false,
       },
     );
+    if (logs) {
+      forwarding = [
+        logs.forward(child.stdout!, process.stdout, "stdout"),
+        logs.forward(child.stderr!, process.stderr, "stderr"),
+      ].map((task) =>
+        task.catch((error: unknown) => {
+          logFailure ??= error;
+          stop(new HostError(`Execution logging failed: ${message(error)}`));
+        }),
+      );
+    }
     server = new ContextServer(
       child,
       store,
@@ -129,11 +156,24 @@ export async function execute(
       signal: NodeJS.Signals | null;
     }>((resolve, reject) => {
       child!.once("error", reject);
-      child!.once("exit", (code, signal) => {
+      child!.once("close", (code, signal) => {
         resolve({ code, signal });
       });
     });
     record.appExitCode = result.code;
+    await Promise.all(forwarding);
+    if (logs) {
+      await logs.close();
+      logs = undefined;
+      if (logFailure)
+        throw new HostError(
+          `Execution logging failed: ${message(logFailure)}`,
+          1,
+          "LOG_FAILED",
+          "logging",
+        );
+      record.log = "complete";
+    }
     phase = "execution";
     await server.close();
     server = undefined;
@@ -194,6 +234,12 @@ export async function execute(
       };
       if (exitCode === 0) exitCode = 1;
     };
+    await Promise.all(forwarding);
+    try {
+      await logs?.close();
+    } catch (error) {
+      cleanupError(error, "logging");
+    }
     try {
       await server?.close();
     } catch (error) {

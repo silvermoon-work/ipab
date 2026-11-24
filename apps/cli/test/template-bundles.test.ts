@@ -93,7 +93,7 @@ describe("Data-only Template Bundles", () => {
       description: '<tag> "quoted"',
       private: true,
     });
-    expect(await readFile(join(project, "ipab.json"), "utf8")).toContain(
+    expect(await readFile(join(project, "ipab.yaml"), "utf8")).toContain(
       "src/main.ts",
     );
     expect(created.files).not.toContain("template.yaml");

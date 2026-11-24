@@ -26,6 +26,7 @@ export interface RunRecord {
   status: "succeeded" | "failed" | "cancelled";
   outputCid: string | null;
   appExitCode: number | null;
+  log?: "complete" | "incomplete";
   error: { phase: string; code: string; message: string } | null;
   retention: {
     owned: boolean;

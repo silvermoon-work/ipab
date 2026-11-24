@@ -57,7 +57,11 @@ build
 
 根 `ipab init NAME [DIR]` 和 `ipab build [DIR]` 是 App-first 上层，不改变
 上述通用工具的编译自由。init 创建普通 private TypeScript npm 项目，
-默认 src/main.ts、严格 tsconfig 与数据文件 ipab.json，无隐式安装。
+默认 src/main.ts、严格 tsconfig 与注释式数据文件 ipab.yaml，无隐式安装。
+模板展示 icon 的 assets/ 源路径和 resources/assets/ Bundle 路径、元数据覆盖、
+name/description i18n、完整 Bundle 定义的 supportedSchemas；未启用功能不生成
+虚构资源或空目录占位文件。旧 ipab.json 仅在 YAML 不存在时读取，二者并存拒绝；
+严格解析数据，拒绝重复键、未知字段与 JS 标签，不执行配置。
 build 显式执行项目本地严格 tsc（入口必须参与检查），再由 CLI 自带 esbuild
 生成自包含 Node CommonJS，使用全新自有 staging 中的准确 App 定义、
 app.json、resources/app.cjs 与显式 assets 文件，最后直接复用内部
@@ -98,6 +102,13 @@ rename 在单一 SQLite 事务中只改 name；ready 才能解析或改名，临
 App 是一个 **可执行 Content Bundle profile**。入口为 JSON 的结构化描述，
 不是直接把任意 `.bundle.yaml` 文件的存在当作有效 App：
 
+运行仍使用普通 Node 子进程：初始化独立 IPC Context 后 require 自包含
+CommonJS 入口，不调用导出的 main(context)，不 override Console，也不提供沙箱。
+默认继承 stdio；exec --log APP / open --log CONTENT 时宿主分流 stdout/stderr
+至原输出和状态目录中的执行日志，stdin 继续继承且不记录。
+日志要求 History 开启，随历史删除；show 关联仍存在的日志，不将日志作为
+Output Space 或 Store pin。日志模式 stdout/stderr 不再是 TTY。
+
 ```yaml
 name: IPAB Node App
 description: Self-contained Node CommonJS application and declarative metadata.
@@ -117,6 +128,8 @@ entry:
       description:
         type: string
       entry:
+        type: string
+      supportedSchemas:
         type: string
       author:
         type: object
@@ -160,11 +173,28 @@ entry:
 ```
 
 上述完整定义通过 encodeSchema 生成单个 DAG-CBOR block；
-准确 CID 为 `bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
+准确 CID 为 `bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a`。
 CLI 的 app-definition.ts 集中保存完整定义与固定 CID，authoring 重新编码核对身份；
 runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 离线映射到此完整定义／CID，
 不是另一套协议身份，也不能作为任意 App 执行目标。
+
+可选 app.json supportedSchemas 是安全、存在的 resources/ 普通文件路径，
+不得碰撞 entry／控制文件。声明时在所有执行前校验单个嵌套 CAR，省略意味着
+没有 open 支持类型。CAR 非空，roots 恰好定义支持的完整 Bundle Schema CIDs：
+每 root 为 CIDv1/DAG-CBOR/SHA-256 的完整归一化定义，单 block 最多 1 MiB，
+校验所有 hash、canonical 编码、Schema 与默认值。拒绝缺 root、重复 root／record、
+额外 block；复用现有 64 MiB 字节、2048 文件数及 100000 聚合 work／深度预算。
+上层 build 从显式 schemas/ 非隐藏 .json 文件构建，按实际 CID 去重与排序，
+生成 resources/supported-schemas.car 和 app.json 路径；空源列表（含旧配置省略）
+不写字段／文件，已声明的空 CAR 则拒绝。不允许 app 元数据手工覆盖生成字段。
+通用 Builder 和 bundle import 对嵌套字节保持不透明，不 graft 类型依赖；
+不自动导入、注册、pin 或 retain 嵌套 roots。外层 App 保留嵌套文件字节，
+不意味着其内部 block 成为 Store 可独立寻址内容。
+open 在 execute 的唯一 App load 后、materialize／spawn 前按输入 schemaKey
+准确匹配 roots；遗漏／不匹配显式失败，无成功回退。register 仍本地离线，
+关联不等于支持声明。exec 保留原 argv，不根据声明解析参数或做类型匹配。
+新增字段有意改变完整 App 类型 CID；旧身份不自动接受或迁移，须重建并更新 pin/register。
 
 app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
 实际 App 元数据变动不修改共享类型 CID。description 缺省为空，

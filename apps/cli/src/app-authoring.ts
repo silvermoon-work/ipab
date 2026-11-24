@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { compileFunction } from "node:vm";
 import { stringify } from "yaml";
+import { parseData } from "@ipab/bundle";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import { readBytes } from "@ipab/bundle-builder";
 import {
@@ -17,6 +18,10 @@ import {
 } from "./authoring.js";
 import { HostError, object } from "./errors.js";
 import { relativePath } from "./space.js";
+import {
+  buildSupportedSchemas,
+  supportedSchemasPath,
+} from "./supported-schemas.js";
 import {
   appDescription,
   appSchema,
@@ -199,23 +204,46 @@ export async function buildApp(
     throw new HostError("App build requires a regular project directory.");
   const chain = await buildChain(root);
   const tree = await filesystemTree(root);
+  const configurations = await Promise.all(
+    ["ipab.yaml", "ipab.json"].map(async (name) => {
+      try {
+        await lstat(join(root, name));
+        return name;
+      } catch (cause) {
+        if (nodeError(cause, "ENOENT")) return undefined;
+        throw cause;
+      }
+    }),
+  );
+  const selected = configurations.filter((name) => name !== undefined);
+  if (selected.length !== 1)
+    throw new HostError(
+      selected.length
+        ? "Both ipab.yaml and legacy ipab.json exist. Keep exactly one App configuration file."
+        : "App configuration is missing. Create ipab.yaml (or keep a legacy ipab.json).",
+    );
+  const configPath = selected[0]!;
   const config = object(
-    JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(
-        await readBytes(tree, "ipab.json", 64 * 1024, options),
-      ),
-    ) as unknown,
-    "ipab.json",
+    parseData(
+      await readBytes(tree, configPath, 64 * 1024, options),
+      configPath === "ipab.yaml" ? "application/yaml" : "application/json",
+    ),
+    configPath,
   );
   if (
     typeof config.entry !== "string" ||
     !Array.isArray(config.resources) ||
     Object.keys(config).some(
-      (key) => !["entry", "resources", "app", "build"].includes(key),
-    )
+      (key) =>
+        !["entry", "resources", "supportedSchemas", "app", "build"].includes(
+          key,
+        ),
+    ) ||
+    (config.supportedSchemas !== undefined &&
+      !Array.isArray(config.supportedSchemas))
   )
     throw new HostError(
-      "ipab.json requires entry and an explicit resources array, with optional app metadata overrides; unknown fields are not supported.",
+      `${configPath} requires entry and an explicit resources array, with optional supportedSchemas array and app metadata overrides; unknown fields are not supported.`,
     );
   const prebuild = projectBuild(config.build);
   const entry = relativePath(config.entry);
@@ -253,6 +281,24 @@ export async function buildApp(
       );
     resources.add(path);
   }
+  const schemas = new Set<string>();
+  for (const item of (config.supportedSchemas ?? []) as unknown[]) {
+    if (typeof item !== "string")
+      throw new HostError(
+        "Supported Schemas must be explicit relative file paths.",
+      );
+    const path = relativePath(item);
+    if (
+      !path.startsWith("schemas/") ||
+      !path.endsWith(".json") ||
+      path.split("/").some((part) => part.startsWith(".")) ||
+      schemas.has(path)
+    )
+      throw new HostError(
+        "Supported Schemas must be unique non-hidden .json files under schemas/ (no globs or directories).",
+      );
+    schemas.add(path);
+  }
   const pkg = object(
     JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
@@ -272,10 +318,16 @@ export async function buildApp(
     throw new HostError(
       "App metadata cannot override the compiled program entry.",
     );
+  if (Object.hasOwn(overrides, "supportedSchemas"))
+    throw new HostError(
+      "App metadata cannot override the generated supportedSchemas declaration.",
+    );
+  const supportedSchemas = await buildSupportedSchemas(tree, schemas, options);
   const description = appDescription({
     ...defaults,
     ...overrides,
     entry: appSchema.entry.defaultValue.entry,
+    ...(supportedSchemas ? { supportedSchemas: supportedSchemasPath } : {}),
   });
   if (description.icon !== undefined) {
     const icon = relativePath(description.icon);
@@ -408,6 +460,12 @@ export async function buildApp(
       flag: "wx",
       signal: options.signal,
     });
+    if (supportedSchemas)
+      await writeFile(
+        join(bundleStage, ...supportedSchemasPath.split("/")),
+        supportedSchemas,
+        { flag: "wx", signal: options.signal },
+      );
     let resourceCount = 0;
     const copyFile = async (path: string) => {
       if (++resourceCount > 4096)

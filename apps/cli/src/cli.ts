@@ -33,6 +33,7 @@ import {
 import { buildApp, initApp } from "./app-authoring.js";
 import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
+import { logFiles } from "./logs.js";
 
 export interface IO {
   out(text: string): void;
@@ -74,8 +75,8 @@ const commands: Record<string, string> = {
     "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace] [--no-import]",
   "bundle inspect": "bundle inspect SOURCE",
   "bundle import": "bundle import FILE.car",
-  exec: "exec APP [APP_ARGS...]",
-  open: "open CONTENT",
+  exec: "exec [--log] APP [APP_ARGS...]",
+  open: "open [--log] CONTENT",
   "pin add": "pin add NAME CID",
   "pin delete": "pin delete NAME",
   "pin list": "pin list [--kind bundle|schema] [--type TYPE]",
@@ -122,10 +123,14 @@ Legacy web-app and ipab-template.json directories remain temporarily supported.
 Local templates are data-only, explicitly selected, and never installed or executed by init.
 Install the generated package's dependencies explicitly; use a locally linked ipab.
 build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
-ipab.json can explicitly select ipab-prebuild: strict checks, project script, then artifact assembly.
+ipab.yaml can explicitly select ipab-prebuild: strict checks, project script, then artifact assembly.
 The hook receives IPAB_BUILD_DIR; it must not invoke ipab build recursively.
 Hook mode executes trusted project code, never installs dependencies, and skips extra script lifecycle hooks.
-Default Node mode selects src/main.ts and explicit assets/ files; output is dist/app.car.
+ipab.yaml selects src/main.ts, explicit assets/ resources and schemas/ JSON definitions.
+The commented init template teaches icon placement, name/description i18n and metadata.
+Legacy ipab.json is accepted only when ipab.yaml is absent; keep exactly one config.
+supportedSchemas controls exact type support for open, not argv or direct exec.
+Default output is dist/app.car.
 --output FILE selects a .car destination; --replace replaces only a regular artifact.
 build imports the result into the configured Store without pinning; --no-import emits only CAR.
 Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
@@ -177,7 +182,10 @@ Use -h/--help for help.`;
     return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
 Example: ipab ${path === "exec" ? "exec APP --cid CID" : path === "open" ? "open CONTENT" : usage}
 Use -h/--help for help. Global flags: --state-dir PATH, --store-rpc URL, --json (metadata only).
-exec: everything after APP is verbatim argv; stdio is inherited.
+exec: everything after APP is verbatim argv; --log must precede APP.
+exec/open --log records raw stdout/stderr alongside terminal output; requires history.enabled=true.
+stdin is inherited and never logged. With --log stdout/stderr are pipes, not a TTY.
+history show links existing logs; history remove deletes the record's logs (no Store GC).
 history filters: AND, endedAt in [since,until), RFC3339 with timezone.
 register set/remove SCHEMA accepts builtin:node-app.v1 offline and stores its exact type CID.
 history remove: explicit IDs OR filters; non-TTY requires --yes; no GC guarantee.`;
@@ -197,40 +205,6 @@ function printable(text: string): string {
     .join("");
 }
 
-function abbreviated(text: string, limit: number): string {
-  const characters = [...text];
-  return characters.length <= limit
-    ? text
-    : `${characters.slice(0, limit - 3).join("")}...`;
-}
-
-function commandArguments(argv: readonly string[]): string {
-  return (
-    argv
-      .map((argument) =>
-        /^[A-Za-z0-9_./:@%=,+-]+$/.test(argument)
-          ? argument
-          : JSON.stringify(argument),
-      )
-      .join(" ") || "-"
-  );
-}
-
-function fittedColumns(text: string, columns: number): string {
-  if (stringWidth(text) <= columns) return text;
-  let prefix = "";
-  let width = 0;
-  for (const { segment } of new Intl.Segmenter(undefined, {
-    granularity: "grapheme",
-  }).segment(text)) {
-    const next = stringWidth(segment);
-    if (width + next > columns - 3) break;
-    prefix += segment;
-    width += next;
-  }
-  return `${prefix}...`;
-}
-
 function endedDisplay(endedAt: string, now: number): string {
   const ended = Date.parse(endedAt);
   if (!Number.isFinite(ended))
@@ -243,12 +217,7 @@ function endedDisplay(endedAt: string, now: number): string {
     : `${Math.floor(age / 60_000)}m`;
 }
 
-function table(
-  headers: string[],
-  rows: string[][],
-  empty: string,
-  lastColumn?: { columns: number | undefined; fallbackCharacters: number },
-): string {
+function table(headers: string[], rows: string[][], empty: string): string {
   if (!rows.length) return empty;
   const cells = rows.map((row) => row.map(printable));
   const widths = headers.map((header, column) =>
@@ -257,29 +226,6 @@ function table(
       stringWidth(header),
     ),
   );
-  if (lastColumn) {
-    const column = headers.length - 1;
-    const columns = lastColumn.columns;
-    if (
-      columns !== undefined &&
-      (!Number.isSafeInteger(columns) || columns <= 0)
-    )
-      throw new HostError("Invalid terminal width.");
-    const available =
-      columns === undefined
-        ? undefined
-        : Math.max(
-            stringWidth(headers[column]!),
-            columns -
-              widths.slice(0, column).reduce((sum, width) => sum + width, 0) -
-              column * 2,
-          );
-    for (const row of cells)
-      row[column] =
-        available === undefined
-          ? abbreviated(row[column]!, lastColumn.fallbackCharacters)
-          : fittedColumns(row[column]!, available);
-  }
   return [headers, ...cells]
     .map((row) =>
       row
@@ -397,6 +343,10 @@ export function parse(argv: readonly string[]): Parsed {
   if (!group) return result;
   if (group === "exec") {
     if (flags.json) syntax("--json is not supported for exec/open.");
+    if (tokens[0] === "--log") {
+      result.options.log = true;
+      tokens.shift();
+    }
     if (tokens[0] === "-h" || tokens[0] === "--help") {
       result.help = true;
       return result;
@@ -433,7 +383,9 @@ export function parse(argv: readonly string[]): Parsed {
           ? ["replace"]
           : result.path === "history remove"
             ? ["yes"]
-            : [];
+            : result.path === "open"
+              ? ["log"]
+              : [];
   const values =
     result.path === "init"
       ? ["template"]
@@ -893,22 +845,25 @@ async function performCli(
           if (pin.status === "ready" && !names.has(pin.cid))
             names.set(pin.cid, pin.name);
         const reference = (cid: string | null): string =>
-          cid === null ? "none" : abbreviated(names.get(cid) ?? cid, 16);
+          cid === null
+            ? "none"
+            : cid + (names.has(cid) ? ` (${names.get(cid)!})` : "");
         const shortId = state.shortRunId.bind(state);
         const now = Date.now();
-        const rows = table(
-          ["RUN ID", "ENDED", "STATUS", "APP", "OUTPUT", "ARGV"],
-          page.items.map((record) => [
-            shortId(record.id),
-            endedDisplay(record.endedAt, now),
-            record.status,
-            reference(record.appCid),
-            reference(record.outputCid),
-            commandArguments(record.argv),
-          ]),
-          "No ended executions.",
-          { columns: io.columns?.(), fallbackCharacters: 48 },
-        );
+        const rows = page.items.length
+          ? page.items
+              .map((record) =>
+                [
+                  `run ${shortId(record.id)} | ${record.status} | ${endedDisplay(record.endedAt, now)}`,
+                  `  App:    ${reference(record.appCid)}`,
+                  `  Output: ${reference(record.outputCid)}`,
+                  `  Argv:   ${record.argv.join(" ")}`,
+                ]
+                  .map(printable)
+                  .join("\n"),
+              )
+              .join("\n\n")
+          : "No ended executions.";
         emit(
           page,
           rows +
@@ -920,7 +875,16 @@ async function performCli(
       }
       case "history show": {
         const record = state.run(state.resolveRunId(first!));
-        emit(record, runDetails(record));
+        const logs = record.log
+          ? await logFiles(state.directory, record.id)
+          : undefined;
+        emit(
+          logs ? { ...record, logs } : record,
+          runDetails(record) +
+            (logs
+              ? `\nLog recording: ${record.log!}\nStdout log: ${printable(logs.stdout ?? "unavailable")}\nStderr log: ${printable(logs.stderr ?? "unavailable")}`
+              : "\nLog recording: disabled"),
+        );
         break;
       }
       case "history remove": {
@@ -947,6 +911,10 @@ async function performCli(
       }
       case "exec":
       case "open": {
+        if (parsed.options.log && !value("history.enabled"))
+          throw new HostError(
+            "Execution logging requires history.enabled=true.",
+          );
         const target = state.resolve(first!);
         await recoverInactive(state);
         store = new IpfsStore(await storeConfiguration(value("store.rpc")));
@@ -978,8 +946,10 @@ async function performCli(
               store,
               { origin: "open", appCid, argv: appArgv },
               {
+                inputSchema: schema,
                 history: Boolean(value("history.enabled")),
                 retain: value("output.retention") === "history",
+                log: Boolean(parsed.options.log),
                 diagnostic: (text) => {
                   io.err(text);
                 },
@@ -1002,6 +972,7 @@ async function performCli(
             {
               history: Boolean(value("history.enabled")),
               retain: value("output.retention") === "history",
+              log: Boolean(parsed.options.log),
               diagnostic: (text) => {
                 io.err(text);
               },

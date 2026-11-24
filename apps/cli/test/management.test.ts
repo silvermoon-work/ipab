@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import stringWidth from "string-width";
 import { runCli, help, parse } from "../src/cli.js";
 import {
   configKey,
@@ -117,11 +116,9 @@ describe("management contract", () => {
       items: [{ key: "history.enabled", value: true, source: "default" }],
     });
     const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
-    expect(page.out).toMatch(
-      /^RUN ID\s+ENDED\s+STATUS\s+APP\s+OUTPUT\s+ARGV\nrun-002/,
-    );
+    expect(page.out).toMatch(/^run run-002 \| succeeded \|/);
     expect(page.out).toContain("reader");
-    expect(page.out).toContain(`${output.slice(0, 13)}...`);
+    expect(page.out).toContain(`Output: ${output}`);
     expect(page.out).toContain("use --before run-002 with the same filters");
     const machine = JSON.parse(
       (await cli(work.stateDir, ["--json", "history", "list", "--limit", "1"]))
@@ -169,7 +166,7 @@ describe("management contract", () => {
     ).toBe(true);
   });
 
-  it("history lists current pin names and readable quoted arguments without changing full records", async () => {
+  it("history lists full references, current pin names and joined arguments without changing full records", async () => {
     const argv = ["--flag", "two words", "", 'quote"x', "\n"];
     const state = new State(work.stateDir);
     seedDisplayPin(state, "z-reader", another);
@@ -182,10 +179,10 @@ describe("management contract", () => {
     expect(result.out).toContain("reader");
     expect(result.out).toContain("result");
     expect(result.out).not.toContain("z-reader");
-    expect(result.out).not.toContain(another);
-    expect(result.out).not.toContain(schema);
-    expect(result.out).toContain('--flag "two words" "" "quote\\"x" "\\n"');
-    expect(result.out.split("\n")).toHaveLength(2);
+    expect(result.out).toContain(`${another} (reader)`);
+    expect(result.out).toContain(`${schema} (result)`);
+    expect(result.out).toContain('--flag two words  quote"x \\n');
+    expect(result.out.split("\n")).toHaveLength(4);
     const machine = await cli(work.stateDir, ["--json", "history", "list"]);
     expect(JSON.parse(machine.out) as unknown).toMatchObject({
       items: [{ appCid: another, outputCid: schema, argv }],
@@ -200,7 +197,7 @@ describe("management contract", () => {
     expect(details.out).toContain(`Argv: ${JSON.stringify(argv)}`);
   });
 
-  it("history limits references and argv at their display boundaries without splitting Unicode", async () => {
+  it("history preserves long arguments, Unicode and full names without truncation", async () => {
     const state = new State(work.stateDir);
     for (const length of [47, 48, 49]) {
       state.saveRun(
@@ -217,30 +214,16 @@ describe("management contract", () => {
     const result = await cli(work.stateDir, ["history", "list"]);
     expect(result.code).toBe(0);
     for (const length of [47, 48, 49]) {
-      const row = result.out
-        .split("\n")
-        .find((line) => line.startsWith(`run-${length}`));
-      expect(row?.split(/\s{2,}/)).toEqual([
-        `run-${length}`,
-        expect.stringMatching(/^(?:\d+[mh]|\d{4}-\d{2}-\d{2})$/),
-        "succeeded",
-        `${another.slice(0, 13)}...`,
-        `${schema.slice(0, 13)}...`,
-        length <= 48 ? "x".repeat(length) : `${"x".repeat(45)}...`,
-      ]);
+      expect(result.out).toContain(`Argv:   ${"x".repeat(length)}`);
     }
-    const unicode = result.out
-      .split("\n")
-      .find((line) => line.startsWith("unicode-"));
-    expect(unicode?.split(/\s{2,}/).at(-1)).toBe(
-      `"${"\u{1f600}".repeat(44)}...`,
-    );
+    expect(result.out).toContain(`Argv:   ${"\u{1f600}".repeat(49)}`);
+    expect(result.out).toContain(another);
+    expect(result.out).toContain(schema);
     const updated = new State(work.stateDir);
     seedDisplayPin(updated, "a-long-readable-app-name", another);
     updated.close();
     const aliased = await cli(work.stateDir, ["history", "list"]);
-    expect(aliased.out).toContain("a-long-readab...");
-    expect(aliased.out).not.toContain("a-long-readable-app-name");
+    expect(aliased.out).toContain(`${another} (a-long-readable-app-name)`);
   });
 
   it("short run IDs remain unique across pages and resolve safely for show, pagination and removal", async () => {
@@ -254,7 +237,7 @@ describe("management contract", () => {
     state.close();
     const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
     expect(page.code).toBe(0);
-    expect(page.out).toMatch(/\n01234567-a\s/);
+    expect(page.out).toMatch(/^run 01234567-a \|/);
     expect(page.out).toContain("use --before 01234567-a with the same filters");
     expect(page.out).not.toContain(firstId);
     const next = await cli(work.stateDir, [
@@ -263,7 +246,7 @@ describe("management contract", () => {
       "--before",
       "01234567-a",
     ]);
-    expect(next.out).toMatch(/\n01234567-b\s/);
+    expect(next.out).toMatch(/^run 01234567-b \|/);
     const details = await cli(work.stateDir, [
       "--json",
       "history",
@@ -334,69 +317,31 @@ describe("management contract", () => {
     });
   });
 
-  it("history argv uses the terminal's remaining columns and grows on wider terminals", async () => {
+  it("history preserves all fields regardless of terminal width", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
     const argv = ["--flag", "x".repeat(90)];
     const state = new State(work.stateDir);
     state.saveRun(record("term-run", another, { argv, outputCid: schema }));
     state.close();
-    let previous = 0;
-    let fullWidth = 0;
-    for (const columns of [70, 80, 120, 200]) {
+    for (const columns of [10, 70, 80, 120, 200]) {
       const result = await cli(work.stateDir, ["history", "list"], { columns });
       expect(result.code).toBe(0);
-      const lines = result.out.split("\n");
-      expect(lines.every((line) => stringWidth(line) <= columns)).toBe(true);
-      const shown = lines[1]?.split(/\s{2,}/).at(-1);
-      expect(shown?.length).toBeGreaterThan(previous);
-      previous = shown?.length ?? 0;
-      if (columns === 200) {
-        expect(shown).toBe(argv.join(" "));
-        fullWidth = stringWidth(lines[1]!);
-      } else expect(shown).toMatch(/\.\.\.$/);
+      expect(result.out).toContain(`App:    ${another}`);
+      expect(result.out).toContain(`Output: ${schema}`);
+      expect(result.out).toContain(`Argv:   ${argv.join(" ")}`);
     }
-    const exact = await cli(work.stateDir, ["history", "list"], {
-      columns: fullWidth,
-    });
-    expect(exact.out.split("\n")[1]).toHaveLength(fullWidth);
-    expect(exact.out).toContain(argv.join(" "));
-    const smaller = await cli(work.stateDir, ["history", "list"], {
-      columns: fullWidth - 1,
-    });
-    expect(smaller.out.split("\n")[1]).toHaveLength(fullWidth - 1);
-    expect(smaller.out).not.toContain(argv.join(" "));
-    const narrow = await cli(work.stateDir, ["history", "list"], {
-      columns: 10,
-    });
-    expect(narrow.code).toBe(0);
-    expect(narrow.out).toContain(`${another.slice(0, 13)}...`);
-    expect(
-      narrow.out
-        .split("\n")[1]
-        ?.split(/\s{2,}/)
-        .at(-1),
-    ).toBe("-...");
     const machine = await cli(work.stateDir, ["--json", "history", "list"], {
       columns: 0,
     });
     expect(JSON.parse(machine.out) as unknown).toMatchObject({
       items: [{ argv }],
     });
-    const invalid = await cli(work.stateDir, ["history", "list"], {
-      columns: 0,
-    });
-    expect(invalid.code).toBe(1);
-    expect(invalid.err).toContain("Invalid terminal width");
   });
 
-  it("terminal-width truncation counts wide glyphs and preserves complete grapheme clusters", async () => {
+  it("history preserves complete grapheme clusters in joined argv", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
     const family = "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}";
-    for (const [glyph, count] of [
-      ["\u4f60", 6],
-      [family, 6],
-      ["e\u0301", 12],
-    ] as const) {
+    for (const glyph of ["\u4f60", family, "e\u0301"]) {
       const state = new State(work.stateDir);
       state.saveRun(
         record("term-run", another, {
@@ -409,15 +354,7 @@ describe("management contract", () => {
         columns: 80,
       });
       expect(result.code).toBe(0);
-      expect(
-        result.out.split("\n").every((line) => stringWidth(line) <= 80),
-      ).toBe(true);
-      expect(
-        result.out
-          .split("\n")[1]
-          ?.split(/\s{2,}/)
-          .at(-1),
-      ).toBe(`"${glyph.repeat(count)}...`);
+      expect(result.out).toContain(`Argv:   ${glyph.repeat(40)}`);
     }
   });
 
@@ -439,8 +376,7 @@ describe("management contract", () => {
     const listed = await cli(work.stateDir, ["history", "list"]);
     expect(listed.code).toBe(0);
     for (const [id, , ended] of cases) {
-      const row = listed.out.split("\n").find((line) => line.startsWith(id));
-      expect(row?.split(/\s{2,}/)[1]).toBe(ended);
+      expect(listed.out).toContain(`run ${id} | succeeded | ${ended}`);
     }
     const machine = await cli(work.stateDir, ["--json", "history", "list"]);
     expect(JSON.parse(machine.out) as unknown).toHaveProperty(

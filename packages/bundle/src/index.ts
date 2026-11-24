@@ -15,6 +15,7 @@ export {
   inspectSchema,
   inspectBundleSchema,
   encodeSchema,
+  decodeSchema,
   schemaBlockBytes,
   declaresBundleSchema,
 } from "./schema.js";

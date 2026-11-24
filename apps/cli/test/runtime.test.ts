@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFile, readFile, access } from "node:fs/promises";
+import { writeFile, readFile, access, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { encodeSchema } from "@ipab/bundle";
@@ -21,6 +21,8 @@ import {
 import { Ownership } from "../src/history.js";
 import { execute } from "../src/runtime.js";
 import { addPin, renamePin } from "../src/pins.js";
+import { ExecutionLogs, logFiles } from "../src/logs.js";
+import { parse } from "../src/cli.js";
 import {
   app,
   cli,
@@ -28,6 +30,7 @@ import {
   fixture,
   importFiles,
   subprocess,
+  schemaCar,
 } from "./helpers.js";
 
 async function invalidBlock(store: IpfsStore): Promise<CID> {
@@ -60,6 +63,39 @@ describe("real UnixFS and Node subprocess runtime", () => {
   it("rebuilds the fixed runtime Node profile identity as one DAG-CBOR block", async () => {
     const encoded = await encodeSchema(appSchema);
     expect(encoded.cid.equals(appSchemaCid)).toBe(true);
+    expect(encoded.cid.toString()).toBe(
+      "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
+    );
+    const legacy = {
+      ...appSchema,
+      entry: {
+        ...appSchema.entry,
+        schema: {
+          ...appSchema.entry.schema,
+          properties: Object.fromEntries(
+            Object.entries(appSchema.entry.schema.properties).filter(
+              ([key]) => key !== "supportedSchemas",
+            ),
+          ),
+        },
+      },
+    };
+    expect((await encodeSchema(legacy)).cid.toString()).toBe(
+      "bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq",
+    );
+    const root = await importFiles(work.store, {
+      ".bundle.yaml": JSON.stringify(legacy),
+      "app.json": JSON.stringify(appSchema.entry.defaultValue),
+      "resources/app.cjs": "throw new Error('must not execute');",
+    });
+    const owner = await Ownership.create(state, work.store, "legacy-app", null);
+    try {
+      await expect(loadApp(root, work.store, owner)).rejects.toMatchObject({
+        code: "APP_PROFILE_INVALID",
+      });
+    } finally {
+      await owner.release();
+    }
   });
 
   it("derives the complete type from the retained directory without fetching an external schema", async () => {
@@ -81,8 +117,10 @@ describe("real UnixFS and Node subprocess runtime", () => {
     expect(state.hold(owner.owner)).toBeUndefined();
   });
 
-  it("ordinary argv/stdin/binary stdout are exact and output is the entire finalized directory", async () => {
-    const source = `const fs = require("node:fs");
+  it.each([false, true])(
+    "ordinary argv/stdin/binary stdout remain exact with logging=%s",
+    async (log) => {
+      const source = `const fs = require("node:fs");
 const input = fs.readFileSync(0);
 process.stdout.write(input);
 process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
@@ -90,41 +128,149 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
   await ipab.output.writeFile("nested/result.bin", new ReadableStream({start(c) { c.enqueue(input); c.close(); }}));
   await ipab.output.writeFile("second.txt", new ReadableStream({start(c) { c.enqueue(Buffer.from("two")); c.close(); }}));
 })().catch(e => {console.error(e); process.exitCode = 9;});`;
-    const root = await app(work.store, source);
-    const argv = ["--help", "--cid", "--", "--json", "a b", "%", "☃"];
-    const input = Buffer.from([0, 255, 1, 2, 13, 10]);
+      const root = await app(work.store, source);
+      const argv = ["--help", "--cid", "--", "--json", "a b", "%", "☃"];
+      const input = Buffer.from([0, 255, 1, 2, 13, 10]);
+      const result = await subprocess(
+        [
+          "--state-dir",
+          work.stateDir,
+          "exec",
+          ...(log ? ["--log"] : []),
+          root,
+          ...argv,
+        ],
+        config,
+        input,
+      );
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toEqual(input);
+      expect(result.stderr).toContain(JSON.stringify(argv));
+      const run = state.runs()[0]!;
+      expect(run.status).toBe("succeeded");
+      expect(run.appCid).toBe(root);
+      expect(run.argv).toEqual(argv);
+      expect(run.retention.owned).toBe(true);
+      expect(run.outputCid).not.toBe(root);
+      expect((await work.store.read(run.outputCid!)).type).toBe("directory");
+      const resultNode = await work.store.read(
+        `${run.outputCid}/nested/result.bin`,
+      );
+      expect(resultNode.type).not.toBe("directory");
+      if (resultNode.type !== "directory")
+        expect(
+          await bytes(ReadableStream.from(resultNode.content()), 100),
+        ).toEqual(Uint8Array.from(input));
+      const second = await work.store.read(`${run.outputCid}/second.txt`);
+      if (second.type !== "directory")
+        expect(
+          new TextDecoder().decode(
+            await bytes(ReadableStream.from(second.content()), 100),
+          ),
+        ).toBe("two");
+      expect(result.stdout.toString()).not.toContain(run.outputCid!);
+      expect(result.stderr).toContain(`Output: ${run.outputCid}`);
+      const files = await logFiles(work.stateDir, run.id);
+      if (log) {
+        expect(run.log).toBe("complete");
+        expect(await readFile(files.stdout!)).toEqual(input);
+        expect((await readFile(files.stderr!)).toString()).toBe(
+          JSON.stringify(argv) + "\n",
+        );
+        const shown = await cli(work.stateDir, [
+          "--json",
+          "history",
+          "show",
+          run.id,
+        ]);
+        expect(JSON.parse(shown.out) as unknown).toMatchObject({
+          log: "complete",
+          logs: files,
+        });
+        await unlink(files.stdout!);
+        const missing = await cli(work.stateDir, ["history", "show", run.id]);
+        expect(missing.out).toContain("Stdout log: unavailable");
+        expect(missing.out).toContain(files.stderr!);
+        expect(
+          (await cli(work.stateDir, ["history", "remove", run.id, "--yes"]))
+            .code,
+        ).toBe(0);
+        await expect(
+          access(join(work.stateDir, "logs", run.id)),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        expect(run.log).toBeUndefined();
+        expect(files).toEqual({ stdout: null, stderr: null });
+      }
+    },
+    20000,
+  );
+
+  it("log flag is host-only before APP and fails before execution with history disabled", async () => {
+    expect(parse(["exec", "--log", "--help"]).help).toBe(true);
+    expect(parse(["exec", "--log", "reader", "--log"]).positional).toEqual([
+      "reader",
+      "--log",
+    ]);
+    expect(() => parse(["exec", "--log"])).toThrow("Expected APP");
+    expect(() => parse(["exec", "--log", "--log", "reader"])).toThrow(
+      "Expected APP",
+    );
+    const root = await app(work.store, "throw new Error('must not execute');");
+    state.setConfig("history.enabled", false);
     const result = await subprocess(
-      ["--state-dir", work.stateDir, "exec", root, ...argv],
+      ["--state-dir", work.stateDir, "exec", "--log", root],
       config,
-      input,
     );
-    expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toEqual(input);
-    expect(result.stderr).toContain(JSON.stringify(argv));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("requires history.enabled=true");
+    expect(state.runs()).toEqual([]);
+  });
+
+  it("failed Apps retain complete debug output and logging failures are recorded explicitly", async () => {
+    const root = await app(
+      work.store,
+      "console.log('debug'); console.error('failure'); process.exitCode = 7;",
+    );
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", "--log", root],
+      config,
+    );
+    expect(result.code).toBe(7);
     const run = state.runs()[0]!;
-    expect(run.status).toBe("succeeded");
-    expect(run.appCid).toBe(root);
-    expect(run.argv).toEqual(argv);
-    expect(run.retention.owned).toBe(true);
-    expect(run.outputCid).not.toBe(root);
-    expect((await work.store.read(run.outputCid!)).type).toBe("directory");
-    const resultNode = await work.store.read(
-      `${run.outputCid}/nested/result.bin`,
+    expect(run).toMatchObject({
+      status: "failed",
+      log: "complete",
+      appExitCode: 7,
+    });
+    const files = await logFiles(work.stateDir, run.id);
+    expect((await readFile(files.stdout!)).toString()).toBe("debug\n");
+    expect((await readFile(files.stderr!)).toString()).toBe("failure\n");
+    expect(
+      (await cli(work.stateDir, ["history", "remove", run.id, "--yes"])).code,
+    ).toBe(0);
+    await expect(
+      access(join(work.stateDir, "logs", run.id)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    vi.spyOn(ExecutionLogs.prototype, "forward").mockRejectedValue(
+      new Error("disk full"),
     );
-    expect(resultNode.type).not.toBe("directory");
-    if (resultNode.type !== "directory")
-      expect(
-        await bytes(ReadableStream.from(resultNode.content()), 100),
-      ).toEqual(Uint8Array.from(input));
-    const second = await work.store.read(`${run.outputCid}/second.txt`);
-    if (second.type !== "directory")
-      expect(
-        new TextDecoder().decode(
-          await bytes(ReadableStream.from(second.content()), 100),
-        ),
-      ).toBe("two");
-    expect(result.stdout.toString()).not.toContain(run.outputCid!);
-    expect(result.stderr).toContain(`Output: ${run.outputCid}`);
+    const execution = await execute(
+      state,
+      work.store,
+      { origin: "exec", appCid: root, argv: [] },
+      {
+        history: true,
+        retain: false,
+        log: true,
+        diagnostic: () => {},
+      },
+    );
+    expect(execution.exitCode).not.toBe(0);
+    expect(execution.record.log).toBe("incomplete");
+    expect(execution.record.error?.message).toContain("disk full");
+    expect(execution.record.outputCid).toBeNull();
   }, 20000);
 
   it("reads arbitrary Space without manifest and links only valid UnixFS file/directory targets", async () => {
@@ -228,9 +374,11 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
 
   it("open validates Content Bundle, expands whole tokens and uses saved exact association", async () => {
     const input = await content(work.store);
+    const schema = await encodeSchema(input.definition);
     const root = await app(
       work.store,
       "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+      schemaCar([schema.cid], [schema]),
     );
     await addPin(state, "document", input.root, work.store.configuration);
     await addPin(state, "program", root, work.store.configuration);
@@ -242,7 +390,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     );
     renamePin(state, "program", "renamed-program");
     const result = await subprocess(
-      ["--state-dir", work.stateDir, "open", "document"],
+      ["--state-dir", work.stateDir, "open", "--log", "document"],
       config,
     );
     expect(result.code, result.stderr).toBe(0);
@@ -250,6 +398,10 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(result.stdout.toString()).toBe(JSON.stringify(actual));
     expect(state.runs()[0]?.argv).toEqual(actual);
     expect(state.runs()[0]?.origin).toBe("open");
+    const logs = await logFiles(work.stateDir, state.runs()[0]!.id);
+    expect((await readFile(logs.stdout!)).toString()).toBe(
+      JSON.stringify(actual),
+    );
     state.removeAssociation(input.schema);
     const missing = await subprocess(
       ["--state-dir", work.stateDir, "open", input.root],
@@ -259,6 +411,178 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     expect(missing.stderr).toContain("register set or ipab exec");
     expect(state.runs()).toHaveLength(1);
   }, 20000);
+  it("open requires exact declared support before child invocation, while exec preserves ordinary argv", async () => {
+    const input = await content(work.store);
+    const supported = await encodeSchema(input.definition);
+    const other = await encodeSchema({
+      ...input.definition,
+      name: "Other type",
+    });
+    const source =
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)));";
+    const omitted = await app(work.store, source);
+    const mismatch = await app(
+      work.store,
+      source,
+      schemaCar([other.cid], [other]),
+    );
+    for (const root of [omitted, mismatch]) {
+      state.setAssociation(input.schema, root, ["%"], true);
+      const result = await subprocess(
+        ["--state-dir", work.stateDir, "open", input.root],
+        config,
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout.length).toBe(0);
+      expect(result.stderr).toContain("does not declare support");
+      expect(result.stderr).toContain("ipab.yaml supportedSchemas");
+      const run = state.runs().find((run) => run.appCid === root)!;
+      expect(run.appExitCode).toBeNull();
+      expect(run.outputCid).toBeNull();
+      expect(run.error).toMatchObject({
+        phase: "validation",
+        code: "APP_SCHEMA_UNSUPPORTED",
+      });
+    }
+    const multi = await app(
+      work.store,
+      source,
+      schemaCar([other.cid, supported.cid], [supported, other]),
+    );
+    state.setAssociation(input.schema, multi, ["--cid", "%"], true);
+    const opened = await subprocess(
+      ["--state-dir", work.stateDir, "open", input.root],
+      config,
+    );
+    expect(opened.code, opened.stderr).toBe(0);
+    expect(opened.stdout.toString()).toBe(
+      JSON.stringify(["--cid", input.root]),
+    );
+    const argv = ["--help", "--json", "--", "%", "--cid=unrelated"];
+    const explicit = await subprocess(
+      ["--state-dir", work.stateDir, "exec", mismatch, ...argv],
+      config,
+    );
+    expect(explicit.code, explicit.stderr).toBe(0);
+    expect(explicit.stdout.toString()).toBe(JSON.stringify(argv));
+  }, 60000);
+
+  it("validates nested Schema CARs even for exec without importing or retaining nested roots", async () => {
+    const input = await content(
+      work.store,
+      { hello: "world" },
+      {
+        type: "object",
+        properties: { hello: { const: "world" } },
+        required: ["hello"],
+      },
+    );
+    const schema = await encodeSchema(input.definition);
+    const other = await encodeSchema({
+      ...input.definition,
+      name: "Other type",
+    });
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "nested-schemas",
+      null,
+    );
+    try {
+      const valid = await app(
+        work.store,
+        "",
+        schemaCar([schema.cid, other.cid], [other, schema]),
+      );
+      const loaded = await loadApp(valid, work.store, owner);
+      expect([...loaded.supportedSchemas].sort()).toEqual(
+        [schema.cid.toString(), other.cid.toString()].sort(),
+      );
+      expect(state.hold(owner.owner)?.roots).not.toContain(
+        schema.cid.toString(),
+      );
+      expect(state.hold(owner.owner)?.roots).not.toContain(
+        other.cid.toString(),
+      );
+      await expect(
+        work.store.block.get(schema.cid.toString()),
+      ).rejects.toThrow();
+      await expect(
+        work.store.block.get(other.cid.toString()),
+      ).rejects.toThrow();
+      const invalidDefault = Uint8Array.from(schema.bytes);
+      const offset = Buffer.from(invalidDefault).lastIndexOf("world");
+      invalidDefault.set(Buffer.from("wrong"), offset);
+      const invalidCid = CID.createV1(
+        0x71,
+        await sha256.digest(invalidDefault),
+      );
+      const bare = Uint8Array.of(0xa0);
+      const bareCid = CID.createV1(0x71, await sha256.digest(bare));
+      for (const nested of [
+        Uint8Array.of(1, 2, 3),
+        schemaCar([], []),
+        schemaCar([schema.cid], []),
+        schemaCar([schema.cid, schema.cid], [schema]),
+        schemaCar([schema.cid], [schema, schema]),
+        schemaCar([schema.cid], [schema, other]),
+        schemaCar([schema.cid], [{ cid: schema.cid, bytes: Uint8Array.of(1) }]),
+        schemaCar([bareCid], [{ cid: bareCid, bytes: bare }]),
+        schemaCar([invalidCid], [{ cid: invalidCid, bytes: invalidDefault }]),
+        schemaCar(
+          [CID.createV1(0x55, schema.cid.multihash)],
+          [
+            {
+              cid: CID.createV1(0x55, schema.cid.multihash),
+              bytes: schema.bytes,
+            },
+          ],
+        ),
+      ]) {
+        const root = await app(
+          work.store,
+          "throw new Error('must not execute');",
+          nested,
+        );
+        await expect(loadApp(root, work.store, owner)).rejects.toThrow();
+      }
+      const files = {
+        ".bundle.yaml": JSON.stringify(appSchema),
+        "resources/app.cjs": "throw new Error('must not execute');",
+      };
+      for (const supportedSchemas of [
+        "",
+        " ",
+        "../schemas.car",
+        "app.json",
+        "resources/app.cjs",
+        "resources/missing.car",
+      ]) {
+        const root = await importFiles(work.store, {
+          ...files,
+          "app.json": JSON.stringify({
+            ...appSchema.entry.defaultValue,
+            supportedSchemas,
+          }),
+        });
+        await expect(loadApp(root, work.store, owner)).rejects.toThrow();
+      }
+    } finally {
+      await owner.release();
+    }
+    const corrupt = await app(
+      work.store,
+      "process.stdout.write('must not execute');",
+      Uint8Array.of(1),
+    );
+    const result = await subprocess(
+      ["--state-dir", work.stateDir, "exec", corrupt, "--help"],
+      config,
+    );
+    expect(result.code).toBe(1);
+    expect(result.stdout.length).toBe(0);
+    expect(state.runs()[0]?.appExitCode).toBeNull();
+  }, 30000);
   it.each(["other/app.cjs", "resources/app.js"])(
     "enforces Node entry paths outside the structural schema: %s",
     async (entry) => {
@@ -563,8 +887,13 @@ try {await ipab.output.writeFile("broken", new ReadableStream({start(c){c.error(
   });
 
   it("the source CLI dispatches exec/open through the same runtime and reports Store-close failure", async () => {
-    const root = await app(work.store, "process.exitCode = 0;");
     const input = await content(work.store);
+    const schema = await encodeSchema(input.definition);
+    const root = await app(
+      work.store,
+      "process.exitCode = 0;",
+      schemaCar([schema.cid], [schema]),
+    );
     await addPin(state, "app", root, work.store.configuration);
     state.setAssociation(input.schema, root, ["%", "--cid=%"], false);
     const explicit = await cli(work.stateDir, ["exec", "app", "--help", "--"]);

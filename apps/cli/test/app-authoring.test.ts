@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  symlink,
+  writeFile,
+  unlink,
+} from "node:fs/promises";
 import * as filesystem from "node:fs/promises";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
@@ -8,7 +15,9 @@ import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
 import { CarBlockIterator } from "@ipld/car/iterator";
 import type { CID } from "multiformats/cid";
-import { encodeSchema, openBundle } from "@ipab/bundle";
+import { encodeSchema, openBundle, parseData } from "@ipab/bundle";
+import { stringify } from "yaml";
+import { readSupportedSchemas } from "../src/supported-schemas.js";
 import { buildApp, initApp } from "../src/app-authoring.js";
 import { appSchema, appSchemaCid } from "../src/space.js";
 import { appDescription, schemaAlias } from "../src/app-definition.js";
@@ -138,6 +147,28 @@ describe("App-first authoring", () => {
     });
     expect(await readdir(project)).not.toContain("node_modules");
     expect(await readdir(project)).not.toContain(".bundle.yaml");
+    const template = await readFile(join(project, "ipab.yaml"), "utf8");
+    expect(parseData(Buffer.from(template), "application/yaml")).toEqual({
+      entry: "src/main.ts",
+      resources: [],
+      supportedSchemas: [],
+      app: { name: "hello", version: "0.0.0", description: "" },
+    });
+    for (const capability of [
+      "assets/icon.png",
+      "resources/assets/icon.png",
+      "schemas/note.json",
+      "NOT bare JSON Schema",
+      "# i18n:",
+      "#     name:",
+      "#     description:",
+      "# author:",
+      "# license:",
+    ])
+      expect(template).toContain(capability);
+    expect(await readdir(project)).not.toContain("ipab.json");
+    expect(await readdir(project)).not.toContain("assets");
+    expect(await readdir(project)).not.toContain("schemas");
     const defaultInit = await promisify(execFile)(
       process.execPath,
       [
@@ -215,6 +246,7 @@ describe("App-first authoring", () => {
   });
   it("runs real strict tsc and bundles a dependency into a self-contained CAR, selecting only explicit resources", async () => {
     await initApp("hello", project);
+    await unlink(join(project, "ipab.yaml"));
     await projectTools(project);
     const dependency = join(project, "node_modules", "example-dependency");
     await mkdir(dependency);
@@ -283,6 +315,16 @@ describe("App-first authoring", () => {
       license: "MIT",
       icon: "resources/assets/message.txt",
     });
+    const description = object(
+      JSON.parse(
+        await new Response(await bundle.readFile("app.json")).text(),
+      ) as unknown,
+      "metadata",
+    );
+    expect(description).not.toHaveProperty("supportedSchemas");
+    await expect(
+      bundle.readFile("resources/supported-schemas.car"),
+    ).rejects.toThrow();
     const source = await new Response(
       await bundle.readFile("resources/app.cjs"),
     ).text();
@@ -386,6 +428,7 @@ describe("App-first authoring", () => {
   }, 60_000);
   it("rejects unsafe config/output and cleans only fresh owned staging after bundle failure", async () => {
     await initApp("hello", project);
+    await unlink(join(project, "ipab.yaml"));
     await projectTools(project);
     await mkdir(join(project, ".ipab-app-stale"));
     await writeFile(join(project, ".ipab-app-stale", "app.cjs"), "Old program");
@@ -413,6 +456,7 @@ describe("App-first authoring", () => {
     await set();
     for (const app of [
       { entry: "resources/other.cjs" },
+      { supportedSchemas: "resources/custom.car" },
       { icon: "resources/assets/missing.svg" },
       { profile: "ipab.node.v1" },
     ]) {
@@ -447,6 +491,184 @@ describe("App-first authoring", () => {
     );
     await expect(buildApp(resolve(work.root, "missing"))).rejects.toThrow();
   }, 60_000);
+  it("builds deterministic deduplicated complete Schema collections from YAML or legacy JSON", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const emptyBuild = await buildApp(project);
+    const emptyBundle = await loadCar(emptyBuild.output);
+    expect(
+      JSON.parse(
+        await new Response(await emptyBundle.readFile("app.json")).text(),
+      ) as unknown,
+    ).not.toHaveProperty("supportedSchemas");
+    await expect(
+      emptyBundle.readFile("resources/supported-schemas.car"),
+    ).rejects.toThrow();
+    expect(
+      await new Response(
+        await emptyBundle.readFile("resources/app.cjs"),
+      ).text(),
+    ).toContain("Hello from your IPAB App.");
+    await mkdir(join(project, "schemas"));
+    const definition = {
+      name: "Note",
+      entry: {
+        path: "note.json",
+        schema: { type: "string" },
+        contentType: "application/json",
+        defaultValue: "",
+      },
+    };
+    const second = {
+      ...definition,
+      name: "Other note",
+      description: "Second type",
+    };
+    for (const [name, value] of [
+      ["note.json", definition],
+      ["same.json", { ...definition, description: "" }],
+      ["other.json", second],
+    ] as const)
+      await writeFile(join(project, "schemas", name), JSON.stringify(value));
+    const selected = {
+      entry: "src/main.ts",
+      resources: [],
+      supportedSchemas: [
+        "schemas/note.json",
+        "schemas/same.json",
+        "schemas/other.json",
+      ],
+      app: {},
+    };
+    const yamlPath = join(project, "ipab.yaml");
+    await writeFile(
+      yamlPath,
+      `# Comments do not enter the Bundle.\n${stringify(selected)}`,
+    );
+    const first = await buildApp(project, { replace: true });
+    const firstBytes = await readFile(first.output);
+    const bundle = await loadCar(first.output);
+    const metadata = JSON.parse(
+      await new Response(await bundle.readFile("app.json")).text(),
+    ) as unknown;
+    expect(metadata).toMatchObject({
+      supportedSchemas: "resources/supported-schemas.car",
+    });
+    const nestedBytes = new Uint8Array(
+      await new Response(
+        await bundle.readFile("resources/supported-schemas.car"),
+      ).arrayBuffer(),
+    );
+    const iterator = await CarBlockIterator.fromIterable(
+      ReadableStream.from([nestedBytes]),
+    );
+    const roots = (await iterator.getRoots()).map((cid) => cid.toString());
+    const encoded = await Promise.all(
+      [definition, second].map((value) => encodeSchema(value)),
+    );
+    const expected = encoded.map((block) => block.cid.toString()).sort();
+    expect(roots).toEqual(expected);
+    const records: string[] = [];
+    for await (const block of iterator) records.push(block.cid.toString());
+    expect(records).toEqual(expected);
+    expect(
+      [
+        ...(await readSupportedSchemas(ReadableStream.from([nestedBytes]))),
+      ].sort(),
+    ).toEqual(expected);
+    await expect(bundle.readFile("schemas/note.json")).rejects.toThrow();
+    await writeFile(
+      yamlPath,
+      stringify({
+        ...selected,
+        supportedSchemas: [...selected.supportedSchemas].reverse(),
+      }),
+    );
+    expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
+    expect(await readFile(first.output)).toEqual(firstBytes);
+    await unlink(yamlPath);
+    await writeFile(join(project, "ipab.json"), JSON.stringify(selected));
+    expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
+    expect(await readFile(first.output)).toEqual(firstBytes);
+    for (const invalid of [
+      "{",
+      '{"name":"One","name":"Two","entry":{}}',
+      JSON.stringify({ type: "string" }),
+      JSON.stringify({
+        ...definition,
+        entry: { ...definition.entry, defaultValue: 1 },
+      }),
+    ]) {
+      await writeFile(join(project, "schemas", "note.json"), invalid);
+      await expect(buildApp(project, { replace: true })).rejects.toThrow();
+      expect(await readFile(first.output)).toEqual(firstBytes);
+    }
+    expect(
+      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
+    ).toEqual([]);
+  }, 60_000);
+
+  it("rejects ambiguous or invalid data configs and unsafe, missing or symlinked Schema sources", async () => {
+    await initApp("hello", project);
+    const configPath = join(project, "ipab.yaml");
+    const selected = {
+      entry: "src/main.ts",
+      resources: [],
+      supportedSchemas: [],
+      app: {},
+    };
+    await writeFile(join(project, "ipab.json"), JSON.stringify(selected));
+    await expect(buildApp(project)).rejects.toThrow("exactly one");
+    await unlink(join(project, "ipab.json"));
+    for (const source of [
+      "entry: src/main.ts\nentry: src/main.ts\nresources: []\n",
+      "entry: src/main.ts\nresources: []\nsupportedSchemas: invalid\n",
+      "entry: src/main.ts\nresources: []\nhooks: execute\n",
+      "!!js/function 'function() {}'",
+      "entry: src/main.ts\nresources: []\n---\nentry: src/main.ts\n",
+    ]) {
+      await writeFile(configPath, source);
+      await expect(buildApp(project)).rejects.toThrow();
+    }
+    for (const supportedSchemas of [
+      [1],
+      ["../note.json"],
+      ["assets/note.json"],
+      ["schemas/.hidden.json"],
+      ["schemas/folder/.hidden/note.json"],
+      ["schemas/note.yaml"],
+      ["schemas/*.json"],
+      ["schemas/note.json", "schemas/note.json"],
+      ["schemas/missing.json"],
+    ]) {
+      await writeFile(configPath, stringify({ ...selected, supportedSchemas }));
+      await expect(buildApp(project)).rejects.toThrow();
+    }
+    await mkdir(join(project, "schemas"));
+    await mkdir(join(project, "schemas", "directory.json"));
+    await writeFile(
+      configPath,
+      stringify({ ...selected, supportedSchemas: ["schemas/directory.json"] }),
+    );
+    await expect(buildApp(project)).rejects.toThrow();
+    const target = join(work.root, "outside.json");
+    await writeFile(target, "{}");
+    await symlink(target, join(project, "schemas", "link.json"), "file");
+    await writeFile(
+      configPath,
+      stringify({ ...selected, supportedSchemas: ["schemas/link.json"] }),
+    );
+    await expect(buildApp(project)).rejects.toThrow("Symlinks");
+    for (const app of [
+      { supportedSchemas: "resources/custom.car" },
+      { entry: "resources/custom.cjs" },
+    ]) {
+      await writeFile(configPath, stringify({ ...selected, app }));
+      await expect(buildApp(project)).rejects.toThrow("override");
+    }
+    await unlink(configPath);
+    await expect(buildApp(project)).rejects.toThrow("missing");
+  });
   it("requires the selected entry to be typechecked and refuses dynamic runtime dependencies", async () => {
     await initApp("hello", project);
     await projectTools(project);
@@ -682,7 +904,7 @@ describe("App-first authoring", () => {
       },
       app: { icon: "resources/web/icon.svg" },
     };
-    await writeFile(join(project, "ipab.json"), JSON.stringify(config));
+    await writeFile(join(project, "ipab.yaml"), stringify(config));
     const hook = join(project, "prebuild.mjs");
     const writeHook = async (source: string) =>
       writeFile(
@@ -800,8 +1022,8 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       JSON.stringify(browserConfig),
     );
     await writeFile(
-      join(project, "ipab.json"),
-      JSON.stringify({
+      join(project, "ipab.yaml"),
+      stringify({
         entry: "server/app.cjs",
         resources: ["web"],
         build: {

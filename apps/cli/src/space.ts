@@ -8,6 +8,7 @@ import { openBundle, type ContentBundle } from "@ipab/bundle";
 import { HostError, message } from "./errors.js";
 import type { Ownership } from "./history.js";
 import { appDescription, appSchemaCid } from "./app-definition.js";
+import { readSupportedSchemas } from "./supported-schemas.js";
 export { appSchema, appSchemaCid } from "./app-definition.js";
 export const CHUNK_BYTES = 64 * 1024;
 export const OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -97,7 +98,11 @@ export async function loadApp(
   store: IpfsStore,
   owner: Ownership,
   signal?: AbortSignal,
-): Promise<{ path: string; source: Uint8Array }> {
+): Promise<{
+  path: string;
+  source: Uint8Array;
+  supportedSchemas: ReadonlySet<string>;
+}> {
   const bundle = await validatedBundle(root, store, owner, signal);
   if (
     bundle.schemaKey !== appSchemaCid.toString() ||
@@ -136,8 +141,21 @@ export async function loadApp(
       "APP_PROFILE_INVALID",
       "validation",
     );
+  let supportedSchemas: ReadonlySet<string> = new Set();
+  if (description.supportedSchemas !== undefined) {
+    const schemasPath = relativePath(description.supportedSchemas);
+    if (!schemasPath.startsWith("resources/") || schemasPath === path)
+      throw new HostError(
+        "App supportedSchemas must be a distinct Bundle-root-relative resources/ regular file.",
+      );
+    supportedSchemas = await readSupportedSchemas(
+      await bundle.readFile(schemasPath),
+      signal,
+    );
+  }
   return {
     path,
+    supportedSchemas,
     source: await bytes(await bundle.readFile(path), 8 * 1024 * 1024),
   };
 }

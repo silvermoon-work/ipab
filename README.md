@@ -63,10 +63,15 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   `--json` 适用于管理／开发命令的结果元数据，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
+  可用 `exec --log APP [APP_ARGS...]` 或 `open --log CONTENT` 按次记录
+  stdout／stderr；exec 的宿主 `--log` 必须在 APP 之前。
 - `open CONTENT`
   校验存储完整性、路径、完整类型定义和入口数据，从 `.bundle.yaml`
   计算准确类型 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
+  启动子进程前还要求所选 App 的 supportedSchemas CAR roots 包含输入的准确
+  类型 CID；省略声明意味着不支持任何 open 类型，不是通配符。关联本身不证明支持。
+  不匹配须重建 App 并显式更新 pin/register，或使用普通 `exec`；不会成功回退。
   `register set` 省略模板保存 `["%"]`；显式模板必须包含整个参数 `%`，
   只替换整个参数，不展开 shell 字符串。其他资源与子 Bundle 不接受宿主的业务校验，
   引用格式、依赖读取与验证由 App 自行处理。
@@ -169,7 +174,7 @@ ipab bundle import .\dist\app.car
 `init NAME [DIR]` 创建普通 private TypeScript npm package；NAME 为不带 scope
 的小写 npm 包名，省略 DIR 时创建 NAME 目录。目标必须不存在或为空，没有覆盖
 源码的 force 选项。生成 `package.json`、严格 `tsconfig.json`、`src/main.ts`、
-`ipab.json` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
+`ipab.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
 `ipab build`，不声明不存在的 registry `@ipab/cli` 版本。
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
@@ -370,17 +375,30 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
 默认 Node 策略读取以下数据配置，不加载 JS 配置、npm lifecycle hooks 或用户插件；
 显式 `ipab-prebuild` 策略则使用上面的可信项目编译契约：
 
-```json
-{
-  "entry": "src/main.ts",
-  "resources": ["assets/message.txt"],
-  "app": {
-    "name": "Hello App",
-    "icon": "resources/assets/message.txt",
-    "i18n": { "zh-CN": { "name": "你好应用" } }
-  }
-}
+```yaml
+entry: src/main.ts
+resources: []
+supportedSchemas: []
+app:
+  name: hello
+  version: "0.0.0"
+  description: ""
+  # icon: resources/assets/icon.png
+  # i18n:
+  #   zh-CN:
+  #     name: 你好应用
+  #     description: 应用描述
 ```
+
+脚手架注释展示 author/license 覆盖、icon 放置、name/description
+i18n 与类型源文件。
+可选功能默认关闭，不生成虚构 icon／Schema 或空目录占位文件。启用 icon 时创建
+`assets/icon.png`，将 resources 的 `[]` 替换为 `[assets/icon.png]`，再取消 icon
+行的注释。启用类型时创建完整定义 `schemas/note.json`，将 supportedSchemas
+的 `[]` 替换为 `[schemas/note.json]`。已有 `ipab.json` 仍支持；迁移时转换为
+`ipab.yaml` 并删除旧文件。只允许这两种配置且必须恰好存在一个，拒绝二者并存。
+两种格式使用严格数据解析，拒绝重复键、未知字段／非法类型；注释和格式不参与
+App 身份。不加载 JS 配置、不执行 hooks。
 
 - 入口必须是 `src/` 下的 `.ts` 文件，并实际包含于项目 `tsconfig.json`。
   显式执行项目 `node_modules/typescript/bin/tsc`，强制严格检查与 noEmit，
@@ -395,6 +413,29 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
   `resources/assets/message.txt`。不自动打包源码、node_modules、配置、
   `.env` 或未选中的资源；应用通过自己的 App CID 和 Space context 读取资源，
   不依赖 materialized 程序旁的本地文件。
+- supportedSchemas 默认为 `[]`，旧源配置省略也按空处理。只接受 `schemas/`
+  下显式、唯一、非隐藏 `.json` 普通文件，无 glob、扫描、目录或符号链接。
+  每个文件是**完整 Bundle 定义**（name、可选 description、entry 的
+  path/schema/contentType/defaultValue），不是裸 JSON Schema；例如：
+
+  ```json
+  {
+    "name": "Note",
+    "entry": {
+      "path": "note.json",
+      "schema": { "type": "string" },
+      "contentType": "application/json",
+      "defaultValue": ""
+    }
+  }
+  ```
+
+  严格解析并复用 Bundle runtime 校验默认值、归一化和编码，按实际 CID 去重，
+  roots 和 block records 按 CID 排序；改变源文件列表顺序不改变产物。
+  非空列表生成单个 `resources/supported-schemas.car` 并自动写入 app.json
+  supportedSchemas 路径；空列表不生成文件或字段。坏／缺源定义使整次构建失败，
+  保留旧 CAR，仅清理本次自有数据。
+
 - 每次使用全新唯一自有 staging，写入完整内置 `.bundle.yaml` 和默认 `app.json`，
   再复用 Bundle Builder 固化 CAR／CID。失败不打包旧程序或旧资源，
   只清理本次 staging，不清空 `dist`、旧 staging 或 Store。
@@ -423,21 +464,36 @@ icon 是 Bundle 根相对的 `resources/` 普通文件路径，loader 验证安�
 的映射，拒绝无效或规范化重复的语言 tag、未知字段与非字符串翻译；
 翻译名也不得为空白。语义为选中语言的字段分别覆盖 base name/description，
 缺少翻译／字段回退 base，不实现语言选择 UI，也不隐式按前缀选择其他语言。
-name／author name／email／license／icon／version 的文本上限为 1024 字符。
+name／author
+name／email／license／icon／version／supportedSchemas 路径的文本上限为 1024 字符。
 
 构建从普通 `package.json`
 的 name/version/description/author/license 复制元数据，
-`ipab.json.app` 可覆盖这些字段并添加 icon/i18n；不可覆盖编译程序 entry。
-生成的 config 默认 app={}，描述未提供时为空。`.bundle.yaml` 的 name/description
+`ipab.yaml.app`（或旧 `ipab.json.app`）可覆盖这些字段并添加 icon/i18n；
+不可覆盖生成的 entry 或 supportedSchemas。脚手架显式展示 name/version/description，
+删除某个覆盖字段即可继承 package.json，描述未提供时为空。`.bundle.yaml`
+的 name/description
 命名共享 Node App 类型，不是单个 App；单个 App 元数据变化会改变内容根 CID，
 不会改变共享类型 CID。
 
 离线 alias `builtin:node-app.v1` 对应完整定义和 canonical DAG-CBOR CID：
-`bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq`。
+`bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a`。
 alias 可用于 bundle init/inspect 与 register set/remove；状态只保存 CID。
 这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
-profile/runtime 字段现在被拒绝。旧包应重建并显式更新 pin/register，不自动迁移。
+profile/runtime 字段仍被拒绝。本次添加可选 supportedSchemas 改变了共享类型身份，
+旧 App CID 不被静默接受；旧包应重建并显式更新 pin/register，不自动迁移。
 Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
+
+app.json 的可选 supportedSchemas 是安全的 `resources/` 普通文件路径，必须存在，
+不可碰撞程序入口或控制文件；外部手工构建的 App 也须遵守。loader 在任何执行
+（包括 exec）前验证此嵌套 CAR。它是非空、多根 Schema collection：每个 root
+都必须为完整归一化 Bundle 定义的 CIDv1/DAG-CBOR/SHA-256，单 block 最多
+1 MiB；必须含所有 roots，拒绝重复 roots／block records、额外 block、坏 hash、
+非 canonical 定义、非法 Schema 或默认值。复用现有文件数、字节、深度和聚合
+work 预算，拒绝空的已声明 CAR。该声明不解析或改写 argv，exec 不做输入类型匹配。
+嵌套 CAR 永不自动导入 Store、注册、pin 或 retain 其 roots；外层 App 保留的是
+嵌套文件字节，不承诺其中 Schema blocks 可以全局按 CID 读取。
+通用 Bundle Builder／import 对该资源保持不透明；register 仍是本地离线关联登记。
 
 ## Bundle 开发（底层）
 
@@ -545,7 +601,7 @@ URL 禁止凭据、查询和 fragment。默认 Store 配置中的 URL 同样检�
 
 历史默认开启，保存 appCid、**实际 argv**、outputCid、起止时间、状态、
 实际应用退出值或 null、错误阶段及记录自有保留信息；不设 contentCid，
-不捕获 stdio。参数可能有秘密：使用受保护的 stdin 或关闭历史，
+默认不记录 stdio。参数可能有秘密：使用受保护的 stdin 或关闭历史，
 不能依赖自动识别任意 App 参数中的秘密。
 
 `history list` 与 `history remove` 共用 AND 筛选：`--app`、`--status`
@@ -564,18 +620,28 @@ ENDED 在不足一小时显示分钟（如 `10m`，不足一分钟为 `0m`），
 不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
 未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
 
-APP／OUTPUT 优先显示当前匹配的可用 pin 短名；
-多个 pin 时取按名称排序的第一个，没有 pin 则显示 CID 前缀。
-两列最多 16 个字符，超限以 `...` 结尾。ARGV 按命令行样式以空格连接，
-特殊参数使用 JSON 字符串引号／转义，空参数为 `""`，无参数为 `-`；
-在终端中自动使用固定列以外的剩余宽度，超限以 `...` 结尾，
-按实际显示列计算中文／emoji 宽度，不拆开组合字符。
-重定向或无法读取终端宽度时，仍最多显示 48 个字符，不截断 Unicode 码点。
-极窄终端无法容纳固定列时，保留 ARGV 标题的最小宽度，表格仍可能换行；
-不会为此截断其他列。
-这只是阅读用的摘要，不保证可以直接交给任意 shell 重放。
+人类可读的 list 使用类似 git log 的逐条记录布局：首行显示 Run ID、状态、
+结束时间，后续行显示完整 App CID、Output CID 和 argv，不截断。
+匹配的可用 pin 短名只附加在 CID 后；多个 pin 时取按名称排序的第一个。
+无输出显示 `none`；argv 使用 `join(' ')`，无参数显示为空，控制字符转义。
+窄终端自然换行，不为保持一行压缩信息。
+这是阅读用的展示，不保留参数边界，也不保证能直接交给 shell 重放。
 `--json history list` 和 `history show` 保留完整 CID 和实际 argv；
 显示 pin 名称不修改历史记录中的准确 CID。
+
+`exec --log APP`／`open --log CONTENT` 要求历史开启，默认不开日志。
+宿主将原始 stdout／stderr 分流至终端及状态目录
+`logs/<完整 Execution ID>/stdout.log`、`stderr.log`；stdin 继续继承，永不记录。
+不开日志时保留 stdio inherit；开启时 stdout／stderr 是 pipe，App 的 isTTY、
+颜色和交互行为可能不同，不提供 PTY 或沙箱。
+流式写入遵守背压，退出前排空输出；日志创建／写入／关闭失败明确报错且执行非零，
+记录标记为 `incomplete`，成功记录为 `complete`，不承诺两个流的全局先后顺序。
+show 展示现存日志的路径而不直接输出日志内容；记录日志的 JSON show 增加
+`log` 状态和 `logs: { stdout, stderr }`，手工删除的文件对应路径为 `null`。
+旧记录及未开启日志的记录兼容现有 JSON；list JSON 结构不变。
+日志可能包含秘密且无自动容量限制，仅在需要调试时开启。
+日志与历史共同管理：删除历史时删除对应两个日志文件及空目录；手工删掉日志
+不影响历史。日志清理失败保留历史供重试，不递归删除未知文件、不执行 Store GC。
 
 删除必须显式 ID 或筛选，两种方式互斥，无隐含全选，不支持分页选项；
 删除全部匹配已结束记录，不限 20。确认之前固定目标集合；TTY 展示数量和保留

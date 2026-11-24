@@ -55,7 +55,43 @@ function nodeTemplate(): Map<string, string | Uint8Array> {
         include: ["src/**/*.ts"],
       }),
     ],
-    ["ipab.json", json({ entry: "src/main.ts", resources: [], app: {} })],
+    [
+      "ipab.yaml.liquid",
+      `# IPAB App build configuration (data only; no hooks or JS configuration).
+entry: src/main.ts
+
+# Explicit non-hidden files under assets/; no directories, globs or symlinks.
+resources: []
+# To add an icon, replace [] above with the following list and create the file:
+#   - assets/icon.png
+
+# Explicit JSON complete Bundle definitions under schemas/, NOT bare JSON Schema.
+# No declaration means no supported types for open; direct exec still works.
+supportedSchemas: []
+# To support your own type, replace [] above with this list and create the definition:
+#   - schemas/note.json
+
+# Metadata overrides package.json; remove an override to inherit its package value.
+app:
+  name: {{ name | json }}
+  version: "0.0.0" # Exact SemVer, not a range.
+  description: {{ description | json }}
+  # author:
+  #   name: Your name
+  #   email: you@example.com
+  # license: MIT # Declaration only; does not restrict execution or copying.
+  # icon: resources/assets/icon.png # Also select assets/icon.png in resources.
+  # i18n:
+  #   zh-CN:
+  #     name: 你好应用
+  #     description: 应用描述
+  #   en:
+  #     name: Hello App
+  #     description: An example description
+# Translations override name/description separately; missing fields fall back.
+# entry and supportedSchemas inside app are generated; do not override them.
+`,
+    ],
     ["src/main.ts", 'console.log("Hello from your IPAB App.");\n'],
     [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n"],
   ]);

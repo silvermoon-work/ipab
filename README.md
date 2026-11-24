@@ -249,7 +249,8 @@ IPAB 不加载 Vite／esbuild 配置、不安装工具，不通过是否存在�
 IPAB 使用项目声明的准确 npm/pnpm `packageManager`；未声明使用 npm。
 不支持的声明、版本不匹配或工具不存在明确失败，不自动安装或切换版本。
 通过 npm 执行时使用 `--ignore-scripts`，通过 pnpm 执行时关闭
-`enable-pre-post-scripts`；只执行指定脚本，不隐式运行其前后置生命周期 hooks。
+`enable-pre-post-scripts` 和 `manage-package-manager-versions`；
+只执行指定脚本，不隐式运行其前后置生命周期 hooks，也不让 pnpm 自动下载版本。
 直接调用无法定位 pnpm CLI 时，可用已配置的 `pnpm exec ipab build`。
 钩子 stdout/stderr 均作为诊断进入宿主 stderr，不污染 `--json` 输出。
 
@@ -267,11 +268,16 @@ IPAB_BUILD_DIR/
 文件或目录，目录按安全文件树递归收集。Node 程序原始字节保留为
 `resources/app.cjs`，资源进入 `resources/<选取路径>`。不重复编译钩子程序；
 esbuild 只静态分析其自包含性，拒绝动态加载、外部 npm 依赖和额外本地模块。
+入口必须是有效 UTF-8 的 Node CommonJS 源码；IPAB 仅解析、不执行它，
+不会将 ESM `import`／`export` 转换后再打包原文件。允许 CommonJS shebang；
+无论配置的入口位于哪个子目录，Bundle 中唯一程序路径仍是 `resources/app.cjs`。
 入口仍最多 8 MiB，资源单文件 16 MiB，路径总量最多 4096，并受 Bundle 总预算约束。
 类型检查数组必须非空，每个配置执行项目本地严格 tsc，所选 TS／TSX 源入口必须实际参与检查；
 后端和前端配置应分别声明 Node 与 DOM 环境，并包含共享代码及适用测试。
 
 钩子失败、取消、缺产物或产物不合法均停止，不打包旧文件；已有 CAR 保持不变。
+stdout／stderr 流失败或诊断接收器抛错同样失败，先停止自有钩子进程树，
+等待进程关闭后才清理本次目录；跨数据块的 UTF-8 诊断字符不被拆坏。
 `IPAB_BUILD_CHAIN` 用于同项目递归诊断，钩子不得清除标记或再次调用自身
 `ipab build`。
 取消仅终止本次钩子进程树；不清空源码、旧 dist 或共享 Store。
@@ -296,7 +302,8 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
 
 `build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]`
 默认使用当前项目，
-读取数据配置（不加载 JS 配置、npm lifecycle hooks 或用户插件）：
+默认 Node 策略读取以下数据配置，不加载 JS 配置、npm lifecycle hooks 或用户插件；
+显式 `ipab-prebuild` 策略则使用上面的可信项目编译契约：
 
 ```json
 {
@@ -344,8 +351,8 @@ App 名称不为空白，版本使用准确 SemVer 2.0（支持 prerelease/build
 email 使用简单 `name@domain.tld` 检查；可选 license 是非空白声明文本，
 **不控制读取、复制或执行，不提供 DRM**。
 icon 是 Bundle 根相对的 `resources/` 普通文件路径，loader 验证安全路径和存在性，
-不承诺 MIME／图像解码。App build 的 icon 必须引用已选中的
-`resources/assets/` 文件。
+不承诺 MIME／图像解码。默认 Node build 的 icon 必须引用已选中的
+`resources/assets/` 文件；`ipab-prebuild` 可引用所选产物文件或目录中的资源文件。
 
 可选 i18n 是由 Node Intl 接受的 BCP47 locale tag 到 `{name?, description?}`
 的映射，拒绝无效或规范化重复的语言 tag、未知字段与非字符串翻译；

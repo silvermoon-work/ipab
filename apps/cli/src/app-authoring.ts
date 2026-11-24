@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { compileFunction } from "node:vm";
 import { stringify } from "yaml";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import { readBytes } from "@ipab/bundle-builder";
@@ -107,25 +109,55 @@ async function typecheck(
       { cwd: root, signal: options.signal, stdio: ["ignore", "pipe", "pipe"] },
     );
     let diagnostic = "";
-    const collect = (chunk: Buffer) => {
-      diagnostic = (diagnostic + chunk.toString()).slice(-1024 * 1024);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.once("error", reject);
-    child.once("close", (code) => {
+    let included = false;
+    const selected = resolve(root, entry);
+    const checkLine = (line: string) => {
+      const path = resolve(root, line);
       if (
-        code === 0 &&
-        diagnostic
-          .split(/\r?\n/)
-          .some((path) =>
-            process.platform === "win32"
-              ? resolve(path).toLowerCase() ===
-                resolve(root, entry).toLowerCase()
-              : resolve(path) === resolve(root, entry),
-          )
+        process.platform === "win32"
+          ? path.toLowerCase() === selected.toLowerCase()
+          : path === selected
       )
-        accept();
+        included = true;
+    };
+    let failure: Error | undefined;
+    const fail = (error: unknown) => {
+      failure ??=
+        error instanceof Error
+          ? error
+          : new Error("App typecheck stream failed.", { cause: error });
+      child.kill();
+    };
+    for (const stream of [child.stdout, child.stderr]) {
+      const decoder = new StringDecoder("utf8");
+      let pending = "";
+      const collect = (text: string) => {
+        diagnostic = (diagnostic + text).slice(-1024 * 1024);
+        const lines = (pending + text).split(/\r?\n/);
+        pending = lines.pop()!;
+        for (const line of lines) checkLine(line);
+      };
+      stream.on("data", (chunk: Buffer) => {
+        collect(decoder.write(chunk));
+      });
+      stream.once("end", () => {
+        collect(decoder.end());
+        checkLine(pending);
+      });
+      stream.once("error", fail);
+    }
+    child.once("error", fail);
+    child.once("close", (code) => {
+      if (failure) reject(failure);
+      else if (options.signal?.aborted)
+        reject(
+          options.signal.reason instanceof Error
+            ? options.signal.reason
+            : new Error("App typecheck cancelled.", {
+                cause: options.signal.reason as unknown,
+              }),
+        );
+      else if (code === 0 && included) accept();
       else
         reject(
           new HostError(
@@ -248,7 +280,9 @@ export async function buildApp(
       )
     )
       throw new HostError(
-        "App icon must reference a selected resources/assets/ file.",
+        prebuild
+          ? "App icon must reference a selected prebuilt resource file."
+          : "App icon must reference a selected resources/assets/ file.",
       );
   }
   const outputDirectory = resolve(root, options.outputDir ?? "dist");
@@ -302,6 +336,26 @@ export async function buildApp(
     const prebuiltSource = prebuild
       ? await readBytes(inputTree, entry, 8 * 1024 * 1024, options)
       : undefined;
+    if (prebuiltSource) {
+      try {
+        const source = new TextDecoder("utf-8", { fatal: true }).decode(
+          prebuiltSource,
+        );
+        compileFunction(source.replace(/^#![^\r\n]*/, ""), [
+          "exports",
+          "require",
+          "module",
+          "__filename",
+          "__dirname",
+        ]);
+      } catch (cause) {
+        const error = new HostError(
+          "Prebuilt App entry must be valid Node CommonJS; it is packaged without transformation.",
+        );
+        error.cause = cause;
+        throw error;
+      }
+    }
     await mkdir(join(bundleStage, "resources"), { recursive: true });
     const program = await build({
       absWorkingDir: input,

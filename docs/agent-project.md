@@ -59,11 +59,13 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   本次输出与活跃默认输出目录不能成为输入，忽略定义/入口须失败；
   只清理自身临时文件，产物替换须 --replace，不覆盖源码或非普通文件。
 - App-first 根 init NAME [DIR] 创建普通 private TypeScript npm package；
-  根 build [DIR] 严格执行项目本地 tsc、esbuild self-contained Node CJS、
+  根 build [DIR] 默认严格执行项目本地 tsc、esbuild self-contained Node CJS、
   新建自有 staging、再调用内部通用 Bundle Builder 输出默认 dist/app.car。
   ipab.json 仅声明 src/ 下的 .ts 入口、明确 assets/ 非隐藏资源文件和 app 元数据覆盖；
-  入口必须被 tsconfig 实际检查。只允许 Node builtin 外置，不安装依赖或执行 npm
-  hooks／JS 配置／App，不 pin。CLI 默认将构建 CAR 导入当前 Store，
+  入口必须被 tsconfig 实际检查。只允许 Node
+  builtin 外置；默认模式不安装依赖或执行 npm
+  hooks／JS 配置／App，显式 ipab-prebuild 的可信项目执行规则见下，不 pin。
+  CLI 默认将构建 CAR 导入当前 Store，
   --no-import 关闭导入；CLI private，生成项目不得声明虚构 registry
   @ipab/cli 版本；使用本地链接命令。输出限项目 dist/ 内或项目外，不穿过符号链接。
   builtin:node-app.v1 离线解析完整 appSchema；register
@@ -81,8 +83,14 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   v1 只列 source/target/render 文件映射，不运行脚本或安装模板依赖。
   默认 Node 编译不变；显式 `build.strategy=ipab-prebuild` 执行可信项目代码，
   先按 typecheck 配置运行严格本地 tsc，再调用准确 npm/pnpm 的指定 script，
-  不运行额外 lifecycle hooks。钩子只写本次 `IPAB_BUILD_DIR`，不得清除
+  只调用 scripts.ipab-prebuild，不回调 scripts.build，也不运行额外 lifecycle
+  hooks
+  或让 pnpm 自动下载／切换版本。scripts.build 保持 ipab build。
+  钩子只写本次 `IPAB_BUILD_DIR`，不得清除
   `IPAB_BUILD_CHAIN` 后递归构建；IPAB 从新产物组装并保留原程序字节。
+  入口必须为有效 UTF-8 Node CJS，只解析不执行，不将 ESM 原文冒充 CJS；
+  Bundle 仍只有 resources/app.cjs 一个 Node 运行入口，资源从明确选中的产物路径收集。
+  流错误、诊断抛错或取消须停止本次钩子进程树并等待关闭，失败不替换旧 CAR。
   Web 模板依赖本地 private 框架的 file 引用，Vite 只在项目构建期执行。
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
   不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。

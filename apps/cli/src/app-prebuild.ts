@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { StringDecoder } from "node:string_decoder";
 import { HostError, object } from "./errors.js";
 import { nodeError, type AuthoringOptions } from "./authoring.js";
 import { relativePath } from "./space.js";
@@ -52,7 +53,14 @@ export async function buildChain(root: string): Promise<string[]> {
   const identity = await realpath(root);
   const key = process.platform === "win32" ? identity.toLowerCase() : identity;
   const inherited = process.env.IPAB_BUILD_CHAIN;
-  const chain: unknown = inherited ? JSON.parse(inherited) : [];
+  let chain: unknown;
+  try {
+    chain = inherited ? JSON.parse(inherited) : [];
+  } catch (cause) {
+    const error = new HostError("Invalid IPAB_BUILD_CHAIN.");
+    error.cause = cause;
+    throw error;
+  }
   if (!Array.isArray(chain) || chain.some((item) => typeof item !== "string"))
     throw new HostError("Invalid IPAB_BUILD_CHAIN.");
   if (chain.includes(key))
@@ -136,7 +144,12 @@ export async function runPrebuild(
   const args =
     manager.name === "npm"
       ? ["run", "--ignore-scripts", "ipab-prebuild"]
-      : ["--config.enable-pre-post-scripts=false", "run", "ipab-prebuild"];
+      : [
+          "--config.manage-package-manager-versions=false",
+          "--config.enable-pre-post-scripts=false",
+          "run",
+          "ipab-prebuild",
+        ];
   options.signal?.throwIfAborted();
   await new Promise<void>((accept, reject) => {
     const child = spawn(
@@ -154,10 +167,7 @@ export async function runPrebuild(
         detached: process.platform !== "win32",
       },
     );
-    const diagnostic = (bytes: Buffer) => {
-      if (options.diagnostic) options.diagnostic(bytes.toString().trimEnd());
-      else process.stderr.write(bytes);
-    };
+    let failure: Error | undefined;
     let stopping: Promise<void> | undefined;
     const abort = () => {
       if (!child.pid || stopping) return;
@@ -185,17 +195,47 @@ export async function runPrebuild(
           }
         }
       })();
-      void stopping.catch(reject);
+      void stopping.catch((error: unknown) => {
+        failure =
+          error instanceof Error
+            ? error
+            : new Error("Could not stop ipab-prebuild.", { cause: error });
+      });
+    };
+    const fail = (error: unknown) => {
+      failure ??=
+        error instanceof Error
+          ? error
+          : new Error("ipab-prebuild diagnostic failed.", { cause: error });
+      abort();
+    };
+    const diagnostic = (text: string) => {
+      if (!text || failure) return;
+      try {
+        if (options.diagnostic) options.diagnostic(text.trimEnd());
+        else process.stderr.write(text);
+      } catch (error) {
+        fail(error);
+      }
     };
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
-    child.stdout.on("data", diagnostic);
-    child.stderr.on("data", diagnostic);
-    child.once("error", reject);
+    for (const stream of [child.stdout, child.stderr]) {
+      const decoder = new StringDecoder("utf8");
+      stream.on("data", (bytes: Buffer) => {
+        diagnostic(decoder.write(bytes));
+      });
+      stream.once("end", () => {
+        diagnostic(decoder.end());
+      });
+      stream.once("error", fail);
+    }
+    child.once("error", fail);
     child.once("close", (code, signal) => {
       options.signal?.removeEventListener("abort", abort);
       void (async () => {
         await stopping;
+        if (failure) throw failure;
         options.signal?.throwIfAborted();
         if (code === 0) accept();
         else

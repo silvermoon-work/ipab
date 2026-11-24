@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import * as filesystem from "node:fs/promises";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
+import * as processes from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
 import { CarBlockIterator } from "@ipld/car/iterator";
@@ -20,6 +21,11 @@ const require = createRequire(import.meta.url);
 vi.mock("node:fs/promises", async () => {
   const original = await vi.importActual<typeof filesystem>("node:fs/promises");
   return { ...original, lstat: vi.fn(original.lstat) };
+});
+vi.mock("node:child_process", async () => {
+  const original =
+    await vi.importActual<typeof processes>("node:child_process");
+  return { ...original, spawn: vi.fn(original.spawn) };
 });
 const result = (out: string) => object(JSON.parse(out) as unknown, "result");
 async function projectTools(root: string) {
@@ -59,6 +65,7 @@ describe("App-first authoring", () => {
   });
   afterEach(async () => {
     vi.mocked(filesystem.lstat).mockReset();
+    vi.mocked(processes.spawn).mockReset();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await work.cleanup();
@@ -590,7 +597,9 @@ describe("App-first authoring", () => {
     vi.stubEnv("IPAB_BUILD_CHAIN", '["parent",1]');
     await expect(buildChain(project)).rejects.toThrow("Invalid");
     vi.stubEnv("IPAB_BUILD_CHAIN", "{");
-    await expect(buildChain(project)).rejects.toThrow();
+    await expect(buildChain(project)).rejects.toThrow(
+      "Invalid IPAB_BUILD_CHAIN",
+    );
   });
   it("builds the real Web App template with Vite, preserving front-end assets in one Node App CAR", async () => {
     await initApp("web-demo", project, { template: "web-app" });
@@ -731,6 +740,8 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       "require(process.argv[2]);",
       'require("./web/other.cjs");',
       "export const invalid = ;",
+      "export const valid = 1;",
+      'import { basename } from "node:path"; console.log(basename("app"));',
     ]) {
       await writeHook(source);
       await expect(buildApp(project, { replace: true })).rejects.toThrow();
@@ -743,10 +754,201 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
     expect(await readFile(carPath)).toEqual(original);
     await writeFile(hook, 'console.log("No output");');
     await expect(buildApp(project, { replace: true })).rejects.toThrow();
+    expect(await readFile(carPath)).toEqual(original);
+    await writeHook('console.log("fresh");');
+    await writeFile(
+      hook,
+      `${await readFile(hook, "utf8")}\nawait writeFile(join(output, "app.cjs"), new Uint8Array([0xff]));`,
+    );
+    await expect(buildApp(project, { replace: true })).rejects.toThrow(
+      "valid Node CommonJS",
+    );
+    expect(await readFile(carPath)).toEqual(original);
     expect(
       (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
     ).toEqual([]);
   }, 120_000);
+  it("strictly checks both backend and browser entries before running project compilation", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const serverConfigPath = join(project, "tsconfig.json");
+    const serverConfig = object(
+      JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
+      "tsconfig",
+    );
+    await writeFile(
+      serverConfigPath,
+      JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
+    );
+    await writeFile(join(project, "src", "other.ts"), "export {};\n");
+    await writeFile(
+      join(project, "src", "browser.ts"),
+      "document.body.textContent = 'browser';\nconst unchecked = (value) => value;\n",
+    );
+    const browserConfig = {
+      compilerOptions: {
+        target: "ES2022",
+        lib: ["ES2022", "DOM"],
+        types: [],
+        strict: false,
+        noCheck: true,
+      },
+      files: ["src/browser.ts"],
+    };
+    await writeFile(
+      join(project, "tsconfig.browser.json"),
+      JSON.stringify(browserConfig),
+    );
+    await writeFile(
+      join(project, "ipab.json"),
+      JSON.stringify({
+        entry: "server/app.cjs",
+        resources: ["web"],
+        build: {
+          strategy: "ipab-prebuild",
+          typecheck: [
+            { config: "tsconfig.json", entry: "src/main.ts" },
+            { config: "tsconfig.browser.json", entry: "src/browser.ts" },
+          ],
+        },
+      }),
+    );
+    const pkgPath = join(project, "package.json");
+    const pkg = object(
+      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+      "package",
+    );
+    await writeFile(
+      pkgPath,
+      JSON.stringify({
+        ...pkg,
+        scripts: {
+          build: "node forbidden-build.cjs",
+          "ipab-prebuild": "node compile.cjs",
+        },
+      }),
+    );
+    await writeFile(
+      join(project, "compile.cjs"),
+      `
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+writeFileSync("hook-ran", "yes");
+const out = process.env.IPAB_BUILD_DIR;
+mkdirSync(join(out, "server"));
+mkdirSync(join(out, "web"));
+writeFileSync(join(out, "server/app.cjs"), '#!/usr/bin/env node\\nconsole.log("backend");');
+writeFileSync(join(out, "web/index.html"), "browser output");
+`,
+    );
+    await expect(buildApp(project)).rejects.toThrow("implicitly has an 'any'");
+    await expect(readFile(join(project, "hook-ran"))).rejects.toThrow();
+    await writeFile(
+      join(project, "src", "browser.ts"),
+      "document.body.textContent = 'browser';\n",
+    );
+    await writeFile(
+      join(project, "tsconfig.browser.json"),
+      JSON.stringify({ ...browserConfig, files: ["src/other.ts"] }),
+    );
+    await expect(buildApp(project)).rejects.toThrow("not included");
+    await expect(readFile(join(project, "hook-ran"))).rejects.toThrow();
+    await writeFile(
+      join(project, "tsconfig.browser.json"),
+      JSON.stringify(browserConfig),
+    );
+    await buildApp(project);
+    const bundle = await loadCar(join(project, "dist", "app.car"));
+    expect(
+      await new Response(await bundle.readFile("resources/app.cjs")).text(),
+    ).toBe('#!/usr/bin/env node\nconsole.log("backend");');
+    expect(
+      await new Response(
+        await bundle.readFile("resources/web/index.html"),
+      ).text(),
+    ).toBe("browser output");
+    await expect(bundle.readFile("resources/server/app.cjs")).rejects.toThrow();
+  }, 60_000);
+  it("preserves stream failures and diagnostic failures while stopping the owned hook", async () => {
+    await mkdir(project);
+    const output = join(project, "output");
+    await mkdir(output);
+    const pkg = { scripts: { "ipab-prebuild": "node wait.cjs" } };
+    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
+    await writeFile(
+      join(project, "wait.cjs"),
+      'console.log("HOOK_WAITING"); setInterval(() => {}, 1000);',
+    );
+    const failure = new Error("Diagnostic sink failed.");
+    await expect(
+      runPrebuild(project, output, pkg, [], {
+        diagnostic(text) {
+          if (text.includes("HOOK_WAITING")) throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    const original =
+      await vi.importActual<typeof processes>("node:child_process");
+    const streamFailure = new Error("Hook stdout failed.");
+    let owned: ReturnType<typeof processes.spawn> | undefined;
+    vi.mocked(processes.spawn).mockImplementation((...args) => {
+      const child = original.spawn(...args);
+      owned = child;
+      return child;
+    });
+    await expect(
+      runPrebuild(project, output, pkg, [], {
+        diagnostic(text) {
+          if (text.includes("HOOK_WAITING"))
+            owned!.stdout!.emit("error", streamFailure);
+        },
+      }),
+    ).rejects.toBe(streamFailure);
+    expect(owned!.exitCode !== null || owned!.signalCode !== null).toBe(true);
+  }, 30_000);
+  it("reports compiler stream errors instead of accepting truncated validation output", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const original =
+      await vi.importActual<typeof processes>("node:child_process");
+    const failure = new Error("Compiler stdout failed.");
+    vi.mocked(processes.spawn).mockImplementation((...args) => {
+      const child = original.spawn(...args);
+      child.stdout!.once("data", () => {
+        child.stdout!.emit("error", failure);
+      });
+      return child;
+    });
+    await expect(buildApp(project)).rejects.toBe(failure);
+    expect(
+      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
+    ).toEqual([]);
+  }, 30_000);
+  it("decodes hook diagnostics across UTF-8 stream chunks", async () => {
+    await mkdir(project);
+    const output = join(project, "output");
+    await mkdir(output);
+    const pkg = { scripts: { "ipab-prebuild": "node print.cjs" } };
+    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
+    await writeFile(
+      join(project, "print.cjs"),
+      `
+process.stdout.write(Buffer.from([0xe2, 0x82]));
+setTimeout(() => process.stdout.write(Buffer.from([0xac])), 50);
+process.stderr.write(Buffer.from([0xe4, 0xb8]));
+setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
+`,
+    );
+    let text = "";
+    await runPrebuild(project, output, pkg, [], {
+      diagnostic(chunk) {
+        text += chunk;
+      },
+    });
+    expect(text).toContain("€");
+    expect(text).toContain("中");
+    expect(text).not.toContain("\ufffd");
+  }, 30_000);
   it("rejects missing hooks and unsupported package managers, and cancels only the spawned hook tree", async () => {
     await mkdir(project);
     const output = join(project, "output");

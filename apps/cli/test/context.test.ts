@@ -106,7 +106,7 @@ describe("bounded IPC streams on real writable Store", () => {
     });
   }
 
-  it("resolves ready named pins through IPC without changing Store retention or legacy aliases", async () => {
+  it("resolves ready named pins through IPC without changing Store retention", async () => {
     const cid = appSchemaCid.toString();
     state.savePin({
       name: "check",
@@ -117,10 +117,6 @@ describe("bounded IPC streams on real writable Store", () => {
     });
     expect(await client.context.resolvePin("check")).toBe(cid);
     expect(await client.context.resolvePin("absent")).toBeUndefined();
-    state.db
-      .prepare("INSERT INTO aliases(name,cid) VALUES (?,?)")
-      .run("old", cid);
-    expect(await client.context.resolvePin("old")).toBeUndefined();
     state.savePin({
       name: "pending",
       cid,

@@ -647,6 +647,25 @@ describe("native mobile navigation pane", () => {
 });
 
 describe("invalid input and spec replacement", () => {
+  it("preserves valid live checkpoint selection but resets a deleted checkpoint", () => {
+    const spec = orderedSpec();
+    act(() => {
+      root.render(<CheckBundleViewer spec={spec} preserveSelection />);
+    });
+    click("完成");
+    const next = structuredClone(spec);
+    next.checkpoints[2]!.instructions = "Live updated instruction";
+    act(() => {
+      root.render(<CheckBundleViewer spec={next} preserveSelection />);
+    });
+    expect(heading().textContent).toBe("完成");
+    expect(details().textContent).toContain("Live updated instruction");
+    next.checkpoints.pop();
+    act(() => {
+      root.render(<CheckBundleViewer spec={next} preserveSelection />);
+    });
+    expect(heading().textContent).toBe("任务总览");
+  });
   it("rejects duplicate IDs without rendering normal navigation", () => {
     const spec = orderedSpec();
     spec.checkpoints[1]!.id = spec.checkpoints[0]!.id;

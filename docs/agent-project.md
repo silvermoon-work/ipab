@@ -27,6 +27,16 @@ Check 类型入口 check.yaml，instructions 为正文或显式 {path} Markdown 
 其他文档保持内联。Node prepareData 完成参数 Schema／唯一性检查与有界资源加载，
 SSR／hydration 共用展开数据；浏览器使用构建期生成的静态 AJV 形状校验器，
 不启用 unsafe-eval。examples/check-spec 是显式转换示例，不自动迁移旧文档。
+Bundle Viewer 新增显式 folder 与 contentCid 互斥本地输入；
+模板／Check App 接受 --folder PATH，页面约每秒请求受限 revision/chunk 方法，
+有界重读并复核 .bundle.yaml／entry／被引用资源，不导入 Store、不全目录扫描。
+更新复用 React，错误隐藏旧视图并自动恢复；Check App 保留有效 checkpoint ID，
+删除 ID 回总览。CID 模式一次加载不变；关闭停止连接／计时／读取。
+Viewer 单参数 source 按现有目录／具名 pin／CID 顺序解析，--folder 保留消歧。
+App context.resolvePin 为有界只读 IPC 查询，复用 State 用户／builtin ready
+pins；
+不存在返回 undefined，非 ready／坏状态抛错，不使用 legacy aliases、不改 argv，
+不 fetch／pin／retain。源名称只解析一次；只有目录模式更新。
 根 build 只生成 App/source
 CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
@@ -58,13 +68,20 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 - 迁入包保留原 MIT LICENSE、CID／协议与存储协调标识。private workspace
   使用统一的开发最低环境，旧发布包的消费者最低环境不变。
 - Store 的 node:test 测试已改用 Vitest 的 test/onTestFinished/afterAll 和
-  fake timers，保留原业务断言；真实 Kubo 测试使用独立离线仓库，
-  `KUBO_REAL_TEST=1` 启用，绝不对共享 daemon 执行 GC。
+  fake timers，保留本地存储与 Gateway 业务断言。已移除 Kubo RPC 后端及其
+  专用测试；不访问共享 daemon 管理接口。
 - 新成员脚本按完整标准使用 `node scripts/<same-name>.mjs`，共享逻辑在
   根 `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
 - 运行时／CLI 边界、准确 App Schema 和保留策略见 docs/design-overview.md
-  与 docs/reference.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon
-  GC。
+  与 docs/reference.md。日常运行只删除自身创建的运行文件，不清空共享 Store
+  或请求 daemon GC。显式 store gc 仅对当前协调式本地 Store 回收未受保护
+  block，保留全部参与者引用、pin、未完成操作和导入；不解除 pin、不自动
+  GC。store usage 按 block 文件字节统计缓存及递归 pin 的 CIDv1 去重并集，
+  不含元数据／暂存文件／文件系统开销；两项均拒绝源适配器。
+  Store 始终本地，仅可选只读 HTTP Gateway；CLI store.gateway、
+  --store-gateway、IPAB_STORE_GATEWAY 覆盖上游但不改变 dataDir／保留。
+  Store RPC／backend:kubo 已移除，旧配置和旧保留记录不自动迁移或解除；
+  仅 config reset store.rpc 保留移除旧配置的显式入口。
 - 当前 Bundle 协议见 packages/bundle/README.md：.bundle.yaml 本身是完整类型定义，
   包含必填 name、缺省为空的 description，以及 entry 的 path/schema/contentType/
   defaultValue；默认数据须符合入口 Schema，固定路径不得碰撞控制文件。
@@ -170,7 +187,8 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   无 include/render/layout/file IO、自定义 JS filters、hooks 或 install。
   旧 web-app 与 ipab-template.json 仅临时兼容，不创建 Web Template Bundle；
   同时有 .bundle.yaml 必须走新类型校验，不能降级到旧映射。
-- 用户 Alias 由具名 pin 替代；旧 aliases 表保留但不作为 pin 解析或自动迁移。
+- 用户 Alias 由具名 pin 替代；打开状态库时删除旧 aliases 表，
+  不兼容、解析、展示或迁移旧数据，pin list JSON 仅返回 items/pending。
   pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
   原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，
   不触发 Store 操作，不改 register/历史 CID。执行/历史恢复必须跳过 named pin

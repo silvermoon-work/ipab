@@ -9,8 +9,7 @@ import {
   headerLength,
   blockLength,
 } from "@ipld/car/buffer-writer";
-import { CID } from "multiformats/cid";
-import { sha256 } from "multiformats/hashes/sha2";
+import type { CID } from "multiformats/cid";
 import { encodeSchema, openBundle, openSchema, parseData } from "@ipab/bundle";
 import { encodeSchemaCar } from "@ipab/bundle-builder";
 import { IpfsStore } from "@ipab/ipfs-store";
@@ -104,7 +103,7 @@ describe("bundle development CLI", () => {
   it("builds a one-block type CAR without an actual entry or a reachable Store", async () => {
     const response = await cli(work.stateDir, [
       "--json",
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "bundle",
       "build",
@@ -503,30 +502,25 @@ describe("bundle development CLI", () => {
       await writeFile(join(source, "data.json"), '{"title":"Valid"}');
       const blocks = new Map<string, Uint8Array>();
       const calls: string[] = [];
-      const pinValues: (string | null)[] = [];
-      const rpc = vi
-        .spyOn(globalThis, "fetch")
-        .mockImplementation(async (input, init) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          calls.push(url.pathname);
-          if (url.pathname !== "/api/v0/block/put")
-            throw new Error(`Unexpected RPC: ${url.pathname}`);
-          pinValues.push(url.searchParams.get("pin"));
-          const file = (await request.formData()).get("file");
-          if (!(file instanceof Blob)) throw new Error("Missing block bytes.");
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          const codecs: Record<string, number> = {
-            raw: 0x55,
-            "dag-pb": 0x70,
-            "dag-cbor": 0x71,
-          };
-          const code = codecs[url.searchParams.get("cid-codec") ?? ""];
-          if (code === undefined) throw new Error("Unexpected block codec.");
-          const cid = CID.createV1(code, await sha256.digest(bytes)).toString();
-          blocks.set(cid, bytes);
-          return new Response(JSON.stringify({ Key: cid }));
+      const originalPut = Object.getOwnPropertyDescriptor(
+        IpfsStore.prototype,
+        "put",
+      )!.value as IpfsStore["put"];
+      const publications = vi
+        .spyOn(IpfsStore.prototype, "put")
+        .mockImplementation(async function (
+          this: IpfsStore,
+          cid,
+          bytes,
+          options,
+        ) {
+          calls.push(cid.toString());
+          blocks.set(cid.toString(), Uint8Array.from(bytes));
+          await originalPut.call(this, cid, bytes, options);
         });
+      const upstream = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValue(new Error("upstream offline"));
       const args = [
         "--json",
         "bundle",
@@ -535,7 +529,7 @@ describe("bundle development CLI", () => {
         ...(schemaOnly ? ["--schema-only"] : []),
       ];
       const built = await cli(work.stateDir, [
-        "--store-rpc",
+        "--store-gateway",
         "http://127.0.0.1:1",
         ...args,
       ]);
@@ -548,13 +542,11 @@ describe("bundle development CLI", () => {
       );
       const encoded = await car(path);
       expect(blocks).toEqual(encoded.blocks);
-      expect(calls).toEqual(
-        Array(encoded.blocks.size).fill("/api/v0/block/put"),
-      );
-      expect(pinValues).toEqual(Array(encoded.blocks.size).fill("false"));
-      rpc.mockRestore();
+      expect(calls).toHaveLength(encoded.blocks.size);
+      expect(upstream).not.toHaveBeenCalled();
+      publications.mockRestore();
       const skipped = await cli(work.stateDir, [
-        "--store-rpc",
+        "--store-gateway",
         "http://127.0.0.1:1",
         ...args,
         "--replace",
@@ -563,8 +555,11 @@ describe("bundle development CLI", () => {
       expect(skipped.code, skipped.err).toBe(0);
       expect(result(skipped.out).imported).toBe(false);
       const original = await readFile(path);
+      const failedPut = vi
+        .spyOn(IpfsStore.prototype, "put")
+        .mockRejectedValue(new Error("local publication failed"));
       const failed = await cli(work.stateDir, [
-        "--store-rpc",
+        "--store-gateway",
         "http://127.0.0.1:1",
         ...args,
         "--replace",
@@ -574,6 +569,7 @@ describe("bundle development CLI", () => {
       expect(failed.err).toContain("CAR remains at");
       expect(failed.err).toContain("bundle import");
       expect(await readFile(path)).toEqual(original);
+      failedPut.mockRestore();
       const imported = await cli(work.stateDir, ["bundle", "import", path]);
       expect(imported.code, imported.err).toBe(0);
       expect(work.store.pins()).toEqual([]);
@@ -647,7 +643,6 @@ describe("bundle development CLI", () => {
       });
       expect(await readFile(path)).toEqual(original);
       const state = new State(work.stateDir);
-      expect(state.aliases()).toEqual([]);
       expect(state.registrations()).toEqual([]);
       expect(state.runs()).toEqual([]);
       expect(state.holds()).toEqual([]);
@@ -710,19 +705,23 @@ describe("bundle development CLI", () => {
       importBundle(path, () => Promise.resolve(work.store)),
     ).rejects.toThrow("write failed");
   });
-  it("reports Store connection, write and close failures without emitting import success", async () => {
+  it("imports locally with an offline gateway and reports write and close failures without emitting success", async () => {
     await cli(work.stateDir, ["bundle", "build", source, "--schema-only"]);
     const path = join(source, "dist", "schema.car");
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("upstream offline"));
     const unreachable = await cli(work.stateDir, [
       "--json",
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "bundle",
       "import",
       path,
     ]);
-    expect(unreachable.code).toBe(1);
-    expect(unreachable.out).toBe("");
+    expect(unreachable.code).toBe(0);
+    expect(result(unreachable.out).kind).toBe("bundle-import");
+    expect(upstream).not.toHaveBeenCalled();
     const config = join(work.root, "store.json");
     await writeFile(config, JSON.stringify(work.store.configuration));
     vi.stubEnv("TASK_CONTENT_CONFIG", config);

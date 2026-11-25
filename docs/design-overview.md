@@ -5,7 +5,8 @@
 当前 `apps/cli` 实现已确认 CLI：exec/open、pin、register、config、
 history、上层 App init/build，以及 Node 子进程运行时。Content
 Bundle 与 Store 已迁入 private
-成员 `@ipab/bundle`、`@ipab/ipfs-store`，包含 Kubo pin 兼容修复，
+成员
+`@ipab/bundle`、`@ipab/ipfs-store`。当前 Store 统一为本地存储与只读 Gateway，
 不包含 npm 交付流程。CLI 的用户确认规范和后续
 Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临时 Open With。
 
@@ -91,9 +92,9 @@ recoverOwner/reconcile 读取持久引用，成功关闭后才移除登记／hol
 异常保留原 owner／后端与意图，显式重复 add/delete 恢复；活跃进程不能抢占。
 rename 在单一 SQLite 事务中只改 name；ready 才能解析或改名，临时执行／历史
 恢复跳过所有 named pin owner。多个名字、运行及历史互相独立，外部节点 pin
-的名字和保留仍由 Store 协调规则保护，不由 CLI 代理 Kubo 名称。
+的引用和保留仍由本地 Store 协调规则保护，不代理上游 pin。
 
-旧 aliases 表不删、不作为 pin 解析；list 单独展示未保留的迁移来源，
+旧 aliases 表在打开状态库时删除，不兼容、解析、展示或迁移旧数据；
 用户显式 add 验证并实际保留后才可使用原名。register 和历史保存准确 CID，
 不随 pin 改名重写。
 
@@ -333,8 +334,8 @@ outputCid 始终是整个输出 Space 的目录 root，不是单文件 CID、App
 ## 配置、历史与所有权
 
 命令、JSON 字段、优先级及隐私说明见 [命令参考](reference.md)。
-默认 `store.rpc=null` 使用 ipfs-store `/node` 公共配置及本地默认数据目录；
-显式 URL 选择库的 Kubo 配置，不新建 RPC 服务或直接调用 Kubo HTTP。
+默认 `store.gateway=null` 使用 ipfs-store `/node` 公共配置及本地默认数据目录；
+显式 URL 只覆盖 HTTP Gateway，不改变本地保留责任，不使用 Kubo RPC。
 默认状态为平台用户数据目录下的 ipab；SQLite 元数据使用 WAL 与短事务，
 与内容 blocks 分离。不忽略 malformed config，不保存 URL 凭据。
 
@@ -731,27 +732,24 @@ folder / zip / tar / CAR
 固定 CID 保证内容身份，不保证 blocks 永远可用。
 后续缺失或损坏必须报错，不能返回另一个版本作为替代。
 
-### 8.2 读写能力与 Kubo RPC
+### 8.2 本地读写能力与上游 Gateway
 
-后端参数应该表达内容后端配置，不能仅给一个 gateway。
+Store 始终本地，Gateway 仅是只读上游；保留与写入不依赖上游管理权限。
 
 | 用途                   | 能力要求                                  |
 | ---------------------- | ----------------------------------------- |
 | 打开已有 CID/CAR       | 按 CID 读取，并在使用期间保持来源可用     |
 | 根据本地文件生成新快照 | 写入 blocks，保护构建中及活跃内容不被回收 |
 
-可复用已有 local Store 或 Kubo daemon。
-Kubo 使用标准 HTTP RPC API `/api/v0`，不另造自定义 IPC 协议。
-gateway 可以是受控只读来源，但不能代替写入和保留机制。
-已有 CAR 可以直接提供 resolver，不强制重复导入 Kubo。
+局域网共享 Kubo 可以提供 HTTP Gateway；每个 IPAB 节点校验获取的
+block 后缓存到自己的 Store。已有 CAR 可以直接提供 resolver，
+或显式导入本地，不上传上游。
 
 写入不等于 pin：pin 或等效保留负责抵抗 GC。
 没有独立 GC 的会话级存储可以通过持有资源保证可用；
 会执行 GC 的后端必须有明确的保护机制。
-写入 Kubo 可能伴随该节点正常的网络活动，不能承诺绝不对外提供内容。
-
-Kubo RPC 具有节点管理权限，只由受信任宿主访问，
-不能交给 App 的浏览器代码或公开预览页面。
+IPAB 不读写 Kubo RPC、不改变上游 pin 或请求上游 GC。
+旧 RPC 配置与保留记录不自动迁移或解除，显式报错并保留元数据。
 
 ### 8.3 本地变化处理
 

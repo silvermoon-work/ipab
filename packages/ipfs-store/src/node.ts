@@ -34,6 +34,11 @@ export async function readContentConfiguration(
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error(`Invalid public content configuration: ${path}`);
   const record = value as Record<string, unknown>;
+  const overrideBackend: unknown = overrides.backend;
+  if (record.backend === "kubo" || overrideBackend === "kubo")
+    throw new Error(
+      "Kubo Store RPC is no longer supported. Replace backend:kubo with backend:local, dataDir and an HTTP gateway. Existing Kubo pins are not migrated or released.",
+    );
   const backend =
     record.backend ??
     (Object.keys(record).length === 0
@@ -58,10 +63,9 @@ export async function readContentConfiguration(
       );
     if (config.coordinationDir)
       config.coordinationDir = resolve(dirname(path), config.coordinationDir);
-    if (config.backend === "local")
-      config.dataDir = isAbsolute(config.dataDir)
-        ? resolve(config.dataDir)
-        : resolve(dirname(path), config.dataDir);
+    config.dataDir = isAbsolute(config.dataDir)
+      ? resolve(config.dataDir)
+      : resolve(dirname(path), config.dataDir);
     return config;
   } catch {
     throw new Error(

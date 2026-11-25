@@ -5,7 +5,7 @@ import type { StoreConfiguration } from "@ipab/ipfs-store";
 import { HostError, object, syntax } from "./errors.js";
 
 export type ConfigKey =
-  | "store.rpc"
+  | "store.gateway"
   | "history.enabled"
   | "history.limit"
   | "output.retention"
@@ -14,7 +14,7 @@ export type ConfigValue = string | boolean | number | null;
 export type Source = "flag" | "env" | "user" | "default";
 export interface GlobalOptions {
   stateDir?: string;
-  storeRpc?: string;
+  storeGateway?: string;
   json: boolean;
 }
 export interface ConfigItem {
@@ -23,14 +23,14 @@ export interface ConfigItem {
   source: Source;
 }
 export const defaults: Record<ConfigKey, ConfigValue> = {
-  "store.rpc": null,
+  "store.gateway": null,
   "history.enabled": true,
   "history.limit": 20,
   "output.retention": "history",
   "bundle.outputDir": "dist",
 };
 const environments: Record<ConfigKey, string> = {
-  "store.rpc": "IPAB_STORE_RPC",
+  "store.gateway": "IPAB_STORE_GATEWAY",
   "history.enabled": "IPAB_HISTORY_ENABLED",
   "history.limit": "IPAB_HISTORY_LIMIT",
   "output.retention": "IPAB_OUTPUT_RETENTION",
@@ -77,9 +77,9 @@ export function parseValue(
     }
     if (key === "history.limit" && /^[1-9]\d*$/.test(value))
       value = Number(value);
-    if (key === "store.rpc" && value === "default") return null;
+    if (key === "store.gateway" && value === "default") return null;
   }
-  if (key === "store.rpc" && value === null) return null;
+  if (key === "store.gateway" && value === null) return null;
   if (
     key === "bundle.outputDir" &&
     typeof value === "string" &&
@@ -87,7 +87,8 @@ export function parseValue(
     !value.includes("\0")
   )
     return value;
-  if (key === "store.rpc" && typeof value === "string") return publicUrl(value);
+  if (key === "store.gateway" && typeof value === "string")
+    return publicUrl(value);
   if (key === "history.enabled" && typeof value === "boolean") return value;
   if (
     key === "history.limit" &&
@@ -163,10 +164,14 @@ export function effectiveConfig(
   flags: GlobalOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): ConfigItem[] {
+  if (env.IPAB_STORE_RPC !== undefined)
+    syntax(
+      "IPAB_STORE_RPC is no longer supported. Remove it and use IPAB_STORE_GATEWAY with an HTTP gateway URL.",
+    );
   const result = (Object.keys(defaults) as ConfigKey[]).map(
     (key): ConfigItem => {
       const variable = env[environments[key]];
-      const flag = key === "store.rpc" ? flags.storeRpc : undefined;
+      const flag = key === "store.gateway" ? flags.storeGateway : undefined;
       // Invalid lower layers are not hidden by a higher-priority override.
       const environmental =
         variable === undefined ? undefined : parseValue(key, variable, true);
@@ -201,20 +206,16 @@ export function effectiveConfig(
 }
 
 export async function storeConfiguration(
-  rpc: ConfigValue,
+  gateway: ConfigValue,
 ): Promise<StoreConfiguration> {
-  const config =
-    rpc === null
-      ? await readContentConfiguration()
-      : { backend: "kubo" as const, apiUrl: publicUrl(String(rpc)) };
-  const urls =
-    config.backend === "kubo"
-      ? [config.apiUrl]
+  const config = await readContentConfiguration(
+    gateway === null ? {} : { gateway: publicUrl(String(gateway)) },
+  );
+  const urls = config.gateway
+    ? typeof config.gateway === "string"
+      ? [config.gateway]
       : config.gateway
-        ? typeof config.gateway === "string"
-          ? [config.gateway]
-          : config.gateway
-        : [];
+    : [];
   for (const url of urls) publicUrl(url);
   return config;
 }

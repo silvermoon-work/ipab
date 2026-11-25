@@ -6,6 +6,48 @@ callback renders the existing Check definition UI. Node loads the selected
 Bundle and Markdown resources before SSR; the browser hydrates the same data. It
 only displays definitions, never executes instructions or checks.
 
+## Local folder watch
+
+The single source argument resolves in order: existing local directory, host
+named pin, then CID. `--folder PATH` remains an explicit disambiguation option.
+A matching directory that is invalid or inaccessible, or a pin that is not
+ready, produces an error rather than falling back. Named pins resolve once to an
+immutable CID; only folders auto-update. "Alias" here means the existing named
+pin, not the preserved legacy aliases table. Named input requires a host
+providing `resolvePin`.
+
+After rebuilding and importing the viewer App once, supply a local Bundle folder
+instead of a content CID:
+
+```powershell
+node apps\cli\dist\main.js exec <viewer-app-cid> .\examples\check-spec
+```
+
+The folder must include `.bundle.yaml`, `check.yaml` and the referenced Markdown
+files. Relative folders resolve from the CLI's working directory. Add
+`--no-open` to open the reported URL manually. You do not need to build or
+import the content folder after editing it.
+
+While the page is connected, it checks for updates approximately once per
+second. Each reload reads only the manifest, entry and actually referenced
+Markdown files, checks their limits/type/semantics and rechecks the complete
+selected file snapshot before publishing. This supports ordinary writes and
+editor atomic replacements without relying on inode-based filesystem watching.
+It does not watch application source or require rebuilding the App.
+
+Changes update the existing page, preserving a selected Checkpoint if its ID
+still exists. Deleted IDs return to the overview. Invalid edits hide the old
+view and show an error; fixing the files restores the view automatically. The
+hidden old component retains selection, but is never displayed as current
+success. Closing all tabs stops the existing App lifecycle; folder polling does
+not keep a disconnected service alive.
+
+Folder mode is local development only, not a CID, pin or persistent Store
+snapshot. It rejects symbolic-link resources and never uploads, imports or
+modifies the folder. Use a trusted, stable local directory; path/race checks are
+best-effort, not an OS sandbox against malicious same-user file replacement. CID
+mode remains unchanged and immutable.
+
 From the repository root:
 
 ```powershell

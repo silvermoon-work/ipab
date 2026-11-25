@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import { importer } from "ipfs-unixfs-importer";
 import { fixedSize } from "ipfs-unixfs-importer/chunker";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
+import { encodeDagCbor } from "@silvermoon-work/ipfs-payload/dag-cbor";
 import { ContentBlocks } from "../src/dag.js";
 import { IpfsStore } from "../src/index.js";
+import { Retention } from "../src/retention.js";
 
 async function bytes(store: IpfsStore, cid: string, signal?: AbortSignal) {
   const node = await store.read(cid, signal ? { signal } : {});
@@ -19,6 +22,343 @@ async function bytes(store: IpfsStore, cid: string, signal?: AbortSignal) {
     parts.push(part);
   return Buffer.concat(parts);
 }
+
+test("usage counts mixed recursive pin closures once and GC collects only unprotected block bytes", async (t) => {
+  const directory = resolve(".cache", `usage-${randomUUID()}`);
+  const graph = new ContentBlocks();
+  let root!: CID;
+  for await (const entry of importer(
+    [{ path: "nested/file", content: Buffer.alloc(1001, 42) }],
+    graph,
+    {
+      cidVersion: 1,
+      rawLeaves: true,
+      wrapWithDirectory: true,
+      chunker: fixedSize({ chunkSize: 100 }),
+    },
+  ))
+    root = entry.cid;
+  const parentBytes = encodeDagCbor({ first: root, repeated: root });
+  const parent = CID.createV1(0x71, await sha256.digest(parentBytes));
+  await graph.put(parent, parentBytes);
+  const pinnedBytes = [...graph.blocks.values()].reduce(
+    (sum, block) => sum + block.byteLength,
+    0,
+  );
+  const orphan = Buffer.from("unprotected cache");
+  const orphanCid = CID.createV1(0x55, await sha256.digest(orphan));
+  const store = new IpfsStore({ dataDir: directory });
+  const reopened = new IpfsStore({ dataDir: directory });
+  const scope = reopened.scope();
+  t.onTestFinished(async () => {
+    await scope.close();
+    await reopened.close();
+    await store.close();
+    await graph.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  for (const [cid, block] of graph.blocks)
+    await store.put(CID.parse(cid), block);
+  await store.put(orphanCid, orphan);
+  await store.pin(parent);
+  await store.pin(root);
+  await store.pin(root.toV0());
+  await writeFile(join(directory, "blocks", ".pending-foreign"), "temporary");
+  await writeFile(join(directory, "blocks", "custom-note"), "custom");
+  assert.deepEqual(await store.usage(), {
+    cachedBytes: pinnedBytes + orphan.length,
+    pinnedBytes,
+  });
+  await store.close();
+  assert.deepEqual(await scope.gc(), {
+    removedBlocks: 1,
+    reclaimedBytes: orphan.length,
+  });
+  assert.deepEqual(await reopened.usage(), {
+    cachedBytes: pinnedBytes,
+    pinnedBytes,
+  });
+  await assert.rejects(
+    readFile(join(directory, "blocks", orphanCid.toString())),
+    { code: "ENOENT" },
+  );
+  assert.equal(
+    await readFile(join(directory, "blocks", ".pending-foreign"), "utf8"),
+    "temporary",
+  );
+  await reopened.prepare(parent);
+  await reopened.unpin(parent);
+  assert.deepEqual(await reopened.gc(), {
+    removedBlocks: 1,
+    reclaimedBytes: parentBytes.length,
+  });
+  await reopened.unpin(root);
+  const remaining = pinnedBytes - parentBytes.length;
+  assert.deepEqual(await reopened.gc(), {
+    removedBlocks: graph.blocks.size - 1,
+    reclaimedBytes: remaining,
+  });
+  assert.deepEqual(await reopened.usage(), { cachedBytes: 0, pinnedBytes: 0 });
+});
+
+test("GC protects owner references, unfinished pins and incomplete imports without treating staged parents as complete DAGs", async (t) => {
+  const directory = resolve(".cache", `gc-references-${randomUUID()}`);
+  const store = new IpfsStore({ dataDir: directory });
+  t.onTestFinished(async () => {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const ownerBytes = Buffer.from("owner");
+  const owner = CID.createV1(0x55, await sha256.digest(ownerBytes));
+  const childBytes = Buffer.from("late child");
+  const child = CID.createV1(0x55, await sha256.digest(childBytes));
+  const parentBytes = encodeDagCbor({ child });
+  const parent = CID.createV1(0x71, await sha256.digest(parentBytes));
+  await store.put(owner, ownerBytes);
+  store.registerOwner("other-participant", [owner.toString()]);
+  await store.stageBlock("import", parent, parentBytes);
+  assert.deepEqual(await store.gc(), { removedBlocks: 0, reclaimedBytes: 0 });
+  assert.deepEqual(await store.usage(), {
+    cachedBytes: ownerBytes.length + parentBytes.length,
+    pinnedBytes: 0,
+  });
+  await store.discardImport("import");
+  assert.deepEqual(await store.gc(), {
+    removedBlocks: 1,
+    reclaimedBytes: parentBytes.length,
+  });
+  await store.stageBlock("retry", parent, parentBytes);
+  await assert.rejects(store.retain("pending-owner", [parent.toString()]));
+  await assert.rejects(store.gc(), { code: "retention_unfinished" });
+  assert.deepEqual(
+    await readFile(join(directory, "blocks", owner.toString())),
+    ownerBytes,
+  );
+  await store.stageBlock("retry", child, childBytes);
+  await store.finishImport("retry", parent, "pending-owner");
+  await store.confirmRetained("pending-owner", [parent.toString()]);
+  assert.deepEqual(await store.gc(), { removedBlocks: 0, reclaimedBytes: 0 });
+  await store.recoverOwner("pending-owner", []);
+  await store.reconcile("pending-owner", []);
+  assert.deepEqual(await store.gc(), {
+    removedBlocks: 2,
+    reclaimedBytes: parentBytes.length + childBytes.length,
+  });
+  assert.deepEqual(await store.usage(), {
+    cachedBytes: ownerBytes.length,
+    pinnedBytes: ownerBytes.length,
+  });
+});
+
+test("maintenance verifies fresh local blocks and never fetches a missing protected DAG or deletes before marking succeeds", async (t) => {
+  const directory = resolve(".cache", `gc-invalid-${randomUUID()}`);
+  let fetches = 0;
+  const base = new IpfsStore({ dataDir: directory });
+  const store = base.withLocalSource({
+    block: {
+      get: () => {
+        fetches++;
+        return Promise.reject(new Error("unexpected fetch"));
+      },
+    },
+  });
+  t.onTestFinished(async () => {
+    await store.close();
+    await base.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const block = Buffer.from("protected");
+  const cid = CID.createV1(0x55, await sha256.digest(block));
+  const orphan = Buffer.from("orphan");
+  const orphanCid = CID.createV1(0x55, await sha256.digest(orphan));
+  await store.put(cid, block);
+  await store.put(orphanCid, orphan);
+  await store.pin(cid);
+  await store.block.get(cid.toString());
+  const path = join(directory, "blocks", cid.toString());
+  await writeFile(path, "corrupt");
+  for (const operation of [() => store.usage(), () => store.gc()])
+    await assert.rejects(operation(), { code: "retention_unfinished" });
+  await rm(path);
+  for (const operation of [() => store.usage(), () => store.gc()])
+    await assert.rejects(operation(), { code: "retention_unfinished" });
+  assert.equal(fetches, 0);
+  assert.deepEqual(
+    await readFile(join(directory, "blocks", orphanCid.toString())),
+    orphan,
+  );
+});
+
+test("GC serializes with another local participant's in-flight retain", async (t) => {
+  const directory = resolve(".cache", `gc-lock-${randomUUID()}`);
+  const block = Buffer.from("concurrent retain");
+  const cid = CID.createV1(0x55, await sha256.digest(block));
+  let started!: () => void;
+  const fetching = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: (bytes: Uint8Array) => void;
+  const source = new Promise<Uint8Array>((resolve) => {
+    finish = resolve;
+  });
+  const base = new IpfsStore({ dataDir: directory });
+  const writer = base.withLocalSource({
+    block: {
+      get: () => {
+        started();
+        return source;
+      },
+    },
+  });
+  const collector = new IpfsStore({ dataDir: directory });
+  t.onTestFinished(async () => {
+    finish(block);
+    await writer.close();
+    await collector.close();
+    await base.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const retaining = writer.retain("concurrent-owner", [cid.toString()]);
+  await fetching;
+  const collecting = collector.gc();
+  finish(block);
+  await retaining;
+  assert.deepEqual(await collecting, { removedBlocks: 0, reclaimedBytes: 0 });
+  await collector.prepare(cid);
+});
+
+test("local retention recovery preserves active owners and removes only abandoned imports before GC", async (t) => {
+  const directory = resolve(".cache", `local-recovery-${randomUUID()}`);
+  const store = new IpfsStore({ dataDir: directory });
+  t.onTestFinished(async () => {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const bytes = Buffer.from("owner block");
+  const cid = CID.createV1(0x55, await sha256.digest(bytes));
+  await store.put(cid, bytes);
+  await store.retain("owner", [cid.toString()]);
+  await store.retain("owner", [cid.toString()]);
+  await store.confirmRetained("owner", [cid.toString()]);
+  await store.confirmRetained("owner", [cid.toString()]);
+  await assert.rejects(store.unpin(cid), { code: "retention_unfinished" });
+  await store.stageBlock("owner/abandoned", cid, bytes);
+  await store.recoverOwner("owner", () => [], { isIdle: () => false });
+  assert.deepEqual(await store.gc(), { removedBlocks: 0, reclaimedBytes: 0 });
+  await store.recoverOwner("owner", () => [], { isIdle: () => true });
+  await store.reconcile("owner", () => []);
+  assert.deepEqual(await store.gc(), {
+    removedBlocks: 1,
+    reclaimedBytes: bytes.length,
+  });
+  await store.unpin(cid);
+  for (const owner of ["", "x".repeat(4097)])
+    assert.throws(() => {
+      store.registerOwner(owner, []);
+    }, /stable retention owner/);
+
+  await store.put(cid, bytes);
+  store.registerOwner("corrupt", [cid.toString()]);
+  const db = new DatabaseSync(join(directory, "retention", "retention.sqlite"));
+  try {
+    db.prepare("UPDATE owners SET roots=? WHERE id=?").run(
+      '["valid",1]',
+      "corrupt",
+    );
+    await assert.rejects(store.gc(), /unfinished/);
+    assert.deepEqual(
+      await readFile(join(directory, "blocks", cid.toString())),
+      bytes,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("local coordination reports lock deadlines and canceled acquisition without successful pin results", async (t) => {
+  const directory = resolve(".cache", `local-lock-${randomUUID()}`);
+  const cid = CID.createV1(
+    0x55,
+    await sha256.digest(Buffer.from("block")),
+  ).toString();
+  let failure: Error | undefined;
+  let cancel: AbortController | undefined;
+  const coordinator = new Retention(directory, {
+    prepare: () => {
+      cancel?.abort(new Error("cancel pin acquisition"));
+      return failure ? Promise.reject(failure) : Promise.resolve();
+    },
+  });
+  let closed = false;
+  const mutex = new DatabaseSync(join(directory, "mutex.sqlite"));
+  t.onTestFinished(async () => {
+    vi.restoreAllMocks();
+    mutex.close();
+    if (!closed) await coordinator.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  mutex.exec("BEGIN IMMEDIATE");
+  assert.throws(() => {
+    coordinator.register("owner", []);
+  }, /coordination is unavailable/);
+  const clock = vi
+    .spyOn(Date, "now")
+    .mockReturnValueOnce(0)
+    .mockReturnValue(30_001);
+  await assert.rejects(coordinator.pin(cid), /coordination is unavailable/);
+  clock.mockRestore();
+  mutex.exec("ROLLBACK");
+  failure = new DOMException("upstream timed out", "TimeoutError");
+  await assert.rejects(coordinator.pin(cid), /TimeoutError/);
+  assert.deepEqual(coordinator.pins(), []);
+  cancel = new AbortController();
+  failure = new Error("acquisition interrupted");
+  await assert.rejects(
+    coordinator.pin(cid, cancel.signal),
+    /cancel pin acquisition/,
+  );
+  cancel = undefined;
+  failure = undefined;
+  await coordinator.pin(cid);
+  assert.deepEqual(coordinator.pins(), [cid]);
+  await coordinator.close();
+  closed = true;
+  assert.throws(() => {
+    coordinator.register("owner", []);
+  }, /coordination is unavailable/);
+  await assert.rejects(coordinator.pin(cid), /coordination is unavailable/);
+});
+
+test("maintenance rejects unsupported stores, cancellation and invalid block directory entries", async (t) => {
+  const directory = resolve(".cache", `gc-boundaries-${randomUUID()}`);
+  const store = new IpfsStore({ dataDir: directory });
+  const adapter = IpfsStore.fromClient({
+    block: { get: () => Promise.resolve(new Uint8Array()) },
+  });
+  t.onTestFinished(async () => {
+    await store.close();
+    await adapter.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  assert.deepEqual(await store.usage(), { cachedBytes: 0, pinnedBytes: 0 });
+  assert.deepEqual(await store.gc(), { removedBlocks: 0, reclaimedBytes: 0 });
+  for (const unsupported of [adapter]) {
+    await assert.rejects(unsupported.usage(), { code: "unsupported_content" });
+    await assert.rejects(unsupported.gc(), { code: "unsupported_content" });
+  }
+  const controller = new AbortController();
+  controller.abort(new Error("stop maintenance"));
+  await assert.rejects(
+    store.gc({ signal: controller.signal }),
+    /stop maintenance/,
+  );
+  await writeFile(join(directory, "blocks"), "not a directory");
+  await assert.rejects(store.usage(), { code: "retention_unfinished" });
+  await rm(join(directory, "blocks"));
+  const cid = CID.createV1(0x55, await sha256.digest(Buffer.from("directory")));
+  await mkdir(join(directory, "blocks", cid.toString()), { recursive: true });
+  await assert.rejects(store.gc(), { code: "retention_unfinished" });
+});
 
 test("local source overrides share scoped retention, validate ranges and keep borrowed ports open", async (t) => {
   const directory = resolve(".cache", `scoped-source-${randomUUID()}`);
@@ -136,6 +476,21 @@ test("cold verified UnixFS nodes stream files, traverse generic names, cache ori
       Buffer.from(block),
     );
   const warmed = calls;
+  await store.pin(root);
+  const pinnedBytes = [...graph.blocks.values()].reduce(
+    (sum, block) => sum + block.byteLength,
+    0,
+  );
+  assert.deepEqual(await store.usage(), {
+    cachedBytes: pinnedBytes,
+    pinnedBytes,
+  });
+  assert.deepEqual(await store.gc(), { removedBlocks: 0, reclaimedBytes: 0 });
+  assert.equal(
+    calls,
+    warmed,
+    "Local pin, usage and GC never contact the upstream.",
+  );
   corrupt = true;
   const independent = new IpfsStore({ dataDir: directory, gateway });
   try {

@@ -88,7 +88,13 @@ export function pinName(value: string, builtin = false): void {
 function persistedHold(value: string, owner: string): Hold {
   try {
     const data = object(JSON.parse(value) as unknown, "retention metadata");
-    object(data.backend, "original Store configuration");
+    const backend = object(data.backend, "original Store configuration");
+    if (backend.backend === "kubo")
+      throw new HostError(
+        "This retention record belongs to the removed Kubo RPC Store. It is not migrated or released. Create a new local pin and manage the old daemon pin independently.",
+        1,
+        "LEGACY_STORE",
+      );
     if (
       data.owner !== owner ||
       !Array.isArray(data.roots) ||
@@ -101,7 +107,9 @@ function persistedHold(value: string, owner: string): Hold {
       throw new Error("Invalid retention fields.");
     for (const root of data.roots as string[]) exactCid(root);
     return data as unknown as Hold;
-  } catch {
+  } catch (error) {
+    if (error instanceof HostError && error.code === "LEGACY_STORE")
+      throw error;
     throw new HostError(
       "Invalid persisted retention metadata; cleanup is blocked.",
       1,
@@ -123,7 +131,7 @@ export class State {
       .exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS identity (id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS aliases (name TEXT PRIMARY KEY, cid TEXT NOT NULL);
+      DROP TABLE IF EXISTS aliases;
       CREATE TABLE IF NOT EXISTS named_pins (name TEXT PRIMARY KEY, owner TEXT UNIQUE NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS registrations (schema_cid TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -152,6 +160,10 @@ export class State {
   }
   config(): Partial<Record<ConfigKey, ConfigValue>> {
     const entries = this.db.prepare("SELECT key,value FROM config").all();
+    if (entries.some((row) => row.key === "store.rpc"))
+      throw new HostError(
+        "store.rpc is no longer supported. Run ipab config reset store.rpc, then configure store.gateway with an HTTP gateway URL. Existing Kubo pins are not migrated or released.",
+      );
     try {
       return validateUserConfig(
         Object.fromEntries(
@@ -172,17 +184,8 @@ export class State {
       .prepare("INSERT OR REPLACE INTO config VALUES (?,?)")
       .run(key, JSON.stringify(value));
   }
-  resetConfig(key: ConfigKey): void {
+  resetConfig(key: ConfigKey | "store.rpc"): void {
     this.db.prepare("DELETE FROM config WHERE key=?").run(key);
-  }
-  aliases(): { name: string; cid: string }[] {
-    return this.db
-      .prepare("SELECT name,cid FROM aliases ORDER BY name")
-      .all()
-      .map((row) => ({
-        name: String(row.name),
-        cid: exactCid(String(row.cid)),
-      }));
   }
   resolve(value: string, schema = false): string {
     try {
@@ -199,16 +202,21 @@ export class State {
             );
           return exactCid(pin.cid, schema);
         }
-        if (this.db.prepare("SELECT 1 FROM aliases WHERE name=?").get(value))
-          throw new HostError(
-            `Legacy Alias "${value}" is not a pin. Read its CID from the preserved aliases table and run ipab pin add NAME CID to verify and retain it.`,
-          );
         throw new HostError(
           `Unknown CID or pin "${value}". Run ipab pin list.`,
         );
       }
       throw error;
     }
+  }
+  resolvePin(name: string): string | undefined {
+    const pin = this.pin(name);
+    if (!pin) return undefined;
+    if (pin.status !== "ready")
+      throw new HostError(
+        `Pin "${name}" is ${pin.status}; retry pin add/delete before using it.`,
+      );
+    return exactCid(pin.cid);
   }
   pins(): NamedPin[] {
     const user = this.db

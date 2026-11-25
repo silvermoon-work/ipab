@@ -30,13 +30,20 @@ ipab --version
 `pnpm link-cli` 会构建并链接本地命令，不发布 npm 包。
 如果提示全局 bin 目录未配置，先执行 `pnpm setup`，重启终端后重试。
 
-默认使用本地内容 Store，**无需安装 Kubo**。如需连接已有的 Kubo daemon：
+始终使用本地内容 Store，**无需安装 Kubo**。可选择一个上游 HTTP Gateway
+获取本地缺失的内容，例如局域网存储节点提供的 Kubo Gateway：
 
 ```sh
-ipab config set store.rpc http://127.0.0.1:5001
+ipab config set store.gateway http://127.0.0.1:8080
 ```
 
-这里填写的是 Kubo RPC API 地址，不是 gateway；IPAB 不会自动启动 daemon。
+这里填写的是 Gateway 地址，不是 RPC API。获取的 block 校验后缓存到本地；
+写入、pin、空间统计和 GC 都留在本地，不上传或控制上游节点。
+不配置 Gateway 时仅使用本地内容。
+
+旧 `store.rpc` 已移除：先执行 `ipab config reset store.rpc`，再设置 Gateway。
+旧 Kubo pin／历史保留记录不会自动迁移或解除；需重新获取并建立本地 pin，
+旧节点上的 pin 由你独立管理。
 
 ## 快速上手
 
@@ -71,18 +78,24 @@ ipab open <content-cid>
 ```
 
 默认把内容 CID 作为一个参数传给应用；应用需要其他参数时，参见
-[关联与参数模板](docs/reference.md#本机命令与-kubo)。
+[关联与参数模板](docs/reference.md#本机命令与上游-gateway)。
 IPAB 不会自动选择应用；关联的类型必须与应用声明支持的准确类型 CID 匹配。
 
 ### 管理内容与历史
 
 ```sh
 ipab pin list
+ipab store usage
+ipab store gc
 ipab history list
 ipab history show <run-id>
 ipab exec --log reader
 ipab --help
 ```
+
+`store usage` 显示本地缓存 block 字节与所有递归 pin 的去重 block 字节；
+`store gc` 显式清理整个当前本地 Store 中未受保护的 block，保留 pin、
+所有参与者引用及未完成操作／导入。不会自动 GC，也不会请求 Kubo daemon GC。
 
 历史默认保存实际命令行参数，但不记录标准输入输出。
 参数中不要传入秘密；必要时通过 `ipab config set history.enabled false`

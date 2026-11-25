@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -7,18 +6,13 @@ import { createRequire } from "node:module";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CID } from "multiformats/cid";
 import { ContentError } from "./errors.js";
-import type { PinRecord } from "./kubo.js";
 
 interface RetentionPort {
   prepare(root: string, signal?: AbortSignal): Promise<void>;
-  status?(root: string, signal?: AbortSignal): Promise<PinRecord | undefined>;
-  pin?(root: string, name: string, signal?: AbortSignal): Promise<void>;
-  unpin?(root: string, signal?: AbortSignal): Promise<void>;
 }
-/** The SQLite mutex is separate so write-ahead intents survive a crash during an RPC. */
+/** The separate SQLite mutex preserves durable intents during content acquisition. */
 export class Retention {
   private readonly Database: typeof DatabaseSync;
-  readonly name: string;
   private readonly db: DatabaseSync;
   private readonly mutexPath: string;
   private readonly pending = new Set<Promise<unknown>>();
@@ -34,21 +28,11 @@ export class Retention {
     this.db = new this.Database(join(directory, "retention.sqlite"));
     this.mutexPath = join(directory, "mutex.sqlite");
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-      CREATE TABLE IF NOT EXISTS identity (id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS owners (id TEXT PRIMARY KEY, roots TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS stages (id TEXT NOT NULL, cid TEXT NOT NULL, PRIMARY KEY(id,cid));
-      CREATE TABLE IF NOT EXISTS stage_claims (cid TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS intents (
         id TEXT NOT NULL, cid TEXT NOT NULL, count INTEGER NOT NULL CHECK(count>0), PRIMARY KEY(id,cid));
       CREATE TABLE IF NOT EXISTS pins (cid TEXT PRIMARY KEY, phase TEXT NOT NULL);`);
-    this.db
-      .prepare(
-        "INSERT INTO identity SELECT ? WHERE NOT EXISTS (SELECT 1 FROM identity)",
-      )
-      .run(randomUUID());
-    this.name = `@silvermoon-work/task-engine/${String(
-      this.db.prepare("SELECT id FROM identity").get()!.id,
-    )}`;
   }
   private roots(values: readonly string[]): string[] {
     return [
@@ -169,47 +153,9 @@ export class Retention {
       .prepare("INSERT OR REPLACE INTO pins VALUES (?,?)")
       .run(root, phase);
   }
-  private async restoreClaim(
-    root: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    if (!this.db.prepare("SELECT 1 FROM stage_claims WHERE cid=?").get(root))
-      return;
-    if (!this.port.status || !this.port.pin)
-      throw new Error("The staging claim's RPC backend is unavailable.");
-    let status = await this.port.status(root, signal);
-    if (status && status.Type !== "indirect" && !status.Name) {
-      if (status.Type !== "recursive")
-        throw new Error(
-          "An uncertain staging pin changed type; ownership is unfinished.",
-        );
-      // Only a durable absent/indirect/own before-state authorizes this recovery.
-      await this.port.prepare(root, signal);
-      await this.port.pin(root, this.name, signal);
-      status = await this.port.status(root, signal);
-      if (status && status.Type !== "indirect" && !status.Name)
-        throw new Error(
-          "The staging pin is still unnamed; ownership is unfinished.",
-        );
-    }
-    this.db.prepare("DELETE FROM stage_claims WHERE cid=?").run(root);
-  }
   private async ensure(root: string, signal?: AbortSignal): Promise<void> {
-    await this.restoreClaim(root, signal);
     this.phase(root, "pin-pending");
     await this.port.prepare(root, signal);
-    const status = await this.port.status?.(root, signal);
-    if (status && status.Type !== "indirect" && status.Name !== this.name) {
-      if (status.Type !== "recursive")
-        throw new ContentError(
-          "retention_unfinished",
-          "An external direct pin cannot be renamed into a recursive system hint.",
-        );
-      // Do not turn another application's visible pin into our hint.
-      this.phase(root, "external");
-      return;
-    }
-    await this.port.pin?.(root, this.name, signal);
     this.phase(root, "pinned");
   }
   pin(root: string, signal?: AbortSignal): Promise<void> {
@@ -280,12 +226,11 @@ export class Retention {
   stage(
     session: string,
     root: string,
-    write: (name: string, claim: boolean) => Promise<void>,
+    write: () => Promise<unknown>,
     signal?: AbortSignal,
   ): Promise<void> {
     root = this.roots([root])[0]!;
     return this.locked(signal, async () => {
-      await this.restoreClaim(root, signal);
       this.db
         .prepare("INSERT OR IGNORE INTO stages VALUES (?,?)")
         .run(session, root);
@@ -293,19 +238,8 @@ export class Retention {
         this.db.prepare("SELECT phase FROM pins WHERE cid=?").get(root)
           ?.phase === "pinned";
       this.phase(root, "stage-pending");
-      const status = await this.port.status?.(root, signal);
-      const claim =
-        !status || status.Type === "indirect" || status.Name === this.name;
-      if (claim && this.port.status)
-        this.db
-          .prepare("INSERT OR IGNORE INTO stage_claims VALUES (?)")
-          .run(root);
-      await write(this.name, claim);
-      if (claim) await this.restoreClaim(root, signal);
-      this.phase(
-        root,
-        claim ? (alreadyPinned ? "pinned" : "staged") : "external",
-      );
+      await write();
+      this.phase(root, alreadyPinned ? "pinned" : "staged");
     });
   }
   finish(
@@ -324,28 +258,22 @@ export class Retention {
       this.db.prepare("DELETE FROM stages WHERE id=?").run(session);
     });
   }
-  private async remove(root: string, signal?: AbortSignal): Promise<boolean> {
-    await this.restoreClaim(root, signal);
+  private remove(root: string, signal?: AbortSignal): boolean {
     const record = this.db
       .prepare("SELECT phase FROM pins WHERE cid=?")
       .get(root);
     if (!record) return false;
     this.phase(root, "unpin-pending");
-    const status = await this.port.status?.(root, signal);
-    if (this.port.status && (!status || status.Name !== this.name)) {
-      this.db.prepare("DELETE FROM pins WHERE cid=?").run(root);
-      return false;
-    }
-    await this.port.unpin?.(root, signal);
+    signal?.throwIfAborted();
     this.db.prepare("DELETE FROM pins WHERE cid=?").run(root);
     return true;
   }
   unpin(root: string, signal?: AbortSignal): Promise<void> {
     root = this.roots([root])[0]!;
-    return this.locked(signal, async () => {
+    return this.locked(signal, () => {
       if (this.allRoots().includes(root))
         throw new Error("A participating owner still retains this root.");
-      await this.remove(root, signal);
+      this.remove(root, signal);
     });
   }
   private allRoots(): string[] {
@@ -371,15 +299,13 @@ export class Retention {
   ): Promise<number> {
     return this.locked(signal, async () => {
       this.publish(owner, typeof roots === "function" ? roots() : roots, true);
-      for (const row of this.db.prepare("SELECT cid FROM stage_claims").all())
-        await this.restoreClaim(String(row.cid), signal);
       const marked = new Set(this.allRoots());
       // Complete the entire mark before removing any hint. Recheck real blocks, not reader caches.
       for (const root of marked) await this.ensure(root, signal);
       let removed = 0;
       for (const row of this.db.prepare("SELECT cid FROM pins").all()) {
         const root = String(row.cid);
-        if (!marked.has(root) && (await this.remove(root, signal))) removed++;
+        if (!marked.has(root) && this.remove(root, signal)) removed++;
       }
       return removed;
     });
@@ -389,6 +315,41 @@ export class Retention {
       .prepare("SELECT cid FROM pins WHERE phase='pinned' ORDER BY cid")
       .all()
       .map((row) => String(row.cid));
+  }
+  maintain<T>(
+    action: (references: {
+      pinned: readonly string[];
+      roots: readonly string[];
+      staged: readonly string[];
+    }) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.locked(signal, () =>
+      action({
+        pinned: this.pins(),
+        roots: this.roots([
+          ...this.db
+            .prepare("SELECT id FROM owners")
+            .all()
+            .flatMap((row) => this.readOwner(String(row.id))),
+          ...this.db
+            .prepare("SELECT cid FROM intents")
+            .all()
+            .map((row) => String(row.cid)),
+          ...this.db
+            .prepare(
+              "SELECT cid FROM pins WHERE phase NOT IN ('staged','stage-pending')",
+            )
+            .all()
+            .map((row) => String(row.cid)),
+        ]),
+        // Import parents may arrive before their children; protect staged blocks individually.
+        staged: this.db
+          .prepare("SELECT DISTINCT cid FROM stages")
+          .all()
+          .map((row) => String(row.cid)),
+      }),
+    );
   }
   async close(): Promise<void> {
     this.closed = true;

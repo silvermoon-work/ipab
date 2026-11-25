@@ -210,13 +210,12 @@ describe("Data-only Template Bundles", () => {
       "builtin:template.web-app",
     ];
     expect(builtins.pins.map((pin) => pin.name)).toEqual(names);
-    const offline = ["--store-rpc", "http://127.0.0.1:1", "--json"];
+    const offline = ["--store-gateway", "http://127.0.0.1:1", "--json"];
     const listed = await cli(work.stateDir, [...offline, "pin", "list"]);
     expect(listed.code, listed.err).toBe(0);
     expect(JSON.parse(listed.out) as unknown).toEqual({
       items: builtins.pins.map(pinDetails),
       pending: [],
-      legacyAliases: [],
     });
     const state = new State(work.stateDir, builtins.pins);
     try {

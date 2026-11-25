@@ -6,5 +6,5 @@ export const viewer: BundleViewer = ({ data }) =>
   createElement(
     "div",
     { className: "cbv-fill" },
-    createElement(CheckBundleViewer, { spec: data }),
+    createElement(CheckBundleViewer, { spec: data, preserveSelection: true }),
   );

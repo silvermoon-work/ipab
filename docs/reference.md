@@ -29,7 +29,7 @@ ipab --json history list --status succeeded
 ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 ```
 
-### 本机命令与 Kubo
+### 本机命令与上游 Gateway
 
 CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前准备 `0.1.0-rc.0`，尚未发布到 npm。
 在仓库根目录构建并将本地包链接到全局（支持 macOS、Linux 和 Windows）：
@@ -46,16 +46,17 @@ macOS／Linux 构建成功后自动为 CLI 入口添加执行权限，已有链�
 无需手动 `chmod`。
 全局 bin 目录需在 PATH 中；未配置时先运行 `pnpm setup` 并重启终端。
 
-本地 Kubo daemon 已运行且 API 地址为 `127.0.0.1:5001` 时，可以保存配置：
+可将局域网 Kubo 的 HTTP Gateway 或其他兼容 Gateway 配置为上游：
 
 ```powershell
-ipab config set store.rpc http://127.0.0.1:5001
-ipab config get store.rpc
+ipab config set store.gateway http://127.0.0.1:8080
+ipab config get store.gateway
 ```
 
-这是 Kubo RPC API，不是 gateway。IPAB 不启动 daemon；离线 daemon
-只能读取已有内容。CLI 使用本地 workspace Store，已包含
-`indirect through <CID>` pin 状态的兼容修复；配置成功不代替实际执行验证。
+这是只读 Gateway，不是 Kubo RPC API。IPAB 始终使用本地 Store；本地缺块才
+从上游获取，校验后原子落盘。输出、pin、统计与 GC 不访问上游管理接口，
+不上传 block、不启动 daemon。pin 完整获取 DAG 后可离线使用；
+未 pin 的缓存经本地 GC 删除后，重新获取仍需要可用上游。
 PowerShell 调用 `ipab` 时，argv 模板分隔符应写成引号包裹的 `'--'`，
 避免 PowerShell 吞掉它：
 
@@ -63,7 +64,7 @@ PowerShell 调用 `ipab` 时，argv 模板分隔符应写成引号包裹的 `'--
 ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 ```
 
-- 全局 `--state-dir PATH`、`--store-rpc URL`、`--json` 必须在子命令之前。
+- 全局 `--state-dir PATH`、`--store-gateway URL`、`--json` 必须在子命令之前。
   `--json` 适用于管理／开发命令的结果元数据，不能包装 exec/open 的应用 stdout。
 - `exec APP` 后的所有参数原样传入，包括 `--help`、`--json` 和 `--`。
   `exec --help` 是宿主帮助；`exec APP --help` 是应用参数。
@@ -93,6 +94,40 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 - 帮助按命令分层：根及分组只提供导航，不展示示例；叶子命令只展示自身的参数、
   选项、示例和必要提醒。全局选项见 `ipab --help`，操作细节见
   `ipab COMMAND --help`（分组命令继续指定子命令）。
+
+### 本地 Store 空间与 GC
+
+```sh
+ipab store usage
+ipab --json store usage
+ipab store gc
+ipab --json store gc
+```
+
+人类可读输出使用十进制 KB／MB／GB 等单位（1 KB = 1,000 bytes），最多两位小数，
+括号显示带千位逗号的精确 bytes；小于 1 KB 时直接显示 bytes。
+GC 回收空间沿用相同格式，`--json` 保持数值型精确字节数。
+
+`store usage` 返回 `{cachedBytes, pinnedBytes}`：前者为当前 Store 内所有
+canonical CID block 文件的字节数，后者为所有持久递归 pin（含其他参与者的
+pin）的完整 DAG block 字节并集。直接、间接子节点和跨根共享节点均按
+CIDv1 去重；不计算 SQLite 元数据、暂存文件或文件系统分配开销。
+内置 pin 内容在安装包内，只有实际进入当前 Store 并建立保留责任才计入。
+
+`store gc` 返回 `{removedBlocks, reclaimedBytes}`，显式对整个当前本地
+Store 做 mark-and-sweep，不仅清理当前 CLI 的内容。它不解除 pin、不删除历史，
+保留全部参与者的 owner 引用、未完成保留操作和活跃导入的暂存 block。
+完整验证所有受保护 DAG 后才开始删除；缺块、损坏、预算超限和协调失败均报错，
+不通过 gateway 补块，也不以进程内缓存冒充磁盘数据。
+中途取消或删除失败可能已有部分回收，失败不会返回成功结果，可再次执行。
+不触碰未知文件或其他进程的临时文件，不自动触发清理。
+
+与 Kubo 对齐的是仓库级递归 pin／显式 GC 行为，而非 `repo/stat` 的
+RepoSize 统计口径。配置 Gateway 不改变本地统计／GC，不查询或回收上游仓库。
+共享同一本地 dataDir 的参与者必须使用同一持久
+coordinationDir；不同 registry 或不参与协调的外部写入者不受此锁保护。
+未 pin／retain 的普通读写不获得 GC 保留责任；并发写入不承诺事务式统计快照，
+GC 仅处理本轮开始时已枚举的 block。
 
 ### 具名 pin
 
@@ -130,8 +165,8 @@ ipab init dashboard --template builtin:template.web-app
 ```
 
 - `pin add NAME CID` 要求未占用名字和准确 CID，不支持覆盖、replace 或名称链。
-  通过当前 Store 获取、验证完整 DAG、建立持久保留；Local 与 Kubo 后端共用
-  owner／retain／confirm 协调机制。没有可获取内容的后端、缺块、损坏、类型
+  通过本地 Store 获取、验证完整 DAG、建立持久保留；
+  owner／retain／confirm 协调仅作用于本地。没有可获取内容的来源、缺块、损坏、类型
   校验或存储失败均非零，不凭空登记为成功。
 - `pin delete NAME` 释放该记录在**原后端**的保留责任并删除名字；不存在则失败。
   不删除共享 block、不卸载、不请求 GC、不保证立即释放磁盘；不影响其他名字、
@@ -139,7 +174,7 @@ ipab init dashboard --template builtin:template.web-app
 - `pin rename OLD_NAME NEW_NAME` 原子地修改名字；冲突失败，不覆盖。CID、类型
   元数据、owner、register 和历史不变，不重新获取，也不执行 unpin → pin。
 - `pin list [--kind bundle|schema] [--type TYPE]` 只列 IPAB 管理的具名 pin，
-  不冒充整个 Kubo pin 清单。`pin show NAME` 显示完整名字、CID 和对象类别；
+  不冒充上游节点的 pin 清单。`pin show NAME` 显示完整名字、CID 和对象类别；
   Bundle／Schema 另显示完整类型定义中的类型名和准确 schema CID。
   普通文件、无 Bundle 定义的 Space 和普通 DAG-CBOR 可保留，类别为 `content`，
   明确没有 Bundle 类型元数据；依照过滤接口约定，`--kind` 只接受
@@ -162,21 +197,22 @@ ipab init dashboard --template builtin:template.web-app
   活跃并发操作明确拒绝，执行／历史的临时 owner 清理不会释放具名 pin。
 
 pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 daemon、不自动换后端。
-`--json pin list` 返回 `items`、`pending`、`legacyAliases`；成功项包含完整
+`--json pin list` 返回 `items`、`pending`；成功项包含完整
 `name`、`cid`、`kind`、`typeName`、`schemaCid`，普通内容最后两字段为 `null`；
 内置项另有 `builtin: true`，用户项保持原字段形状。
 
-#### 旧 Alias 迁移
-
-旧 `alias` 命令和用户 Alias 解析已被替代。旧 Alias 没有证明内容可用或建立
-保留，**不能自动当作 pin**。状态库的 `aliases` 表原样保留、不静默删除；
-`pin list` 将其单独列为“未 pin 的旧 Alias”（JSON 的 `legacyAliases`），
-旧名字解析失败时给出迁移诊断。按列出的准确 CID 显式执行
-`ipab pin add NAME CID`，获取、验证、实际保留成功后才启用这个名字；
-可用原来的名字，旧数据仍保留供核对。不增加另一套迁移命令。
-已有 register／历史中的准确 CID 不重写；builtin 快捷名继续离线使用。
+旧 Alias 功能和数据兼容已彻底移除。打开状态库时删除旧 `aliases` 表，
+不解析、展示或迁移其内容，JSON 不再返回 `legacyAliases`。
+具名 pin、register 和历史不受影响；builtin 快捷名继续离线使用。
 
 ## App 开发（上层 Node profile）
+
+Node App 的 `ipab.resolvePin(name)` 提供只读宿主具名 pin 查询（名称最多 256
+字符）：ready 用户／内置 pin 返回准确 CID，不存在返回 undefined；
+pending/deleting、损坏状态及 IPC 错误明确拒绝。它不读取旧 Alias、不联网、
+不保留内容，也不改写 App argv。需要此能力的 App 应使用新版宿主。
+Viewer 模板用它实现目录／具名 pin／CID 的单参数自动识别；目录仍优先，
+同名 pin 只解析一次，不自动跟随重命名或内容变化。
 
 根 `init`／`build` 面向 App；`bundle` 分组仍是不会编译代码的底层工具。
 使用已构建并链接到全局的本地 `ipab`（首轮 RC 尚未发布到 npm）：
@@ -646,8 +682,8 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
 - `bundle import FILE.car` 是显式的 CAR → Store 入口，接受 App／Content Bundle
   或类型 CAR。输入必须为普通 `.car` 文件、单根且自足；先验证全部 block 的
   SHA-256、完整 DAG 和 Bundle／类型定义，缺块不从 Store 或网络补齐，
-  验证失败不写入 Store。沿用当前 Store 配置，默认本地 Store 无需安装 Kubo；
-  显式 `store.rpc` 则导入该 Kubo，不会启动或配置 daemon，也不换后端。
+  验证失败不写入 Store。始终导入当前本地 Store，无需安装 Kubo；
+  上游 Gateway 不参与导入写入，不上传到上游。
   使用 Store put 保存原始 block 和准确 CID，不 pin／retain，重复导入安全；
   不保证外部 GC 后仍可用。
   不执行 App、不创建具名 pin／register／执行历史，也不执行 GC。失败停止后续
@@ -679,19 +715,27 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
 TaskContent 配置，缺省使用 `~/.silvermoon.work/content` 的本地可写 Store。
 不是虚构的默认 RPC 服务，也不是只读 gateway。
 
-`store.rpc` 缺省为 `null`，表示使用上述真实 Store 配置。显式 HTTP(S) URL
-（`--store-rpc`／`IPAB_STORE_RPC`／用户配置）选择库的 Kubo backend，
-替代整个公共 Store 配置；IPAB 不实现 Kubo HTTP 或另造通用 Store RPC 协议。
+`store.gateway` 缺省为 `null`，表示沿用上述公共配置的可选 Gateway。
+显式 HTTP(S) URL（`--store-gateway`／`IPAB_STORE_GATEWAY`／用户配置）
+仅覆盖只读上游，不改变本地 dataDir、limits 或 coordinationDir。
 URL 禁止凭据、查询和 fragment。默认 Store 配置中的 URL 同样检查。
-连接或配置失败不会静默换后端。
+连接或配置失败不会静默换来源。
 
-| 配置键             | 默认      | 值域／环境变量                                             |
-| ------------------ | --------- | ---------------------------------------------------------- |
-| `store.rpc`        | `null`    | 公共 HTTP(S) URL 或 `default`；`IPAB_STORE_RPC`            |
-| `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                       |
-| `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录 |
-| `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                    |
-| `bundle.outputDir` | `dist`    | 非空目录路径；`IPAB_BUNDLE_OUTPUT_DIR`                     |
+Store RPC 已移除。`--store-rpc`／`IPAB_STORE_RPC` 明确报错；
+旧用户键需执行 `ipab config reset store.rpc` 移除，再设置 store.gateway。
+公共配置中的 backend:kubo／apiUrl／timeoutMs 不再支持，须显式替换成
+backend:local、dataDir 和可选 gateway，不能将旧 Kubo coordinationDir
+直接当作本地保留目录。旧 pin／历史记录保留原配置，既不自动迁移也不解除
+daemon pin，相关恢复／删除明确失败且保留元数据。请用新名称重新建立
+本地 pin，再独立管理旧 daemon 上的 pin；没有自动全量迁移命令。
+
+| 配置键             | 默认      | 值域／环境变量                                              |
+| ------------------ | --------- | ----------------------------------------------------------- |
+| `store.gateway`    | `null`    | 公共 HTTP(S) Gateway URL 或 `default`；`IPAB_STORE_GATEWAY` |
+| `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                        |
+| `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录  |
+| `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                     |
+| `bundle.outputDir` | `dist`    | 非空目录路径；`IPAB_BUNDLE_OUTPUT_DIR`                      |
 
 `config get [KEY]` 显示有效值与 flag/env/user/default 来源；
 `config set KEY VALUE` 只保存用户层，遇到更高优先级覆盖时提示；

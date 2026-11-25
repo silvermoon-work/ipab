@@ -21,6 +21,8 @@ export {
   type IpfsReadOptions,
   type UnixfsNode,
   type StoreConfiguration,
+  type StoreUsage,
+  type StoreGcResult,
 } from "./store.js";
 
 class GatewayCleanupError extends ContentError {

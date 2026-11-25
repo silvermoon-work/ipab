@@ -67,3 +67,8 @@ applied in an effect after hydration, preserving the initial tree and React IDs
 on mobile as well as desktop. The App uses local checkpoint selection, not the
 old IPFSAW URL bridge; the migrated component's opt-in old navigation is not
 enabled by the new host.
+
+The Check App sets `preserveSelection: true` for live data. An unchanged
+Checkpoint ID retains selection after instructions or entry edits; removing the
+ID resets to the overview. Ordinary `CheckBundleViewer` consumers retain the
+default reset-on-definition-replacement behavior.

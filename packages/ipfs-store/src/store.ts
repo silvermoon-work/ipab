@@ -22,10 +22,7 @@ import {
 } from "./dag.js";
 import { SharedContent } from "./storage.js";
 import { ContentError } from "./errors.js";
-import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { KuboContent } from "./kubo.js";
 import { Retention } from "./retention.js";
 import {
   validateConfiguration,
@@ -37,6 +34,14 @@ export interface IpfsReadOptions {
   signal?: AbortSignal;
   hints?: readonly string[];
   allowGateway?: (url: URL) => boolean;
+}
+export interface StoreUsage {
+  cachedBytes: number;
+  pinnedBytes: number;
+}
+export interface StoreGcResult {
+  removedBlocks: number;
+  reclaimedBytes: number;
 }
 export type UnixfsNode = Extract<
   UnixFSEntry,
@@ -51,7 +56,7 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
   private readonly retainedBlocks = new Map<string, Uint8Array>();
   private readonly retentionBudget: { bytes: number; limit: number };
   private readonly gateway: GatewayClient | undefined;
-  private backend: SharedContent | ContentBlocks | KuboContent;
+  private backend: SharedContent | ContentBlocks;
   private retention?: Retention;
   private retentionStore?: IpfsStore;
   private coordinated = true;
@@ -71,19 +76,15 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
       )
         throw new Error("Invalid IPFS content capacity.");
     this.retentionBudget = { bytes: 0, limit: this.limits.bytes };
-    this.gateway =
-      config.backend === "local" && config.gateway
-        ? createIpfsGatewayClient(config.gateway, { allowPath: true })
-        : undefined;
+    this.gateway = config.gateway
+      ? createIpfsGatewayClient(config.gateway, { allowPath: true })
+      : undefined;
     this.source = this.gateway;
-    this.backend =
-      config.backend === "local"
-        ? new SharedContent(config.dataDir, this.source, this.limits.blockBytes)
-        : new KuboContent(
-            config.apiUrl,
-            this.limits.blockBytes,
-            config.timeoutMs,
-          );
+    this.backend = new SharedContent(
+      config.dataDir,
+      this.source,
+      this.limits.blockBytes,
+    );
   }
   /** Adapt a caller-owned CAR or block port without reading configuration or owning its close. */
   static fromClient(
@@ -116,9 +117,9 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
   get supportsRetention(): boolean {
     return this.coordinated;
   }
-  /** Explicit host read-through port for legacy local content; never used by Kubo. */
+  /** Explicit host read-through port; publication and retention always stay local. */
   withLocalSource(source: IpfsClient): IpfsStore {
-    if (this.configuration.backend !== "local" || !this.supportsRetention)
+    if (!this.supportsRetention)
       throw new ContentError(
         "read_only",
         "Only coordinated local stores accept a local source.",
@@ -157,7 +158,6 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
     ]);
   }
   private client(options: IpfsReadOptions): IpfsClient {
-    if (this.backend instanceof KuboContent) return this.backend;
     if (!options.hints?.length || !options.allowGateway) return this.backend;
     const source = withGatewayHints(
       this.source ?? {
@@ -222,17 +222,7 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
     if (!this.retention) {
       const config = this.configuration;
       const directory =
-        config.coordinationDir ??
-        (config.backend === "local"
-          ? join(config.dataDir, "retention")
-          : join(
-              homedir(),
-              ".silvermoon.work",
-              "retention",
-              createHash("sha256").update(config.apiUrl).digest("hex"),
-            ));
-      const kubo =
-        this.backend instanceof KuboContent ? this.backend : undefined;
+        config.coordinationDir ?? join(config.dataDir, "retention");
       this.retention = new Retention(directory, {
         prepare: async (root, signal) => {
           await prepareContent(this.backend, root, {
@@ -244,16 +234,6 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
             retainedBlocks: new Map(),
           });
         },
-        ...(kubo
-          ? {
-              status: (root, signal) =>
-                kubo.pinStatus(root, signal ? { signal } : {}),
-              pin: (root, name, signal) =>
-                kubo.pin(root, name, signal ? { signal } : {}),
-              unpin: (root, signal) =>
-                kubo.unpin(root, signal ? { signal } : {}),
-            }
-          : {}),
       });
     }
     return this.retention;
@@ -307,6 +287,78 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
   pins(): readonly string[] {
     return this.coordinator().pins();
   }
+  private localMaintenance(): SharedContent {
+    this.signal({}).throwIfAborted();
+    if (!this.supportsRetention || !(this.backend instanceof SharedContent))
+      throw new ContentError(
+        "unsupported_content",
+        "Space queries and garbage collection require a coordinated local Store.",
+      );
+    return this.backend;
+  }
+  private async localClosure(
+    backend: SharedContent,
+    roots: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Map<string, number>> {
+    const blocks = new Map<string, number>();
+    for (const root of roots) {
+      const retainedBlocks = new Map<string, Uint8Array>();
+      await prepareContent(
+        {
+          block: {
+            get: (value) => backend.readLocalBlock(CID.parse(value), signal),
+          },
+        },
+        root,
+        {
+          signal,
+          maxBlockBytes: this.limits.blockBytes,
+          maxDagBlocks: this.limits.blocks,
+          depth: this.limits.depth,
+          retentionBudget: { bytes: 0, limit: this.limits.bytes },
+          retainedBlocks,
+        },
+      );
+      for (const [key, bytes] of retainedBlocks)
+        blocks.set(key, bytes.byteLength);
+    }
+    return blocks;
+  }
+  async usage(options: IpfsReadOptions = {}): Promise<StoreUsage> {
+    const backend = this.localMaintenance();
+    const signal = this.signal(options);
+    return this.coordinator().maintain(async ({ pinned }) => {
+      const inventory = await backend.inventory(signal);
+      const blocks = await this.localClosure(backend, pinned, signal);
+      return {
+        cachedBytes: [...inventory.values()].reduce(
+          (sum, size) => sum + size,
+          0,
+        ),
+        pinnedBytes: [...blocks.values()].reduce((sum, size) => sum + size, 0),
+      };
+    }, signal);
+  }
+  async gc(options: IpfsReadOptions = {}): Promise<StoreGcResult> {
+    const backend = this.localMaintenance();
+    const signal = this.signal(options);
+    return this.coordinator().maintain(async ({ roots, staged }) => {
+      const inventory = await backend.inventory(signal);
+      const marked = await this.localClosure(backend, roots, signal);
+      for (const key of staged) marked.set(key, 0);
+      let removedBlocks = 0;
+      let reclaimedBytes = 0;
+      // Complete verification before any deletion. New publications outside this snapshot survive.
+      for (const key of inventory.keys()) {
+        signal.throwIfAborted();
+        if (marked.has(key)) continue;
+        reclaimedBytes += await backend.removeBlock(key, signal);
+        removedBlocks++;
+      }
+      return { removedBlocks, reclaimedBytes };
+    }, signal);
+  }
   async stageBlock(
     session: string,
     cid: CID,
@@ -314,26 +366,10 @@ export class IpfsStore implements IpfsClient, IpfsAccess {
     options: IpfsReadOptions = {},
   ): Promise<void> {
     const signal = this.signal(options);
-    // Atomic raw-leaf pins protect even a parent arriving before its children.
-    // Kubo keys block bytes by multihash; the alias neither reencodes nor duplicates the payload.
-    const staged =
-      this.backend instanceof KuboContent
-        ? CID.createV1(0x55, cid.multihash)
-        : cid;
     return this.coordinator().stage(
       session,
-      staged.toString(),
-      async (name, claim) => {
-        if (this.backend instanceof KuboContent) {
-          await this.backend.put(staged, bytes, { signal }, claim);
-          if (claim)
-            await this.backend.pin(staged.toString(), name, { signal });
-          if (cid.code !== staged.code)
-            await this.backend.put(cid, bytes, { signal });
-        } else {
-          await this.backend.put(cid, bytes, { signal });
-        }
-      },
+      cid.toString(),
+      () => this.backend.put(cid, bytes, { signal }),
       signal,
     );
   }

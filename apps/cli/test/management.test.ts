@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
+import { IpfsStore } from "@ipab/ipfs-store";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli, help, parse } from "../src/cli.js";
@@ -40,6 +43,143 @@ describe("management contract", () => {
   });
   const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+
+  it("rejects removed RPC flags and environment, and explicitly resets legacy configuration without changing pins", async () => {
+    const configPath = join(work.root, "store.json");
+    await writeFile(configPath, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", configPath);
+    const state = new State(work.stateDir);
+    seedDisplayPin(state, "existing", another);
+    state.db
+      .prepare("INSERT INTO config VALUES (?,?)")
+      .run("store.rpc", JSON.stringify("http://localhost:5001"));
+    state.close();
+    const unsupported = await cli(work.stateDir, ["store", "usage"]);
+    expect(unsupported.code).toBe(1);
+    expect(unsupported.err).toContain("ipab config reset store.rpc");
+    const reset = await cli(work.stateDir, [
+      "--json",
+      "config",
+      "reset",
+      "store.rpc",
+    ]);
+    expect(reset.code).toBe(0);
+    expect(JSON.parse(reset.out) as unknown).toEqual({ reset: ["store.rpc"] });
+    const reopened = new State(work.stateDir);
+    try {
+      expect(reopened.resolve("existing")).toBe(another);
+      expect(reopened.config()).toEqual({});
+    } finally {
+      reopened.close();
+    }
+    expect((await cli(work.stateDir, ["store", "usage"])).code).toBe(0);
+    expect(() =>
+      parse(["--store-rpc", "http://localhost:5001", "store", "gc"]),
+    ).toThrow("no longer supported");
+    const environment = await cli(work.stateDir, ["store", "gc"], {
+      env: { IPAB_STORE_RPC: "http://localhost:5001" },
+    });
+    expect(environment.code).toBe(2);
+    expect(environment.err).toContain("IPAB_STORE_GATEWAY");
+    await writeFile(
+      configPath,
+      JSON.stringify({ backend: "kubo", apiUrl: "http://localhost:5001" }),
+    );
+    await expect(storeConfiguration("http://localhost:8080")).rejects.toThrow(
+      "not migrated",
+    );
+  });
+
+  it("queries local block bytes and explicitly collects unpinned cache with human and JSON output", async () => {
+    const config = join(work.root, "content-config.json");
+    await writeFile(config, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", config);
+    const block = Buffer.from("keep pinned");
+    const cid = CID.createV1(0x55, await sha256.digest(block));
+    const orphan = Buffer.from("collect me");
+    const orphanCid = CID.createV1(0x55, await sha256.digest(orphan));
+    await work.store.put(cid, block);
+    await work.store.put(orphanCid, orphan);
+    await work.store.pin(cid);
+    const usage = await cli(work.stateDir, ["store", "usage"]);
+    expect(usage.code).toBe(0);
+    expect(usage.out).toBe(
+      `Cached blocks: ${block.length + orphan.length} bytes\nPinned blocks (deduplicated): ${block.length} bytes`,
+    );
+    expect(
+      JSON.parse(
+        (await cli(work.stateDir, ["--json", "store", "usage"])).out,
+      ) as unknown,
+    ).toEqual({
+      cachedBytes: block.length + orphan.length,
+      pinnedBytes: block.length,
+    });
+    const collected = await cli(work.stateDir, ["--json", "store", "gc"]);
+    expect(collected.code).toBe(0);
+    expect(JSON.parse(collected.out) as unknown).toEqual({
+      removedBlocks: 1,
+      reclaimedBytes: orphan.length,
+    });
+    expect((await cli(work.stateDir, ["store", "gc"])).out).toBe(
+      "Removed 0 blocks; reclaimed 0 bytes.",
+    );
+    await expect(
+      readFile(join(work.root, "blocks", "blocks", orphanCid.toString())),
+    ).rejects.toThrow();
+    const offline = await cli(work.stateDir, [
+      "--store-gateway",
+      "http://127.0.0.1:1",
+      "store",
+      "gc",
+    ]);
+    expect(offline.code).toBe(0);
+    expect(offline.err).toBe("");
+    expect(help("store")).toContain(
+      "Usage: ipab [GLOBAL_OPTIONS] store COMMAND",
+    );
+    expect(help("store gc")).toContain("Preserves pins");
+    expect(() => parse(["store", "gc", "unexpected"])).toThrow();
+    expect(() => parse(["store", "usage", "--yes"])).toThrow();
+  });
+
+  it.each([
+    [0, "0 bytes"],
+    [999, "999 bytes"],
+    [1000, "1 KB (1,000 bytes)"],
+    [999999, "1,000 KB (999,999 bytes)"],
+    [1000000, "1 MB (1,000,000 bytes)"],
+    [2664101, "2.66 MB (2,664,101 bytes)"],
+    [1000000000, "1 GB (1,000,000,000 bytes)"],
+  ])(
+    "formats %i storage bytes for humans without changing JSON",
+    async (bytes, display) => {
+      const path = join(work.root, "store.json");
+      await writeFile(path, JSON.stringify(work.store.configuration));
+      vi.stubEnv("TASK_CONTENT_CONFIG", path);
+      vi.spyOn(IpfsStore.prototype, "usage").mockResolvedValue({
+        cachedBytes: bytes,
+        pinnedBytes: bytes,
+      });
+      vi.spyOn(IpfsStore.prototype, "gc").mockResolvedValue({
+        removedBlocks: 1,
+        reclaimedBytes: bytes,
+      });
+      expect((await cli(work.stateDir, ["store", "usage"])).out).toBe(
+        `Cached blocks: ${display}\nPinned blocks (deduplicated): ${display}`,
+      );
+      expect((await cli(work.stateDir, ["store", "gc"])).out).toBe(
+        `Removed 1 blocks; reclaimed ${display}.`,
+      );
+      expect(
+        JSON.parse(
+          (await cli(work.stateDir, ["--json", "store", "usage"])).out,
+        ) as unknown,
+      ).toEqual({
+        cachedBytes: bytes,
+        pinnedBytes: bytes,
+      });
+    },
+  );
 
   it("management tables/details are human-readable while JSON schemas remain unchanged", async () => {
     const state = new State(work.stateDir);
@@ -91,7 +231,6 @@ describe("management contract", () => {
         ...builtinPins,
       ],
       pending: [],
-      legacyAliases: [],
     });
     const registered = await cli(work.stateDir, ["register", "list"]);
     expect(registered.out).toMatch(/^SCHEMA CID\s+APP CID\s+ARGV\n/);
@@ -596,8 +735,8 @@ describe("management contract", () => {
     ["unknown"],
     ["--unknown"],
     ["--state-dir"],
-    ["--store-rpc"],
-    ["--store-rpc", "default", "config", "get"],
+    ["--store-gateway"],
+    ["--store-gateway", "default", "config", "get"],
     ["--version", "exec"],
     ["exec"],
     ["exec", "--cid"],
@@ -652,25 +791,40 @@ describe("management contract", () => {
     expect(() => help("unknown")).toThrow("Unknown command");
   });
 
-  it("pin names resolve exact identities and legacy aliases stay untrusted", async () => {
+  it("pin names resolve exact identities and opening State discards legacy aliases without touching pins", async () => {
     const state = new State(work.stateDir);
     seedDisplayPin(state, "a", schema);
     seedDisplayPin(state, "z", another);
+    state.db.exec(
+      "CREATE TABLE aliases (name TEXT PRIMARY KEY, cid TEXT NOT NULL)",
+    );
     state.db.prepare("INSERT INTO aliases VALUES (?,?)").run("legacy", another);
     expect(state.resolve("a", true)).toBe(schema);
     expect(state.resolve("z")).toBe(another);
-    expect(() => state.resolve("legacy")).toThrow("not a pin");
+    expect(() => state.resolve("legacy")).toThrow("Unknown");
     state.close();
     const listed = await cli(work.stateDir, ["--json", "pin", "list"]);
-    expect(JSON.parse(listed.out) as unknown).toMatchObject({
+    expect(JSON.parse(listed.out) as unknown).toEqual({
       items: [
-        { name: "a", cid: schema },
-        { name: "z", cid: another },
+        {
+          name: "a",
+          cid: schema,
+          kind: "content",
+          typeName: null,
+          schemaCid: null,
+        },
+        {
+          name: "z",
+          cid: another,
+          kind: "content",
+          typeName: null,
+          schemaCid: null,
+        },
         ...builtinPins,
       ],
-      legacyAliases: [{ name: "legacy", cid: another }],
+      pending: [],
     });
-    expect(listed.err).toContain("not pinned");
+    expect(listed.err).toBe("");
     for (const name of ["1x", "../x", schema])
       expect(() => {
         pinName(name);
@@ -689,7 +843,14 @@ describe("management contract", () => {
     const reopened = new State(work.stateDir);
     expect(() => reopened.resolve("unknown")).toThrow("Unknown");
     expect(() => reopened.resolve(another, true)).toThrow("DAG-CBOR");
-    expect(reopened.aliases()).toEqual([{ name: "legacy", cid: another }]);
+    expect(
+      reopened.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='aliases'",
+        )
+        .get(),
+    ).toBeUndefined();
+    expect(reopened.resolve("z")).toBe(another);
     reopened.close();
   });
 
@@ -703,7 +864,13 @@ describe("management contract", () => {
         .out,
     ).toContain(schema);
     const state = new State(work.stateDir);
-    expect(state.aliases()).toEqual([]);
+    expect(
+      state.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='aliases'",
+        )
+        .get(),
+    ).toBeUndefined();
     state.close();
     for (const args of [
       ["pin", "add", appBuiltinAlias, another],
@@ -718,7 +885,7 @@ describe("management contract", () => {
       JSON.parse(
         (await cli(work.stateDir, ["--json", "pin", "list"])).out,
       ) as unknown,
-    ).toEqual({ items: builtinPins, pending: [], legacyAliases: [] });
+    ).toEqual({ items: builtinPins, pending: [] });
     const shown = await cli(work.stateDir, ["pin", "show", appBuiltinAlias]);
     expect(shown.code).toBe(0);
     expect(shown.out).toContain("content bundled with IPAB");
@@ -764,7 +931,7 @@ describe("management contract", () => {
       ["history.enabled", "false"],
       ["history.limit", "37"],
       ["output.retention", "none"],
-      ["store.rpc", "http://localhost:5001"],
+      ["store.gateway", "http://localhost:5001"],
     ]) {
       expect(
         (await cli(work.stateDir, ["config", "set", key!, value!])).code,
@@ -777,12 +944,12 @@ describe("management contract", () => {
       '{"items":[{"key":"history.enabled","value":false,"source":"user"}]}',
     );
     const masked = await cli(work.stateDir, [
-      "--store-rpc",
+      "--store-gateway",
       "http://localhost:6001",
       "--json",
       "config",
       "set",
-      "store.rpc",
+      "store.gateway",
       "http://localhost:7001",
     ]);
     expect(masked.err).toContain("masked by flag");
@@ -795,8 +962,8 @@ describe("management contract", () => {
     expect(environment.err).toContain("masked by env");
     expect(
       (
-        await cli(work.stateDir, ["--json", "config", "get", "store.rpc"], {
-          env: { IPAB_STORE_RPC: "default" },
+        await cli(work.stateDir, ["--json", "config", "get", "store.gateway"], {
+          env: { IPAB_STORE_GATEWAY: "default" },
         })
       ).out,
     ).toContain('"value":null,"source":"env"');
@@ -861,7 +1028,7 @@ describe("management contract", () => {
     ])
       expect(() => parseValue(configKey(String(key)), value, true)).toThrow();
     expect(parseValue("history.enabled", "true", true)).toBe(true);
-    expect(parseValue("store.rpc", null)).toBeNull();
+    expect(parseValue("store.gateway", null)).toBeNull();
     expect(() => validateUserConfig({ unknown: true })).toThrow("Malformed");
     expect(() => validateUserConfig([])).toThrow("Invalid");
     expect(() => stateLocation({ json: false, stateDir: "" }, {})).toThrow();
@@ -872,9 +1039,12 @@ describe("management contract", () => {
     expect(effectiveConfig({}, { json: false }, {}).at(-1)?.source).toBe(
       "default",
     );
-    expect(await storeConfiguration("http://localhost:5001")).toEqual({
-      backend: "kubo",
-      apiUrl: "http://localhost:5001/",
+    const configPath = join(work.root, "gateway-config.json");
+    await writeFile(configPath, JSON.stringify(work.store.configuration));
+    vi.stubEnv("TASK_CONTENT_CONFIG", configPath);
+    expect(await storeConfiguration("http://localhost:8080")).toEqual({
+      ...work.store.configuration,
+      gateway: "http://localhost:8080/",
     });
     expect(
       message(new Error("http://user:secret@localhost/?token=secret")),
@@ -886,7 +1056,7 @@ describe("management contract", () => {
     let err = "";
     expect(
       await runCli(
-        ["--store-rpc", "http://user:secret@localhost", "exec", schema],
+        ["--store-gateway", "http://user:secret@localhost", "exec", schema],
         {
           out() {},
           err(text) {
@@ -936,7 +1106,7 @@ describe("management contract", () => {
         "without credentials",
       );
       expect(parseValue("output.retention", "history")).toBe("history");
-      expect(() => parseValue("store.rpc", 123)).toThrow("Invalid value");
+      expect(() => parseValue("store.gateway", 123)).toThrow("Invalid value");
       expect(() =>
         parseValue("history.limit", Number.MAX_SAFE_INTEGER + 1),
       ).toThrow("positive");

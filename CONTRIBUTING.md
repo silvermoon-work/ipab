@@ -12,6 +12,21 @@ pnpm check
 当前 `apps/cli` 是 private code package，包含真实 CLI、子进程和 writable
 Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包发布检查无任务。
 
+若脚本启动前报告 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` 且提示
+`version not present in registry manifest`，先检查当前设备 registry 的元数据
+和锁文件变更，不关闭 `minimumReleaseAge` 或 `verifyDepsBeforeRun`。
+确认缺失的传递依赖后，可用
+`pnpm -r update --lockfile-only --depth Infinity <package-name> ...`
+定向重新解析，再执行 `pnpm install --frozen-lockfile` 和 `pnpm check`。
+不要将设备专用 registry／代理地址写入共享锁文件。
+
+`pnpm build && pnpm test-pnpm` 验证真实 pnpm 开发链路：在独立临时目录
+初始化 Node 与 Web App 模板、实际安装依赖、执行生成项目原有的
+`pnpm typecheck`／`pnpm build` 并检查 CAR。使用当前设备 registry，
+关闭 Corepack 联网，输出和本地 Store 均隔离，完成后清理。
+该检查不以依赖软链接替代安装，不修改生成项目的 packageManager 或 build 脚本；
+CI 默认环境和 Node 兼容矩阵均执行。
+
 ## Workspace
 
 - 可执行应用放在 `apps/`，公共代码放在 `packages/`。

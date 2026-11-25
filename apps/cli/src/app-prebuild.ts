@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { StringDecoder } from "node:string_decoder";
@@ -88,7 +88,7 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
   const runnerName = (entry: string) => {
     const file = basename(entry);
     if (["npm-cli.js", "npm"].includes(file)) return "npm";
-    if (["pnpm.cjs", "pnpm.js", "pnpm.exe", "pnpm"].includes(file))
+    if (["pnpm.cjs", "pnpm.mjs", "pnpm.js", "pnpm.exe", "pnpm"].includes(file))
       return "pnpm";
     return undefined;
   };
@@ -98,13 +98,15 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
         ? "pnpm"
         : "npm"
       : (inherited && runnerName(inherited)) || "npm";
-  const suffix = name === "npm" ? "npm-cli.js" : "pnpm.cjs";
+  const suffixes = name === "npm" ? ["npm-cli.js"] : ["pnpm.mjs", "pnpm.cjs"];
   const candidates = [
     ...(inherited && runnerName(inherited) === name ? [inherited] : []),
     ...[dirname(process.execPath), ...(process.env.PATH ?? "").split(delimiter)]
       .filter(Boolean)
       .flatMap((directory) => [
-        join(directory, "node_modules", name, "bin", suffix),
+        ...suffixes.map((suffix) =>
+          join(directory, "node_modules", name, "bin", suffix),
+        ),
         join(directory, process.platform === "win32" ? `${name}.exe` : name),
       ]),
   ];
@@ -113,12 +115,30 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
       const entry = await realpath(candidate);
       if (runnerName(entry) !== name) continue;
       if ((await lstat(entry)).isFile()) {
-        const native = !/\.(?:js|cjs)$/.test(entry);
+        const native = !/\.(?:js|cjs|mjs)$/.test(entry);
+        if (!native) {
+          const owner = object(
+            JSON.parse(
+              await readFile(
+                join(dirname(entry), "..", "package.json"),
+                "utf8",
+              ),
+            ) as unknown,
+            "Package manager",
+          );
+          if (owner.name !== name) continue;
+        }
         if (typeof declaration === "string") {
           const expected = declaration.split("@")[1]!.split("+")[0];
+          const versionArgs = [
+            ...(name === "pnpm"
+              ? ["--config.manage-package-manager-versions=false"]
+              : []),
+            "--version",
+          ];
           const { stdout } = await promisify(execFile)(
             native ? entry : process.execPath,
-            native ? ["--version"] : [entry, "--version"],
+            native ? versionArgs : [entry, ...versionArgs],
           );
           if (stdout.trim() !== expected)
             throw new HostError(
@@ -133,7 +153,7 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
     }
   }
   throw new HostError(
-    `Could not locate ${name}'s CLI. Run ipab through ${name} exec, or explicitly install the project's declared package manager.`,
+    `Could not locate ${name}'s CLI. Corepack shims are not executed. Run ipab through ${name} exec, or explicitly install the project's declared package manager.`,
   );
 }
 

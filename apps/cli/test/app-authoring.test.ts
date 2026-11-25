@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import * as processes from "node:child_process";
 import { promisify } from "node:util";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { CarBlockIterator } from "@ipld/car/iterator";
 import type { CID } from "multiformats/cid";
 import { encodeSchema, openBundle, parseData } from "@ipab/bundle";
@@ -857,7 +857,7 @@ describe("App-first authoring", () => {
       }),
     );
     const runner = process.env.npm_execpath!;
-    expect(runner).toMatch(/pnpm(?:\.cjs|\.js|\.exe)?$/);
+    expect(runner).toMatch(/pnpm(?:\.cjs|\.mjs|\.js|\.exe)?$/);
     const built = await promisify(execFile)(
       runner.endsWith(".exe") ? runner : process.execPath,
       [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
@@ -1265,5 +1265,72 @@ setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
       );
       await unlink(join(output, "marker"));
     }
+    await expect(
+      runPrebuild(
+        project,
+        output,
+        { ...pkg, packageManager: "pnpm@0.0.0" },
+        [],
+        {},
+      ),
+    ).rejects.toThrow("Project requires pnpm@0.0.0; active pnpm is");
+    await expect(readFile(join(output, "marker"))).rejects.toThrow();
+  }, 30_000);
+  it("skips Corepack shims without executing them and finds an installed pnpm CLI", async () => {
+    await mkdir(project);
+    const output = join(project, "output");
+    const corepack = join(project, "corepack");
+    const installed = join(project, "installed");
+    await mkdir(output);
+    await mkdir(join(corepack, "dist"), { recursive: true });
+    await mkdir(join(installed, "node_modules"), { recursive: true });
+    await writeFile(
+      join(corepack, "package.json"),
+      JSON.stringify({ name: "corepack" }),
+    );
+    const shim = join(corepack, "dist", "pnpm.js");
+    const marker = join(project, "corepack-ran");
+    await writeFile(
+      shim,
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "unexpected"); process.exit(1);`,
+    );
+    const runner = process.env.npm_execpath!;
+    const pnpmRoot = resolve(dirname(await filesystem.realpath(runner)), "..");
+    const workspace = object(
+      JSON.parse(
+        await readFile(resolve("..", "..", "package.json"), "utf8"),
+      ) as unknown,
+      "workspace",
+    );
+    const pkg = {
+      scripts: { "ipab-prebuild": "node write.cjs" },
+    };
+    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
+    await writeFile(
+      join(project, "write.cjs"),
+      'require("node:fs").writeFileSync(require("node:path").join(process.env.IPAB_BUILD_DIR,"marker"),"pnpm hook");',
+    );
+    vi.stubEnv("npm_execpath", shim);
+    vi.stubEnv("PATH", dirname(process.execPath));
+    for (const packageManager of [undefined, workspace.packageManager]) {
+      await expect(
+        runPrebuild(project, output, { ...pkg, packageManager }, [], {}),
+      ).rejects.toThrow("Corepack shims are not executed");
+    }
+    await expect(readFile(marker)).rejects.toThrow();
+    await symlink(
+      pnpmRoot,
+      join(installed, "node_modules", "pnpm"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    if (process.platform !== "win32")
+      await symlink("/bin/sh", join(installed, "sh"));
+    vi.stubEnv("PATH", [installed, dirname(process.execPath)].join(delimiter));
+    for (const packageManager of [undefined, workspace.packageManager]) {
+      await runPrebuild(project, output, { ...pkg, packageManager }, [], {});
+      expect(await readFile(join(output, "marker"), "utf8")).toBe("pnpm hook");
+      await unlink(join(output, "marker"));
+    }
+    await expect(readFile(marker)).rejects.toThrow();
   }, 30_000);
 });

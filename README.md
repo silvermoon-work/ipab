@@ -29,18 +29,19 @@ ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 ### 本机命令与 Kubo
 
 CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前保持 private，尚未发布到 npm。
-在仓库根目录使用 PowerShell 将构建后的本地包链接到全局：
+在仓库根目录构建并将本地包链接到全局（支持 macOS、Linux 和 Windows）：
 
-```powershell
-pnpm build
-$pnpmEntry = pnpm exec node -p 'process.env.npm_execpath'
-node $pnpmEntry add --global "@ipab/cli@link:$((Resolve-Path apps\cli).Path)"
+```sh
+pnpm link-cli
 ipab --version
 ```
 
-显式调用项目的 pnpm entry，避免全局操作切回本机其他 pnpm 版本。
+`link-cli` 先构建全部 workspace 依赖，成功后使用当前项目的 pnpm entry
+执行本地全局链接，不发布 npm 包，也不切换 pnpm 版本。
 链接后修改源码需重新 `pnpm build`，无需重新发布或安装包。
-全局 bin 目录需在 PATH 中。
+macOS／Linux 构建成功后自动为 CLI 入口添加执行权限，已有链接同样生效，
+无需手动 `chmod`。
+全局 bin 目录需在 PATH 中；未配置时先运行 `pnpm setup` 并重启终端。
 
 本地 Kubo daemon 已运行且 API 地址为 `127.0.0.1:5001` 时，可以保存配置：
 
@@ -352,6 +353,8 @@ IPAB 使用项目声明的准确 npm/pnpm `packageManager`；未声明时沿用�
 `npm run build`／`pnpm run build`／`exec` 的 npm/pnpm，
 直接调用且没有包管理器上下文时使用 npm。
 不支持的声明、版本不匹配或工具不存在明确失败，不自动安装或切换版本。
+只执行已安装包管理器自身的 CLI，不执行可能联网查询或下载版本的 Corepack shim；
+若 PATH 中只有 shim，请通过已配置的 `pnpm exec ipab build` 传入实际 CLI。
 通过 npm 执行时使用 `--ignore-scripts`，通过 pnpm 执行时关闭
 `enable-pre-post-scripts` 和 `manage-package-manager-versions`；
 只执行指定脚本，不隐式运行其前后置生命周期 hooks，也不让 pnpm 自动下载版本。
@@ -388,6 +391,10 @@ stdout／stderr 流失败或诊断接收器抛错同样失败，先停止自有�
 输出交接目录及 Bundle staging 均由本次构建拥有，结束后清理。
 
 ### Web App
+
+模板同时支持 npm 和 pnpm；使用 pnpm 时可执行 `pnpm install`、
+`pnpm typecheck`、`pnpm build`。生成的 `pnpm-workspace.yaml` 仅允许
+esbuild 必需的安装脚本，不全局开放第三方生命周期脚本。
 
 ```powershell
 ipab init my-web-app --template web-app

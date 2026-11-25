@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { symlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fixture } from "./helpers.js";
 
 afterEach(() => {
@@ -9,6 +11,24 @@ afterEach(() => {
 });
 
 describe("executable entry contracts", () => {
+  it.skipIf(process.platform === "win32")(
+    "runs the built CLI directly through a symlink without a Node wrapper",
+    async () => {
+      const work = await fixture();
+      try {
+        const command = join(work.root, "ipab");
+        await symlink(resolve("dist", "main.js"), command);
+        const { stdout, stderr } = await promisify(execFile)(command, [
+          "--help",
+        ]);
+        expect(stdout).toContain("ipab");
+        expect(stderr).toBe("");
+      } finally {
+        await work.cleanup();
+      }
+    },
+  );
+
   it("bootstrap supplies context separately and preserves actual application argv", async () => {
     const work = await fixture();
     const argv = process.argv;

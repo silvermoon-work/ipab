@@ -25,6 +25,7 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm test-pnpm
   compatibility:
     name: Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
@@ -43,6 +44,7 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm test-pnpm
   release-verification:
     name: Release verification (v1)
     needs: [check, compatibility]

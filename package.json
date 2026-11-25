@@ -25,7 +25,9 @@
     "format-check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
     "lint-package": "turbo run lint-package",
+    "link-cli": "node scripts/link-cli.mjs",
     "test": "turbo run test --concurrency=1",
+    "test-pnpm": "node scripts/test-pnpm.mjs",
     "test-coverage": "turbo run test-coverage --concurrency=1",
     "typecheck": "tsc --noEmit --project tsconfig.json && turbo run typecheck"
   },

@@ -35,6 +35,7 @@ describe("management contract", () => {
   });
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await work.cleanup();
   });
   const schema = appSchemaCid.toString();
@@ -325,7 +326,7 @@ describe("management contract", () => {
   });
 
   it("history preserves all fields regardless of terminal width", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
+    vi.stubEnv("TZ", "UTC");
     const argv = ["--flag", "x".repeat(90)];
     const state = new State(work.stateDir);
     state.saveRun(record("term-run", another, { argv, outputCid: schema }));
@@ -335,8 +336,8 @@ describe("management contract", () => {
       expect(result.code).toBe(0);
       expect(result.out).toContain("run term-run\n");
       expect(result.out).toContain("Status:   succeeded");
-      expect(result.out).toContain("Started:  2026-11-23T00:00:00Z");
-      expect(result.out).toContain("Ended:    2026-11-23T00:00:01Z (11h)");
+      expect(result.out).toContain("Started:  2026-11-23 00:00:00 +0000");
+      expect(result.out).toContain("Ended:    2026-11-23 00:00:01 +0000");
       expect(result.out).toContain("Duration: 1s");
       expect(result.out).toContain(`App:      ${another}`);
       expect(result.out).toContain(`Output:   ${schema}`);
@@ -370,41 +371,56 @@ describe("management contract", () => {
     }
   });
 
-  it("history shows relative end times at minute/hour/day boundaries while full timestamps remain available", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-23T12:00:00Z"));
-    const cases = [
-      ["recent", "2026-11-23T11:59:30Z", "0m"],
-      ["minutes", "2026-11-23T11:50:00Z", "10m"],
-      ["one-hour", "2026-11-23T11:00:00Z", "1h"],
-      ["hours", "2026-11-23T07:00:00Z", "5h"],
-      ["one-day", "2026-11-22T12:00:00Z", "2026-11-22"],
-      ["older", "2026-11-21T12:00:00Z", "2026-11-21"],
-      ["future", "2026-11-24T12:00:00Z", "2026-11-24"],
-    ] as const;
-    const state = new State(work.stateDir);
-    for (const [id, endedAt] of cases)
-      state.saveRun(
-        record(id, another, {
-          startedAt: new Date(Date.parse(endedAt) - 1000).toISOString(),
-          endedAt,
-        }),
-      );
-    state.close();
-    const listed = await cli(work.stateDir, ["history", "list"]);
-    expect(listed.code).toBe(0);
-    for (const [id, endedAt, ended] of cases) {
-      expect(listed.out).toContain(`run ${id}\n  Status:   succeeded\n`);
-      expect(listed.out).toContain(`Ended:    ${endedAt} (${ended})`);
-    }
-    const machine = await cli(work.stateDir, ["--json", "history", "list"]);
-    expect(JSON.parse(machine.out) as unknown).toHaveProperty(
-      "items",
-      expect.arrayContaining([
-        expect.objectContaining({ id: "minutes", endedAt: cases[1][1] }),
-      ]),
-    );
-    const details = await cli(work.stateDir, ["history", "show", "minutes"]);
-    expect(details.out).toContain(`Ended: ${cases[1][1]}`);
+  it.each([
+    ["UTC", "2026-11-23 23:59:59 +0000", "2026-11-24 00:00:01 +0000"],
+    ["Asia/Shanghai", "2026-11-24 07:59:59 +0800", "2026-11-24 08:00:01 +0800"],
+    [
+      "America/New_York",
+      "2026-11-23 18:59:59 -0500",
+      "2026-11-23 19:00:01 -0500",
+    ],
+    ["Asia/Kolkata", "2026-11-24 05:29:59 +0530", "2026-11-24 05:30:01 +0530"],
+  ])(
+    "formats history times in %s without relative ages or milliseconds",
+    async (zone, started, ended) => {
+      vi.stubEnv("TZ", zone);
+      const startedAt = "2026-11-24T07:59:59.987+08:00";
+      const endedAt = "2026-11-24T00:00:01.234Z";
+      const state = new State(work.stateDir);
+      state.saveRun(record("formatted-run", another, { startedAt, endedAt }));
+      state.close();
+      const listed = await cli(work.stateDir, ["history", "list"]);
+      expect(listed.code).toBe(0);
+      expect(listed.out).toContain(`Started:  ${started}\n`);
+      expect(listed.out).toContain(`Ended:    ${ended}\n`);
+      expect(listed.out).toContain("Duration: 1s\n");
+      const details = await cli(work.stateDir, [
+        "history",
+        "show",
+        "formatted-run",
+      ]);
+      expect(details.code).toBe(0);
+      expect(details.out).toContain(`Started: ${started}\n`);
+      expect(details.out).toContain(`Ended: ${ended}\n`);
+      const machine = await cli(work.stateDir, ["--json", "history", "list"]);
+      expect(JSON.parse(machine.out) as unknown).toMatchObject({
+        items: [{ id: "formatted-run", startedAt, endedAt }],
+      });
+      const machineDetails = await cli(work.stateDir, [
+        "--json",
+        "history",
+        "show",
+        "formatted-run",
+      ]);
+      expect(JSON.parse(machineDetails.out) as unknown).toMatchObject({
+        id: "formatted-run",
+        startedAt,
+        endedAt,
+      });
+    },
+  );
+
+  it("rejects invalid end times instead of formatting them", async () => {
     const corrupt = new State(work.stateDir);
     corrupt.saveRun(record("invalid", another, { endedAt: "not-a-date" }));
     corrupt.close();
@@ -415,10 +431,10 @@ describe("management contract", () => {
 
   it.each([
     ["succeeded", "2026-11-23T00:00:00Z", "0s"],
-    ["failed", "2026-11-23T00:00:00.125Z", "0.125s"],
-    ["cancelled", "2026-11-23T01:02:03.456Z", "3723.456s"],
+    ["failed", "2026-11-23T00:00:00.125Z", "0s"],
+    ["cancelled", "2026-11-23T01:02:03.456Z", "3723s"],
   ] as const)(
-    "labels %s runs with precise elapsed duration",
+    "labels %s runs with whole-second elapsed duration",
     async (status, endedAt, duration) => {
       const state = new State(work.stateDir);
       state.saveRun(record("timed-run", another, { status, endedAt }));

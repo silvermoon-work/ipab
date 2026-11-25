@@ -728,15 +728,15 @@ RFC3339，最多三位小数秒，按 endedAt 的 `[since,until)` 匹配；更�
 `--before`
 接受完整 ID 或至少 8 字符的唯一前缀，精确 ID 优先，歧义明确报错；
 删除在确认前解析并固定完整目标 ID。持久 ID、JSON 和详情中的 ID 不变。
-Ended 标签显示完整结束时间，并附加相对时间提示：不足一小时显示分钟（如
-`10m`，不足一分钟为 `0m`），
-不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
-未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
+list 与 show 的 Started／Ended 使用类似 `git log --date=iso` 的本地时间格式：
+`YYYY-MM-DD HH:mm:ss +0800`，包含对应日期的时区偏移，不显示毫秒或相对时间。
+原始完整时间继续保存在 JSON 中，筛选和排序不变。
 
 人类可读的 list 使用类似 git log 的逐条记录布局：首行显示完整 Run ID，
-后续行以 Status、Started、Ended、Duration 标签显示状态、完整起止时间与耗时，
+后续行以 Status、Started、Ended、Duration 标签显示状态、起止时间与耗时，
 再显示完整 App CID、Output CID 和 argv，不截断。
-Duration 为 endedAt - startedAt 的经过秒数，保留毫秒精度，不表示 CPU 占用时间；
+Duration 为 endedAt -
+startedAt 的经过整秒数，舍去不足一秒的部分，不表示 CPU 占用时间；
 非法时间或结束早于开始时明确报错。JSON 字段保持不变。
 匹配的可用 pin 短名只附加在 CID 后；多个 pin 时取按名称排序的第一个。
 无输出显示 `none`；argv 使用 `join(' ')`，无参数显示为空，控制字符转义。

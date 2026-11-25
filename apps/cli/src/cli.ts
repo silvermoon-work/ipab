@@ -444,6 +444,16 @@ function endedDisplay(endedAt: string, now: number): string {
     : `${Math.floor(age / 60_000)}m`;
 }
 
+function runDuration(record: Pick<RunRecord, "startedAt" | "endedAt">): string {
+  const started = Date.parse(record.startedAt);
+  if (!Number.isFinite(started))
+    throw new HostError("Execution record has an invalid start time.");
+  const duration = Date.parse(record.endedAt) - started;
+  if (!Number.isFinite(duration) || duration < 0)
+    throw new HostError("Execution record has an invalid duration.");
+  return `${duration / 1000}s`;
+}
+
 function table(headers: string[], rows: string[][], empty: string): string {
   if (!rows.length) return empty;
   const cells = rows.map((row) => row.map(printable));
@@ -1100,10 +1110,14 @@ async function performCli(
           ? page.items
               .map((record) =>
                 [
-                  `run ${shortId(record.id)} | ${record.status} | ${endedDisplay(record.endedAt, now)}`,
-                  `  App:    ${reference(record.appCid)}`,
-                  `  Output: ${reference(record.outputCid)}`,
-                  `  Argv:   ${record.argv.join(" ")}`,
+                  `run ${record.id}`,
+                  `  Status:   ${record.status}`,
+                  `  Started:  ${record.startedAt}`,
+                  `  Ended:    ${record.endedAt} (${endedDisplay(record.endedAt, now)})`,
+                  `  Duration: ${runDuration(record)}`,
+                  `  App:      ${reference(record.appCid)}`,
+                  `  Output:   ${reference(record.outputCid)}`,
+                  `  Argv:     ${record.argv.join(" ")}`,
                 ]
                   .map(printable)
                   .join("\n"),

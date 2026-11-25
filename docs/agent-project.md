@@ -43,7 +43,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 - 新成员脚本按完整标准使用 `node scripts/<same-name>.mjs`，共享逻辑在
   根 `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
 - 运行时／CLI 边界、准确 App Schema 和保留策略见 docs/design-overview.md
-  与 README.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon GC。
+  与 docs/reference.md。只删除自身创建的运行文件，不清空共享 Store 或请求 daemon
+  GC。
 - 当前 Bundle 协议见 packages/bundle/README.md：.bundle.yaml 本身是完整类型定义，
   包含必填 name、缺省为空的 description，以及 entry 的 path/schema/contentType/
   defaultValue；默认数据须符合入口 Schema，固定路径不得碰撞控制文件。
@@ -94,11 +95,11 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   builtin 指向新身份，不静默接受旧身份；须重建并显式更新 pin/register。
   profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
   SemVer／Intl locale tag／非空白／icon 存在检查在 App 专用层，license 只声明，
-  不提供 DRM 或控制读写执行。准确新 CID 和有意迁移说明见 README.md。
+  不提供 DRM 或控制读写执行。准确新 CID 和有意迁移说明见 docs/reference.md。
   下层 bundle init/build/inspect/import 永不编译；import 显式验证自足单根 CAR，
   复用 Store put 保存原始 block，不 pin／retain，不执行 App／GC 或启动 daemon；
   导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
-  不打包或删除旧 staging。完整公共接口与资源路径见 README.md。
+  不打包或删除旧 staging。完整公共接口与资源路径见 docs/reference.md。
 - App build 默认生成独立 `<output-name>.source.car`；`build.includeSource`
   配置默认 true，互斥 `--with-source`／`--without-source` 优先覆盖。
   项目 `.bundle.yaml` 定义源码类型，内置模板生成以 package.json 为入口的
@@ -134,7 +135,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
   服务就绪后默认打开系统浏览器，openBrowser:false 关闭；
   框架保留的 App 参数 --no-open 优先禁止打开，打开失败报告 URL 并保留服务。
-  不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。
+  不替换 IPAB 输出最终提交规则。协议与限制见 docs/reference.md 和框架 README。
 - Template 新契约是专用 Content Bundle 数据，不是 App。完整 templateSchema
   用 encodeSchema 编码，离线类型 alias builtin:project-template.v1 对应
   bafyreifrpcmpq6d4yw7vgusylt4cabij6orf5fioiwcfr5t2znykay4y5u；

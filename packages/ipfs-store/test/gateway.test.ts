@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { test, type TestContext } from "vitest";
 import { CID } from "multiformats/cid";
@@ -166,6 +167,46 @@ test("per-attempt timeout leaves a backup opportunity; total budget and cancella
     /host canceled/,
   );
   assert.deepEqual(order, ["first"]);
+});
+test("garbage collection cannot discard the per-attempt failover deadline", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--expose-gc",
+      "--input-type=module",
+      "--eval",
+      `
+        import assert from "node:assert/strict";
+        import { createServer } from "node:http";
+        import { createIpfsGatewayClient } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+        const bytes = Buffer.from(${JSON.stringify(bytes.toString())});
+        const order = [];
+        const server = createServer((request, response) => {
+          order.push(request.url.split("/")[1]);
+          response.writeHead(200, { "content-type": "application/vnd.ipld.raw" });
+          if (request.url.startsWith("/backup/")) response.end(bytes);
+        });
+        await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        const base = "http://127.0.0.1:" + server.address().port;
+        const client = createIpfsGatewayClient([base + "/first", base + "/backup"], {
+          allowPath: true, timeoutMs: 2000, attemptTimeoutMs: 200,
+        });
+        const gcTimer = setInterval(() => global.gc(), 10);
+        try {
+          assert.deepEqual(await client.block.get(${JSON.stringify(cid)}), bytes);
+          assert.deepEqual(order, ["first", "backup"]);
+        } finally {
+          clearInterval(gcTimer);
+          server.closeAllConnections();
+          await new Promise(resolve => server.close(resolve));
+          await client.close();
+        }
+      `,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
 });
 test("only explicit hint policy permits network access, after trusted sources and within their budget", async (t) => {
   const order: string[] = [];

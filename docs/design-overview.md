@@ -16,7 +16,8 @@ Node／Store 决定取代下文历史草案的单 CID 输入、apps 命令及临
 内置 `node`／`web-app` 及数据式本地模板仅负责 Init 脚手架，不改变 App 协议。
 private `@ipab/web-app` 在 App 子进程内提供本机 HTTP、宿主页／opaque iframe、
 受限业务 RPC、事件及连接生命周期；不把 Node context 暴露给浏览器，也不是沙箱。
-完整构建契约、模板扩展和使用方式见 README.md 及 packages/web-app/README.md。
+完整构建契约、模板扩展和使用方式见 [命令与应用开发参考](reference.md)
+及 [Web App framework](../packages/web-app/README.md)。
 
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
@@ -48,7 +49,8 @@ init/build/inspect/import 覆盖初始化、两种 CAR 构建、检查和显式�
 build
 --schema-only 复用同一命令，输出 dist/schema.car，完整构建输出 dist/bundle.car。
 根 .bundle-ignore 默认 /dist/，不按 CAR 扩展名一概排除；源码不被覆盖，产物替换
-须显式 --replace，失败只回收本次临时文件。完整离线示例见 README.md。
+须显式 --replace，失败只回收本次临时文件。完整离线示例见
+[Bundle 工具](reference.md#bundle-开发底层)。
 `bundle import FILE.car` 先离线验证单根 CAR 的 block、完整 DAG 和 Bundle／类型，
 再使用已配置 Store 的 put 写入原始 block，不 pin／retain，重复导入幂等。
 根 build 和 bundle build 默认导入结果；--no-import 关闭写入，保持纯离线构建。
@@ -75,7 +77,7 @@ CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，�
 ## 具名 pin 与短名
 
 用户短名由具名 pin 统一管理，不再维护独立 Alias 与 pin 开关。
-`pin add/delete/list/show/rename` 详见 [使用说明](../README.md#具名-pin)。
+`pin add/delete/list/show/rename` 详见 [使用说明](reference.md#具名-pin)。
 pin 不是执行或信任授权，删除只释放本记录保留，不删除 block 或执行 GC。
 支持 Bundle、独立 Schema 和 Store 可验证的普通内容；add 保存经过验证的
 类别、完整 Bundle 类型名和准确 schema CID，list/show 不联网，普通内容没有
@@ -220,7 +222,8 @@ Content Bundle，绝不将源码 CAR 或 blocks 嵌入 App。项目内嵌套 `.g
 源码 `.bundle.yaml` 与最终 App 的类型定义独立。配置 `build.includeSource`
 默认为 true，互斥 `--with-source`／`--without-source` 优先覆盖；
 关闭不生成源码、不写关联、不清理旧产物。源码导入及持久保留独立操作。
-完整文件选择、结果形状、两产物提交边界与可复现性限制见 README。
+完整文件选择、结果形状、两产物提交边界与可复现性限制见
+[源码包参考](reference.md#独立源码包与弱关联)。
 
 app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
 实际 App 元数据变动不修改共享类型 CID。description 缺省为空，
@@ -229,7 +232,9 @@ author{name,email?}、license、icon 和 i18n 可选。专用 App 校验要求�
 翻译对象仅 name/description 字符串，缺字段逐一回退 base。无语言选择 UI。
 icon 必须是 Bundle 根相对 resources/ 安全普通文件并存在。
 license 只声明，不控制读／复制／执行，不实现 DRM；CAS 不消除权限或许可证责任。
-具体数据配置、长度限制及资源选择见 README.md。原 profile/runtime 两字段已删除，
+具体数据配置、长度限制及资源选择见
+[应用开发参考](reference.md#app-开发上层-node-profile)。
+原 profile/runtime 两字段已删除，
 准确完整类型 CID 唯一确定 Node 执行合约；旧类型包须重建和显式更新注册，
 不自动迁移，也不将项目元数据写入共享类型定义。
 
@@ -327,7 +332,7 @@ outputCid 始终是整个输出 Space 的目录 root，不是单文件 CID、App
 
 ## 配置、历史与所有权
 
-命令、JSON 字段、优先级及隐私说明见 [README](../README.md)。
+命令、JSON 字段、优先级及隐私说明见 [命令参考](reference.md)。
 默认 `store.rpc=null` 使用 ipfs-store `/node` 公共配置及本地默认数据目录；
 显式 URL 选择库的 Kubo 配置，不新建 RPC 服务或直接调用 Kubo HTTP。
 默认状态为平台用户数据目录下的 ipab；SQLite 元数据使用 WAL 与短事务，

@@ -178,11 +178,19 @@ function readClient(plan: ReadPlan): GatewayClient {
             deadline,
             performance.now() + plan.attemptTimeoutMs,
           );
+          // Node 22 may collect inline timeout signals composed with AbortSignal.any.
+          const attempt = new AbortController();
+          const timer = setTimeout(
+            () => {
+              attempt.abort(
+                new DOMException("Gateway attempt timed out.", "TimeoutError"),
+              );
+            },
+            Math.max(1, Math.ceil(attemptDeadline - performance.now())),
+          );
           const signal = AbortSignal.any([
             total,
-            AbortSignal.timeout(
-              Math.max(1, Math.ceil(attemptDeadline - performance.now())),
-            ),
+            attempt.signal,
             requestSignal,
           ]);
           try {
@@ -204,6 +212,8 @@ function readClient(plan: ReadPlan): GatewayClient {
                 ? "timeout"
                 : "read_or_verification_failed",
             });
+          } finally {
+            clearTimeout(timer);
           }
         }
         throw new GatewayReadError(

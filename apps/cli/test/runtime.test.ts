@@ -546,6 +546,19 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         );
         await expect(loadApp(root, work.store, owner)).rejects.toThrow();
       }
+    } finally {
+      await owner.release();
+    }
+  }, 30000);
+
+  it("rejects unsafe supported Schema paths and corrupt nested CARs before execution", async () => {
+    const owner = await Ownership.create(
+      state,
+      work.store,
+      "unsafe-schema-paths",
+      null,
+    );
+    try {
       const files = {
         ".bundle.yaml": JSON.stringify(appSchema),
         "resources/app.cjs": "throw new Error('must not execute');",
@@ -581,7 +594,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
     );
     expect(result.code).toBe(1);
     expect(result.stdout.length).toBe(0);
-    expect(state.runs()[0]?.appExitCode).toBeNull();
+    expect(state.runs()[0]?.appExitCode, result.stderr).toBeNull();
   }, 30000);
   it.each(["other/app.cjs", "resources/app.js"])(
     "enforces Node entry paths outside the structural schema: %s",

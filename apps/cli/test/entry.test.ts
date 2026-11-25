@@ -22,7 +22,9 @@ describe("executable entry contracts", () => {
           "--help",
         ]);
         expect(stdout).toContain("ipab");
-        expect(stderr).toBe("");
+        expect(stderr).toMatch(
+          /^(?:\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/,
+        );
       } finally {
         await work.cleanup();
       }

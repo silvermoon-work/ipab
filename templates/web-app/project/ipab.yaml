@@ -3,6 +3,9 @@ resources:
   - web
 supportedSchemas: []
 build:
+  # Independent source CAR; App records only a weak source.cid.
+  # CLI --with-source / --without-source overrides this default.
+  includeSource: true
   strategy: ipab-prebuild
   typecheck:
     - config: tsconfig.server.json

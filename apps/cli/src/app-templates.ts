@@ -21,6 +21,7 @@ import {
 } from "./template-definition.js";
 import { templateSource } from "./template-source.js";
 import { nodeError, selectedTree } from "./authoring.js";
+import { sourceSchema } from "./source-bundle.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -65,6 +66,7 @@ export async function builtinTemplateTree(
 
 function nodeTemplate(): Map<string, string | Uint8Array> {
   return new Map([
+    [".bundle.yaml", stringify(sourceSchema)],
     [
       "package.json.liquid",
       `{
@@ -110,6 +112,11 @@ supportedSchemas: []
 # To support your own type, replace [] above with this list and create the definition:
 #   - schemas/note.json
 
+# Separate source CAR; App stores only a weak source.cid, never source blocks.
+# CLI --with-source / --without-source overrides this default.
+build:
+  includeSource: true
+
 # Metadata overrides package.json; remove an override to inherit its package value.
 app:
   name: {{ name | json }}
@@ -128,11 +135,11 @@ app:
   #     name: Hello App
   #     description: An example description
 # Translations override name/description separately; missing fields fall back.
-# entry and supportedSchemas inside app are generated; do not override them.
+# entry, supportedSchemas and source inside app are generated; do not override them.
 `,
     ],
     ["src/main.ts", 'console.log("Hello from your IPAB App.");\n'],
-    [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n"],
+    [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n.env\n.env.*\n"],
   ]);
 }
 

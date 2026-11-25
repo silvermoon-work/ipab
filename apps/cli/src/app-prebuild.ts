@@ -16,10 +16,19 @@ export function projectBuild(value: unknown): ProjectBuild | undefined {
   if (value === undefined) return undefined;
   const build = object(value, "App build");
   if (
-    build.strategy !== "ipab-prebuild" ||
+    (build.includeSource !== undefined &&
+      typeof build.includeSource !== "boolean") ||
     Object.keys(build).some(
-      (key) => !["strategy", "typecheck"].includes(key),
-    ) ||
+      (key) => !["strategy", "typecheck", "includeSource"].includes(key),
+    )
+  )
+    throw new HostError(
+      "App build accepts only strategy, typecheck and boolean includeSource.",
+    );
+  if (build.strategy === undefined && build.typecheck === undefined)
+    return undefined;
+  if (
+    build.strategy !== "ipab-prebuild" ||
     !Array.isArray(build.typecheck) ||
     !build.typecheck.length
   )

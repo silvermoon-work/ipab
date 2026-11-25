@@ -137,6 +137,13 @@ entry:
         type: string
       entry:
         type: string
+      source:
+        type: object
+        additionalProperties: false
+        required: [cid]
+        properties:
+          cid:
+            type: string
       supportedSchemas:
         type: string
       author:
@@ -181,7 +188,7 @@ entry:
 ```
 
 上述完整定义通过 encodeSchema 生成单个 DAG-CBOR block；
-准确 CID 为 `bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a`。
+准确 CID 为 `bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq`。
 CLI 的 app-definition.ts 集中保存完整定义与固定 CID，authoring 重新编码核对身份；
 runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 离线映射到此完整定义／CID，
@@ -203,6 +210,17 @@ open 在 execute 的唯一 App load 后、materialize／spawn 前按输入 schem
 准确匹配 roots；遗漏／不匹配显式失败，无成功回退。register 仍本地离线，
 关联不等于支持声明。exec 保留原 argv，不根据声明解析参数或做类型匹配。
 新增字段有意改变完整 App 类型 CID；旧身份不自动接受或迁移，须重建并更新 pin/register。
+
+可选 source 为严格 `{cid:string}` 对象，仅接受 canonical CIDv1 UnixFS SHA-256
+CID，
+是纯文本弱关联，不是 IPLD link。App 加载、执行、导入和 pin 都不获取、验证或保留
+它指向的源码 DAG。上层 build 默认在独立 `<output-name>.source.car` 中输出源码
+Content Bundle，绝不将源码 CAR 或 blocks 嵌入 App。项目内嵌套 `.gitignore`
+选择当前工作树文件，排除依赖、Git 元数据、输出和 staging；前后快照变化失败。
+源码 `.bundle.yaml` 与最终 App 的类型定义独立。配置 `build.includeSource`
+默认为 true，互斥 `--with-source`／`--without-source` 优先覆盖；
+关闭不生成源码、不写关联、不清理旧产物。源码导入及持久保留独立操作。
+完整文件选择、结果形状、两产物提交边界与可复现性限制见 README。
 
 app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
 实际 App 元数据变动不修改共享类型 CID。description 缺省为空，

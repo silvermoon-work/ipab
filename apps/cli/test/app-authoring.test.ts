@@ -25,6 +25,7 @@ import { object } from "../src/errors.js";
 import { cli, fixture, subprocess } from "./helpers.js";
 import { State } from "../src/state.js";
 import { buildChain, projectBuild, runPrebuild } from "../src/app-prebuild.js";
+import { readCar } from "../src/authoring.js";
 
 const require = createRequire(import.meta.url);
 vi.mock("node:fs/promises", async () => {
@@ -117,6 +118,8 @@ describe("App-first authoring", () => {
       ["build", "--schema-only"],
       ["init", "hello", "--replace"],
       ["build", "-o", "-"],
+      ["build", "--with-source", "--without-source"],
+      ["bundle", "build", "example", "--with-source"],
     ])
       expect((await cli(work.stateDir, args)).code).toBe(2);
     const response = await cli(work.stateDir, [
@@ -146,12 +149,13 @@ describe("App-first authoring", () => {
       devDependencies: { typescript: "6.0.3", "@types/node": "26.6.6" },
     });
     expect(await readdir(project)).not.toContain("node_modules");
-    expect(await readdir(project)).not.toContain(".bundle.yaml");
+    expect(await readdir(project)).toContain(".bundle.yaml");
     const template = await readFile(join(project, "ipab.yaml"), "utf8");
     expect(parseData(Buffer.from(template), "application/yaml")).toEqual({
       entry: "src/main.ts",
       resources: [],
       supportedSchemas: [],
+      build: { includeSource: true },
       app: { name: "hello", version: "0.0.0", description: "" },
     });
     for (const capability of [
@@ -322,6 +326,30 @@ describe("App-first authoring", () => {
       "metadata",
     );
     expect(description).not.toHaveProperty("supportedSchemas");
+    const sourceResult = object(result(response.out).source, "source result");
+    expect(sourceResult.output).toBe(join(project, "dist", "app.source.car"));
+    expect(description.source).toEqual({ cid: sourceResult.cid });
+    const sourceBundle = await loadCar(String(sourceResult.output));
+    expect(sourceBundle.cid.toString()).toBe(sourceResult.cid);
+    expect(
+      await new Response(await sourceBundle.readFile("src/main.ts")).text(),
+    ).toContain('from "example-dependency"');
+    expect(
+      await new Response(
+        await sourceBundle.readFile("assets/unselected.txt"),
+      ).text(),
+    ).toBe("Do not package");
+    for (const path of [
+      ".env",
+      "node_modules/example-dependency/index.cjs",
+      "dist/app.car",
+    ])
+      await expect(sourceBundle.readFile(path)).rejects.toThrow();
+    const appCar = await readCar(join(project, "dist", "app.car"), {});
+    expect(appCar.blocks.has(String(sourceResult.cid))).toBe(false);
+    await expect(
+      work.store.block.get(String(sourceResult.cid)),
+    ).rejects.toThrow();
     await expect(
       bundle.readFile("resources/supported-schemas.car"),
     ).rejects.toThrow();
@@ -457,6 +485,7 @@ describe("App-first authoring", () => {
     for (const app of [
       { entry: "resources/other.cjs" },
       { supportedSchemas: "resources/custom.car" },
+      { source: { cid: appSchemaCid.toString() } },
       { icon: "resources/assets/missing.svg" },
       { profile: "ipab.node.v1" },
     ]) {
@@ -533,6 +562,7 @@ describe("App-first authoring", () => {
     const selected = {
       entry: "src/main.ts",
       resources: [],
+      build: { includeSource: false },
       supportedSchemas: [
         "schemas/note.json",
         "schemas/same.json",
@@ -784,8 +814,10 @@ describe("App-first authoring", () => {
   });
   it("validates hook contracts and detects recursive builds without guessing a strategy", async () => {
     expect(projectBuild(undefined)).toBeUndefined();
+    expect(projectBuild({ includeSource: true })).toBeUndefined();
     for (const build of [
-      {},
+      { includeSource: "true" },
+      { unknown: true },
       { strategy: "ipab-prebuild", typecheck: [] },
       { strategy: "ipab-prebuild", typecheck: [{}] },
       {
@@ -1012,6 +1044,71 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
     ).toEqual([]);
   }, 120_000);
+  it("uses project source defaults and mutually exclusive CLI overrides without retaining source", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    await writeFile(
+      join(project, "ipab.yaml"),
+      stringify({
+        entry: "src/main.ts",
+        resources: [],
+        build: { includeSource: false },
+      }),
+    );
+    const disabled = await cli(work.stateDir, [
+      "--json",
+      "build",
+      project,
+      "--no-import",
+    ]);
+    expect(disabled.code, disabled.err).toBe(0);
+    expect(result(disabled.out)).not.toHaveProperty("source");
+    const withoutBytes = await readFile(join(project, "dist", "app.car"));
+    expect(await readdir(join(project, "dist"))).toEqual(["app.car"]);
+    const included = await cli(work.stateDir, [
+      "--json",
+      "build",
+      project,
+      "--with-source",
+      "--replace",
+      "--no-import",
+    ]);
+    expect(included.code, included.err).toBe(0);
+    const includedSource = object(result(included.out).source, "source");
+    expect(includedSource).toMatchObject({
+      output: join(project, "dist", "app.source.car"),
+    });
+    const sourceBytes = await readFile(String(includedSource.output));
+    await writeFile(
+      join(project, "ipab.yaml"),
+      stringify({
+        entry: "src/main.ts",
+        resources: [],
+        build: { includeSource: true },
+      }),
+    );
+    const excluded = await cli(work.stateDir, [
+      "--json",
+      "build",
+      project,
+      "--without-source",
+      "--replace",
+      "--no-import",
+    ]);
+    expect(excluded.code, excluded.err).toBe(0);
+    expect(result(excluded.out)).not.toHaveProperty("source");
+    expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+      withoutBytes,
+    );
+    expect(await readFile(String(includedSource.output))).toEqual(sourceBytes);
+    await writeFile(join(project, ".gitignore"), "src/main.ts\n");
+    await expect(buildApp(project, { replace: true })).rejects.toThrow(
+      "excluded from source",
+    );
+    expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+      withoutBytes,
+    );
+  }, 60_000);
   it("strictly checks both backend and browser entries before running project compilation", async () => {
     await initApp("hello", project);
     await projectTools(project);
@@ -1077,8 +1174,8 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       `
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
-writeFileSync("hook-ran", "yes");
 const out = process.env.IPAB_BUILD_DIR;
+writeFileSync("dist/hook-ran", "yes");
 mkdirSync(join(out, "server"));
 mkdirSync(join(out, "web"));
 writeFileSync(join(out, "server/app.cjs"), '#!/usr/bin/env node\\nconsole.log("backend");');
@@ -1086,7 +1183,7 @@ writeFileSync(join(out, "web/index.html"), "browser output");
 `,
     );
     await expect(buildApp(project)).rejects.toThrow("implicitly has an 'any'");
-    await expect(readFile(join(project, "hook-ran"))).rejects.toThrow();
+    await expect(readFile(join(project, "dist", "hook-ran"))).rejects.toThrow();
     await writeFile(
       join(project, "src", "browser.ts"),
       "document.body.textContent = 'browser';\n",
@@ -1096,11 +1193,12 @@ writeFileSync(join(out, "web/index.html"), "browser output");
       JSON.stringify({ ...browserConfig, files: ["src/other.ts"] }),
     );
     await expect(buildApp(project)).rejects.toThrow("not included");
-    await expect(readFile(join(project, "hook-ran"))).rejects.toThrow();
+    await expect(readFile(join(project, "dist", "hook-ran"))).rejects.toThrow();
     await writeFile(
       join(project, "tsconfig.browser.json"),
       JSON.stringify(browserConfig),
     );
+    await mkdir(join(project, "dist"));
     await buildApp(project);
     const bundle = await loadCar(join(project, "dist", "app.car"));
     expect(
@@ -1112,6 +1210,19 @@ writeFileSync(join(out, "web/index.html"), "browser output");
       ).text(),
     ).toBe("browser output");
     await expect(bundle.readFile("resources/server/app.cjs")).rejects.toThrow();
+    const appBytes = await readFile(join(project, "dist", "app.car"));
+    const sourceBytes = await readFile(join(project, "dist", "app.source.car"));
+    await writeFile(
+      join(project, "compile.cjs"),
+      `${await readFile(join(project, "compile.cjs"), "utf8")}\nwriteFileSync("src/main.ts", "console.log('changed during hook');");`,
+    );
+    await expect(buildApp(project, { replace: true })).rejects.toThrow(
+      "source changed",
+    );
+    expect(await readFile(join(project, "dist", "app.car"))).toEqual(appBytes);
+    expect(await readFile(join(project, "dist", "app.source.car"))).toEqual(
+      sourceBytes,
+    );
   }, 60_000);
   it("preserves stream failures and diagnostic failures while stopping the owned hook", async () => {
     await mkdir(project);

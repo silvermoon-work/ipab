@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { readFile } from "node:fs/promises";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { randomUUID } from "node:crypto";
 import type { CID } from "multiformats/cid";
@@ -12,7 +13,7 @@ import {
   storeConfiguration,
   type GlobalOptions,
 } from "./config.js";
-import { HostError, message, syntax } from "./errors.js";
+import { HostError, message, object, syntax } from "./errors.js";
 import {
   filters,
   listHistory,
@@ -444,6 +445,16 @@ function endedDisplay(endedAt: string, now: number): string {
     : `${Math.floor(age / 60_000)}m`;
 }
 
+function runDuration(record: Pick<RunRecord, "startedAt" | "endedAt">): string {
+  const started = Date.parse(record.startedAt);
+  if (!Number.isFinite(started))
+    throw new HostError("Execution record has an invalid start time.");
+  const duration = Date.parse(record.endedAt) - started;
+  if (!Number.isFinite(duration) || duration < 0)
+    throw new HostError("Execution record has an invalid duration.");
+  return `${duration / 1000}s`;
+}
+
 function table(headers: string[], rows: string[][], empty: string): string {
   if (!rows.length) return empty;
   const cells = rows.map((row) => row.map(printable));
@@ -728,7 +739,15 @@ async function performCli(
       return 0;
     }
     if (parsed.version) {
-      io.out("0.0.0");
+      const pkg = object(
+        JSON.parse(
+          await readFile(new URL("../package.json", import.meta.url), "utf8"),
+        ) as unknown,
+        "CLI package",
+      );
+      if (typeof pkg.version !== "string" || !pkg.version.trim())
+        throw new HostError("CLI package is missing its version.");
+      io.out(pkg.version);
       return 0;
     }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)
@@ -1100,10 +1119,14 @@ async function performCli(
           ? page.items
               .map((record) =>
                 [
-                  `run ${shortId(record.id)} | ${record.status} | ${endedDisplay(record.endedAt, now)}`,
-                  `  App:    ${reference(record.appCid)}`,
-                  `  Output: ${reference(record.outputCid)}`,
-                  `  Argv:   ${record.argv.join(" ")}`,
+                  `run ${record.id}`,
+                  `  Status:   ${record.status}`,
+                  `  Started:  ${record.startedAt}`,
+                  `  Ended:    ${record.endedAt} (${endedDisplay(record.endedAt, now)})`,
+                  `  Duration: ${runDuration(record)}`,
+                  `  App:      ${reference(record.appCid)}`,
+                  `  Output:   ${reference(record.outputCid)}`,
+                  `  Argv:     ${record.argv.join(" ")}`,
                 ]
                   .map(printable)
                   .join("\n"),

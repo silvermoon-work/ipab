@@ -99,6 +99,9 @@ catalogs:
     rimraf:
       specifier: 6.1.4
       version: 6.1.4
+    semver:
+      specifier: 7.8.6
+      version: 7.8.6
     string-width:
       specifier: 8.2.1
       version: 8.2.1
@@ -167,6 +170,9 @@ importers:
       rimraf:
         specifier: 'catalog:'
         version: 6.1.4
+      semver:
+        specifier: 'catalog:'
+        version: 7.8.6
       turbo:
         specifier: 'catalog:'
         version: 2.11.11
@@ -182,6 +188,9 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1))
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.1
 
   apps/cli:
     dependencies:

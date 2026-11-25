@@ -4,7 +4,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   realpath,
   rm,
   unlink,
@@ -13,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parse } from "yaml";
+import { deliverables } from "./lib/release.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const pnpm = process.env.npm_execpath;
@@ -158,26 +159,29 @@ async function verifyInstalledViewer(project) {
   }
 }
 try {
-  const archive = join(work, "cli.tgz");
-  runPnpm(["pack", "--out", archive], join(root, "apps", "cli"));
   const overrides = {};
-  for (const entry of await readdir(join(root, "packages"), {
-    withFileTypes: true,
-  })) {
-    if (!entry.isDirectory()) continue;
-    const directory = join(root, "packages", entry.name);
-    const pkg = JSON.parse(
-      await readFile(join(directory, "package.json"), "utf8"),
-    );
-    overrides[pkg.name] = `link:${directory.replaceAll("\\", "/")}`;
+  const packages = await deliverables(root);
+  assert.equal(packages.length, 5, "Validate all five declared deliverables");
+  for (const { directory, pkg } of packages) {
+    const archive = join(work, `${pkg.name.split("/")[1]}.tgz`);
+    runPnpm(["pack", "--out", archive], directory);
+    overrides[pkg.name] = `file:${archive.replaceAll("\\", "/")}`;
   }
+  const { catalog } = parse(
+    await readFile(join(root, "pnpm-workspace.yaml"), "utf8"),
+  );
   await mkdir(host);
   await writeFile(
     join(host, "package.json"),
     JSON.stringify({
       name: "ipab-packed-cli-check",
       private: true,
-      dependencies: { "@ipab/cli": `file:${archive.replaceAll("\\", "/")}` },
+      type: "module",
+      dependencies: overrides,
+      devDependencies: {
+        typescript: catalog.typescript,
+        "@types/node": catalog["@types/node"],
+      },
     }),
   );
   await writeFile(
@@ -189,6 +193,62 @@ try {
     ),
   );
   runPnpm(["install"], host);
+  const imports = [];
+  for (const { pkg } of packages) {
+    const installed = JSON.parse(
+      await readFile(
+        join(host, "node_modules", pkg.name, "package.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(installed.version, pkg.version);
+    assert.equal(installed.private, false);
+    for (const range of Object.values(installed.dependencies ?? {}))
+      assert.ok(
+        !/^(workspace|catalog|link|file):/.test(range),
+        "Packed dependencies must be registry versions",
+      );
+    for (const subpath of Object.keys(installed.exports)) {
+      if (subpath === "./package.json") continue;
+      imports.push(
+        subpath === "." ? pkg.name : `${pkg.name}${subpath.slice(1)}`,
+      );
+    }
+  }
+  const consumer = `${imports.map((name) => `import ${JSON.stringify(name)};`).join("\n")}\n`;
+  await writeFile(join(host, "consumer.mjs"), consumer);
+  await writeFile(join(host, "consumer.ts"), consumer);
+  run(process.execPath, [join(host, "consumer.mjs")], host);
+  run(
+    process.execPath,
+    [
+      join(host, "node_modules", "typescript", "bin", "tsc"),
+      "--noEmit",
+      "--strict",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--target",
+      "ES2022",
+      "--types",
+      "node",
+      "consumer.ts",
+    ],
+    host,
+  );
+  const reported = spawnSync(process.execPath, [cli, "--version"], {
+    cwd: host,
+    env,
+    encoding: "utf8",
+    shell: false,
+  });
+  if (reported.error) throw reported.error;
+  assert.equal(reported.status, 0, reported.stderr);
+  assert.equal(
+    reported.stdout.trim(),
+    packages.find(({ pkg }) => pkg.name === "@ipab/cli").pkg.version,
+  );
   await writeFile(
     config,
     JSON.stringify({ backend: "local", dataDir: join(work, "blocks") }),
@@ -224,26 +284,25 @@ try {
         template === "bundle-viewer"
           ? join(root, "templates", template)
           : template,
-        ...(template === "web-app"
+        ...(template === "bundle-viewer"
           ? [
               "--param",
-              `webAppDependency=file:${join(root, "packages", "web-app").replaceAll("\\", "/")}`,
+              `bundleViewerDependency=link:${join(root, "packages", "bundle-viewer").replaceAll("\\", "/")}`,
             ]
-          : template === "bundle-viewer"
-            ? [
-                "--param",
-                `bundleViewerDependency=link:${join(root, "packages", "bundle-viewer").replaceAll("\\", "/")}`,
-              ]
-            : []),
+          : []),
       ],
-      root,
+      host,
     );
     const packagePath = join(project, "package.json");
     const original = await readFile(packagePath, "utf8");
     assert.equal(JSON.parse(original).packageManager, undefined);
     await writeFile(
       join(project, "pnpm-workspace.yaml"),
-      JSON.stringify({ packages: ["."], allowBuilds: { esbuild: true } }),
+      JSON.stringify({
+        packages: ["."],
+        overrides,
+        allowBuilds: { esbuild: true },
+      }),
     );
     runPnpm(["install"], project);
     const bin = join(project, "node_modules", ".bin");

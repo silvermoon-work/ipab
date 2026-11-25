@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli, help, parse } from "../src/cli.js";
 import {
@@ -123,9 +123,9 @@ describe("management contract", () => {
       items: [{ key: "history.enabled", value: true, source: "default" }],
     });
     const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
-    expect(page.out).toMatch(/^run run-002 \| succeeded \|/);
+    expect(page.out).toMatch(/^run run-002\n {2}Status: {3}succeeded\n/);
     expect(page.out).toContain("reader");
-    expect(page.out).toContain(`Output: ${output}`);
+    expect(page.out).toContain(`Output:   ${output}`);
     expect(page.out).toContain("use --before run-002 with the same filters");
     const machine = JSON.parse(
       (await cli(work.stateDir, ["--json", "history", "list", "--limit", "1"]))
@@ -189,7 +189,7 @@ describe("management contract", () => {
     expect(result.out).toContain(`${another} (reader)`);
     expect(result.out).toContain(`${schema} (result)`);
     expect(result.out).toContain('--flag two words  quote"x \\n');
-    expect(result.out.split("\n")).toHaveLength(4);
+    expect(result.out.split("\n")).toHaveLength(8);
     const machine = await cli(work.stateDir, ["--json", "history", "list"]);
     expect(JSON.parse(machine.out) as unknown).toMatchObject({
       items: [{ appCid: another, outputCid: schema, argv }],
@@ -221,9 +221,9 @@ describe("management contract", () => {
     const result = await cli(work.stateDir, ["history", "list"]);
     expect(result.code).toBe(0);
     for (const length of [47, 48, 49]) {
-      expect(result.out).toContain(`Argv:   ${"x".repeat(length)}`);
+      expect(result.out).toContain(`Argv:     ${"x".repeat(length)}`);
     }
-    expect(result.out).toContain(`Argv:   ${"\u{1f600}".repeat(49)}`);
+    expect(result.out).toContain(`Argv:     ${"\u{1f600}".repeat(49)}`);
     expect(result.out).toContain(another);
     expect(result.out).toContain(schema);
     const updated = new State(work.stateDir);
@@ -233,7 +233,7 @@ describe("management contract", () => {
     expect(aliased.out).toContain(`${another} (a-long-readable-app-name)`);
   });
 
-  it("short run IDs remain unique across pages and resolve safely for show, pagination and removal", async () => {
+  it("lists full run IDs while unique prefixes resolve safely for show, pagination and removal", async () => {
     const firstId = "01234567-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const secondId = "01234567-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const state = new State(work.stateDir);
@@ -244,16 +244,16 @@ describe("management contract", () => {
     state.close();
     const page = await cli(work.stateDir, ["history", "list", "--limit", "1"]);
     expect(page.code).toBe(0);
-    expect(page.out).toMatch(/^run 01234567-a \|/);
+    expect(page.out).toMatch(new RegExp(`^run ${firstId}\n`));
     expect(page.out).toContain("use --before 01234567-a with the same filters");
-    expect(page.out).not.toContain(firstId);
+    expect(page.out).not.toContain(secondId);
     const next = await cli(work.stateDir, [
       "history",
       "list",
       "--before",
       "01234567-a",
     ]);
-    expect(next.out).toMatch(/^run 01234567-b \|/);
+    expect(next.out).toMatch(new RegExp(`^run ${secondId}\n`));
     const details = await cli(work.stateDir, [
       "--json",
       "history",
@@ -333,9 +333,14 @@ describe("management contract", () => {
     for (const columns of [10, 70, 80, 120, 200]) {
       const result = await cli(work.stateDir, ["history", "list"], { columns });
       expect(result.code).toBe(0);
-      expect(result.out).toContain(`App:    ${another}`);
-      expect(result.out).toContain(`Output: ${schema}`);
-      expect(result.out).toContain(`Argv:   ${argv.join(" ")}`);
+      expect(result.out).toContain("run term-run\n");
+      expect(result.out).toContain("Status:   succeeded");
+      expect(result.out).toContain("Started:  2026-11-23T00:00:00Z");
+      expect(result.out).toContain("Ended:    2026-11-23T00:00:01Z (11h)");
+      expect(result.out).toContain("Duration: 1s");
+      expect(result.out).toContain(`App:      ${another}`);
+      expect(result.out).toContain(`Output:   ${schema}`);
+      expect(result.out).toContain(`Argv:     ${argv.join(" ")}`);
     }
     const machine = await cli(work.stateDir, ["--json", "history", "list"], {
       columns: 0,
@@ -361,7 +366,7 @@ describe("management contract", () => {
         columns: 80,
       });
       expect(result.code).toBe(0);
-      expect(result.out).toContain(`Argv:   ${glyph.repeat(40)}`);
+      expect(result.out).toContain(`Argv:     ${glyph.repeat(40)}`);
     }
   });
 
@@ -378,12 +383,18 @@ describe("management contract", () => {
     ] as const;
     const state = new State(work.stateDir);
     for (const [id, endedAt] of cases)
-      state.saveRun(record(id, another, { endedAt }));
+      state.saveRun(
+        record(id, another, {
+          startedAt: new Date(Date.parse(endedAt) - 1000).toISOString(),
+          endedAt,
+        }),
+      );
     state.close();
     const listed = await cli(work.stateDir, ["history", "list"]);
     expect(listed.code).toBe(0);
-    for (const [id, , ended] of cases) {
-      expect(listed.out).toContain(`run ${id} | succeeded | ${ended}`);
+    for (const [id, endedAt, ended] of cases) {
+      expect(listed.out).toContain(`run ${id}\n  Status:   succeeded\n`);
+      expect(listed.out).toContain(`Ended:    ${endedAt} (${ended})`);
     }
     const machine = await cli(work.stateDir, ["--json", "history", "list"]);
     expect(JSON.parse(machine.out) as unknown).toHaveProperty(
@@ -401,6 +412,52 @@ describe("management contract", () => {
     expect(failed.code).toBe(1);
     expect(failed.err).toContain("invalid end time");
   });
+
+  it.each([
+    ["succeeded", "2026-11-23T00:00:00Z", "0s"],
+    ["failed", "2026-11-23T00:00:00.125Z", "0.125s"],
+    ["cancelled", "2026-11-23T01:02:03.456Z", "3723.456s"],
+  ] as const)(
+    "labels %s runs with precise elapsed duration",
+    async (status, endedAt, duration) => {
+      const state = new State(work.stateDir);
+      state.saveRun(record("timed-run", another, { status, endedAt }));
+      state.close();
+      const result = await cli(work.stateDir, ["history", "list"]);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain(`Status:   ${status}`);
+      expect(result.out).toContain(`Duration: ${duration}\n`);
+      expect(result.out).toContain("Output:   none\n");
+      const machine = await cli(work.stateDir, ["--json", "history", "list"]);
+      const page = JSON.parse(machine.out) as { items: unknown[] };
+      expect(page.items).toEqual([
+        {
+          id: "timed-run",
+          appCid: another,
+          argv: [],
+          startedAt: "2026-11-23T00:00:00Z",
+          endedAt,
+          status,
+          outputCid: null,
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    ["not-a-date", "invalid start time"],
+    ["2026-11-23T00:00:02Z", "invalid duration"],
+  ])(
+    "rejects invalid elapsed times starting at %s",
+    async (startedAt, error) => {
+      const state = new State(work.stateDir);
+      state.saveRun(record("invalid-duration", another, { startedAt }));
+      state.close();
+      const result = await cli(work.stateDir, ["history", "list"]);
+      expect(result.code).toBe(1);
+      expect(result.err).toContain(error);
+    },
+  );
 
   it("empty human lists succeed clearly and confirmations are not JSON fallbacks", async () => {
     for (const [group, text] of [
@@ -512,7 +569,10 @@ describe("management contract", () => {
       }
     for (const group of ["pin", "register", "config", "history", ""])
       expect((await cli(work.stateDir, group ? [group] : [])).code).toBe(0);
-    expect((await cli(work.stateDir, ["--version"])).out).toBe("0.0.0");
+    const pkg = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect((await cli(work.stateDir, ["--version"])).out).toBe(pkg.version);
     expect(existsSync(work.stateDir)).toBe(false);
   });
 

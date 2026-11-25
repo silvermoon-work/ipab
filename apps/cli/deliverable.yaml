@@ -1,0 +1,3 @@
+package: "@ipab/cli"
+tagPrefix: "@ipab/cli@"
+access: public

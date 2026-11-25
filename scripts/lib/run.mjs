@@ -5,7 +5,9 @@ export function run(tool, args) {
   const entry =
     tool === "vitest"
       ? new URL("../vitest.mjs", import.meta.resolve("vitest"))
-      : import.meta.resolve(tool);
+      : tool === "publint"
+        ? new URL("./cli.js", import.meta.resolve("publint"))
+        : import.meta.resolve(tool);
   const result = spawnSync(process.execPath, [fileURLToPath(entry), ...args], {
     stdio: "inherit",
   });

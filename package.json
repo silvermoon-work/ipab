@@ -28,6 +28,7 @@
     "lint": "eslint . --max-warnings=0",
     "lint-package": "turbo run lint-package",
     "link-cli": "node scripts/link-cli.mjs",
+    "publish-npm": "node scripts/publish-npm.mjs",
     "test": "turbo run test --concurrency=1",
     "test-ci": "node scripts/test-ci.mjs",
     "test-pnpm": "node scripts/test-pnpm.mjs",
@@ -50,11 +51,13 @@
     "globals": "catalog:",
     "prettier": "catalog:",
     "publint": "catalog:",
+    "semver": "catalog:",
     "rimraf": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vitest": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "yaml": "catalog:"
   }
 }

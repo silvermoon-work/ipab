@@ -1,4 +1,6 @@
-# @ipab/web-app (private)
+# @ipab/web-app
+
+The first npm release is being prepared as `0.1.0-rc.0`.
 
 A small local browser bridge for **trusted Node IPAB Apps**. This is not a Node
 sandbox and does not make an untrusted application safe. The browser author page

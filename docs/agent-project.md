@@ -125,9 +125,12 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   入口必须为有效 UTF-8 Node CJS，只解析不执行，不将 ESM 原文冒充 CJS；
   Bundle 仍只有 resources/app.cjs 一个 Node 运行入口，资源从明确选中的产物路径收集。
   流错误、诊断抛错或取消须停止本次钩子进程树并等待关闭，失败不替换旧 CAR。
-  Web 模板位于 templates/web-app，是相同协议的真实 Template Bundle；
-  内置快捷名自动提供本地 private 框架的 file 引用，目录／CAR／CID 使用时
-  显式传入 webAppDependency 参数；Vite 只在项目构建期执行。
+  模板源码位于 templates/node 与 templates/web-app，CLI 构建时输出经过准确类型、
+  完整性和渲染校验的 dist/builtins/template.{node,web-app}.car，随 CLI 包交付；
+  运行时只读 CAR，不重建或读取仓库模板源码，不执行安装 hooks。
+  内置 Web 快捷名默认提供所安装框架包的准确版本；本地未发布开发须显式覆盖
+  webAppDependency=file:...，目录／CAR／CID 使用时始终显式提供参数。
+  Vite 只在项目构建期执行。
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
   服务就绪后默认打开系统浏览器，openBrowser:false 关闭；
   框架保留的 App 参数 --no-open 优先禁止打开，打开失败报告 URL 并保留服务。
@@ -136,7 +139,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   用 encodeSchema 编码，离线类型 alias builtin:project-template.v1 对应
   bafyreifrpcmpq6d4yw7vgusylt4cabij6orf5fioiwcfr5t2znykay4y5u；
   入口 template.yaml 固定 version:1/root:project/render.suffix:.liquid。
-  默认 node 是离线内存 Bundle；init 的 --template 接受同类型本地目录、
+  默认 node 是离线预构建 CAR Bundle；init 的 --template 接受同类型本地目录、
   自足单根 CAR、准确 CID 或 ready named pin，templateCid 返回准确内容身份。
   project/ 是输出布局，LiquidJS 渲染 .liquid 后去后缀，其他文件原字节复制，
   包括 binary/dotfiles；不做 HTML autoescape，json filter 负责 JSON 引号。

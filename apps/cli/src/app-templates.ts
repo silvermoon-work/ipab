@@ -1,12 +1,9 @@
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { lstat } from "node:fs/promises";
-import { stringify } from "yaml";
+import { resolve } from "node:path";
+import { lstat, readFile } from "node:fs/promises";
 import { Liquid, type Template } from "liquidjs";
 import {
-  encodeBundleCar,
   listTree,
-  memoryTree,
   readBytes,
   type ReadonlyFileTree,
 } from "@ipab/bundle-builder";
@@ -17,131 +14,14 @@ import { relativePath } from "./space.js";
 import {
   templateDefinition,
   templateParameters,
-  templateSchema,
 } from "./template-definition.js";
-import { templateSource } from "./template-source.js";
-import { nodeError, selectedTree } from "./authoring.js";
-import { sourceSchema } from "./source-bundle.js";
-
-const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+import { builtinTemplateSource, templateSource } from "./template-source.js";
+import { nodeError } from "./authoring.js";
 
 export const builtinTemplateNames = new Map([
   ["builtin:template.node", "node"],
   ["builtin:template.web-app", "web-app"],
 ] as const);
-
-export async function builtinTemplateTree(
-  selector: "node" | "web-app",
-  options: AuthoringOptions = {},
-): Promise<ReadonlyFileTree> {
-  if (selector === "web-app") {
-    const directory = fileURLToPath(
-      new URL("../../../templates/web-app/", import.meta.url),
-    );
-    return selectedTree(
-      directory,
-      undefined,
-      resolve(directory, "dist"),
-      options,
-    );
-  }
-  const encoder = new TextEncoder();
-  return memoryTree(
-    new Map([
-      [".bundle.yaml", encoder.encode(stringify(templateSchema))],
-      [
-        "template.yaml",
-        encoder.encode(stringify(templateSchema.entry.defaultValue)),
-      ],
-      ...[...nodeTemplate()].map(
-        ([path, bytes]) =>
-          [
-            `project/${path}`,
-            typeof bytes === "string" ? encoder.encode(bytes) : bytes,
-          ] as const,
-      ),
-    ]),
-  );
-}
-
-function nodeTemplate(): Map<string, string | Uint8Array> {
-  return new Map([
-    [".bundle.yaml", stringify(sourceSchema)],
-    [
-      "package.json.liquid",
-      `{
-  "name": {{ name | json }},
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "description": {{ description | json }},
-  "engines": { "node": ">=22.15.0" },
-  "scripts": { "typecheck": "tsc --noEmit", "build": "ipab build" },
-  "devDependencies": { "@types/node": "26.6.6", "typescript": "6.0.3" }
-}
-`,
-    ],
-    [
-      "tsconfig.json",
-      json({
-        compilerOptions: {
-          target: "ES2022",
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          strict: true,
-          noEmit: true,
-          types: ["node"],
-          skipLibCheck: false,
-        },
-        include: ["src/**/*.ts"],
-      }),
-    ],
-    [
-      "ipab.yaml.liquid",
-      `# IPAB App build configuration (data only; no hooks or JS configuration).
-entry: src/main.ts
-
-# Explicit non-hidden files under assets/; no directories, globs or symlinks.
-resources: []
-# To add an icon, replace [] above with the following list and create the file:
-#   - assets/icon.png
-
-# Explicit JSON complete Bundle definitions under schemas/, NOT bare JSON Schema.
-# No declaration means no supported types for open; direct exec still works.
-supportedSchemas: []
-# To support your own type, replace [] above with this list and create the definition:
-#   - schemas/note.json
-
-# Separate source CAR; App stores only a weak source.cid, never source blocks.
-# CLI --with-source / --without-source overrides this default.
-build:
-  includeSource: true
-
-# Metadata overrides package.json; remove an override to inherit its package value.
-app:
-  name: {{ name | json }}
-  version: "0.0.0" # Exact SemVer, not a range.
-  description: {{ description | json }}
-  # author:
-  #   name: Your name
-  #   email: you@example.com
-  # license: MIT # Declaration only; does not restrict execution or copying.
-  # icon: resources/assets/icon.png # Also select assets/icon.png in resources.
-  # i18n:
-  #   zh-CN:
-  #     name: 你好应用
-  #     description: 应用描述
-  #   en:
-  #     name: Hello App
-  #     description: An example description
-# Translations override name/description separately; missing fields fall back.
-# entry, supportedSchemas and source inside app are generated; do not override them.
-`,
-    ],
-    ["src/main.ts", 'console.log("Hello from your IPAB App.");\n'],
-    [".gitignore", "node_modules/\ndist/\n.ipab-app-*/\n.env\n.env.*\n"],
-  ]);
-}
 
 async function legacyTemplate(
   selector: string,
@@ -436,29 +316,28 @@ export async function appTemplate(
   options.signal?.throwIfAborted();
   for (const [alias, name] of builtinTemplateNames)
     if (selector === alias) selector = name;
-  if (selector === "node") {
-    const tree = await builtinTemplateTree("node", options);
-    const encoded = await encodeBundleCar(tree, options);
-    try {
-      return {
-        files: await renderTemplate(tree, name, options),
-        cid: encoded.cid.toString(),
-      };
-    } finally {
-      await encoded.close();
-    }
-  }
-  if (selector === "web-app") {
-    const directory = fileURLToPath(
-      new URL("../../../templates/web-app/", import.meta.url),
-    );
-    const entry = fileURLToPath(import.meta.resolve("@ipab/web-app"));
+  if (selector === "node" || selector === "web-app") {
+    const loaded = await builtinTemplateSource(selector, options);
     const parameters = [...(options.parameters ?? [])];
-    if (!parameters.some((value) => value.startsWith("webAppDependency=")))
-      parameters.push(
-        `webAppDependency=file:${dirname(dirname(entry)).replaceAll("\\", "/")}`,
+    if (
+      selector === "web-app" &&
+      !parameters.some((value) => value.startsWith("webAppDependency="))
+    ) {
+      const framework = object(
+        JSON.parse(
+          await readFile(
+            fileURLToPath(import.meta.resolve("@ipab/web-app/package.json")),
+            "utf8",
+          ),
+        ) as unknown,
+        "Web App framework package",
       );
-    const loaded = await templateSource(directory, options);
+      if (typeof framework.version !== "string" || !framework.version.trim())
+        throw new HostError(
+          "Web App framework package is missing its version.",
+        );
+      parameters.push(`webAppDependency=${framework.version}`);
+    }
     return {
       files: await renderTemplate(loaded.tree, name, {
         ...options,

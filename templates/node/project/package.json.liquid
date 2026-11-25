@@ -1,0 +1,10 @@
+{
+  "name": {{ name | json }},
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": {{ description | json }},
+  "engines": { "node": ">=22.15.0" },
+  "scripts": { "typecheck": "tsc --noEmit", "build": "ipab build" },
+  "devDependencies": { "@types/node": "26.6.6", "typescript": "6.0.3" }
+}

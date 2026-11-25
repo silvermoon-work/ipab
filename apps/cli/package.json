@@ -11,6 +11,9 @@
   "bin": {
     "ipab": "dist/main.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/typecheck.mjs",

@@ -20,11 +20,22 @@ Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包
 定向重新解析，再执行 `pnpm install --frozen-lockfile` 和 `pnpm check`。
 不要将设备专用 registry／代理地址写入共享锁文件。
 
-`pnpm build && pnpm test-pnpm` 验证真实 pnpm 开发链路：在独立临时目录
+`pnpm build` 将 `templates/node` 与 `templates/web-app` 构建为
+`apps/cli/dist/builtins/template.{node,web-app}.car`，检查准确模板类型、CAR 完整性
+和实际渲染；失败阻止 CLI 构建成功。CLI 交付清单包含这些 CAR，
+运行时不重建模板，也不读取仓库模板目录。Turbo 将模板源码纳入 CLI 构建缓存键，
+CLI 的 test 与 test-coverage 先构建自身以准备资源。
+
+`pnpm build && pnpm test-pnpm` 验证真实 pnpm 开发链路：先打包并在独立临时目录
+安装 CLI tarball，再从安装后的 CLI 离线列出内置 pin、
 初始化 Node 与 Web App 模板、实际安装依赖、执行生成项目原有的
 `pnpm typecheck`／`pnpm build` 并检查 CAR。使用当前设备 registry，
 关闭 Corepack 联网，输出和本地 Store 均隔离，完成后清理。
-该检查不以依赖软链接替代安装，不修改生成项目的 packageManager 或 build 脚本；
+CLI 的内部库依赖显式链接到已构建 workspace，暂不声称验证其他四个包的 npm 交付；
+Web 项目显式传入本地框架 file 参数，不依赖尚未发布的 registry 版本。
+临时安装配置沿用仓库对 esbuild 构建脚本的明确许可，不修改设备全局策略。
+生成项目仍实际安装依赖，不修改其 packageManager 或 build 脚本；
+缺失／损坏内置 CAR 必须明确失败，不能回退仓库模板源码。
 CI 默认环境和 Node 兼容矩阵均执行。
 
 ## Workspace

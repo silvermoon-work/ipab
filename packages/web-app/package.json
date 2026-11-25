@@ -1,6 +1,6 @@
 {
   "name": "@ipab/web-app",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "private": true,
   "description": "Local browser bridge for trusted Node IPAB applications.",
   "type": "module",

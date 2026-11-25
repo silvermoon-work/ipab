@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { CID } from "multiformats/cid";
 import { CarWriter } from "@ipld/car/writer";
-import { memoryTree } from "@ipab/bundle-builder";
+import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
 import { encodeSchema } from "@ipab/bundle";
 import { initApp } from "../src/app-authoring.js";
 import { appTemplate, renderTemplate } from "../src/app-templates.js";
@@ -22,7 +22,11 @@ import {
   templateSchema,
   templateBuiltinAlias,
 } from "../src/template-definition.js";
-import { templateSource } from "../src/template-source.js";
+import {
+  builtinTemplateSource,
+  templateSource,
+} from "../src/template-source.js";
+import { object } from "../src/errors.js";
 import { State } from "../src/state.js";
 import { builtinContent } from "../src/builtins.js";
 import { pinDetails } from "../src/pins.js";
@@ -95,12 +99,57 @@ describe("Data-only Template Bundles", () => {
     await expect(appTemplate(built.output, "web-demo", {})).rejects.toThrow(
       "webAppDependency",
     );
+    const framework = object(
+      JSON.parse(
+        await readFile(
+          fileURLToPath(import.meta.resolve("@ipab/web-app/package.json")),
+          "utf8",
+        ),
+      ) as unknown,
+      "Framework package",
+    );
+    const builtin = await appTemplate("web-app", "web-demo", {});
     expect(
-      (await appTemplate("web-app", "web-demo", {})).files.get("package.json"),
-    ).toContain('"@ipab/web-app": "file:');
+      JSON.parse(String(builtin.files.get("package.json"))) as unknown,
+    ).toMatchObject({
+      dependencies: { "@ipab/web-app": framework.version },
+    });
     expect(expected.files.has("ipab.yaml")).toBe(true);
     expect(expected.files.has("template.yaml")).toBe(false);
     expect(expected.files.has(".bundle.yaml")).toBe(true);
+  });
+  it("ships both templates as deterministic CARs identical to their source directories", async () => {
+    for (const selector of ["node", "web-app"] as const) {
+      const source = fileURLToPath(
+        new URL(`../../../templates/${selector}/`, import.meta.url),
+      );
+      const bundled = await builtinTemplateSource(selector);
+      const local = await templateSource(source, {});
+      const rebuilt = await encodeBundleCar(local.tree);
+      try {
+        expect(bundled.cid).toBe(local.cid);
+        const bytes = new Uint8Array(
+          await new Response(rebuilt.stream).arrayBuffer(),
+        );
+        expect(
+          await readFile(
+            new URL(
+              `../dist/builtins/template.${selector}.car`,
+              import.meta.url,
+            ),
+          ),
+        ).toEqual(Buffer.from(bytes));
+        const parameters =
+          selector === "web-app" ? ["webAppDependency=0.1.0-rc.0"] : [];
+        expect(
+          await renderTemplate(bundled.tree, "offline-demo", { parameters }),
+        ).toEqual(
+          await renderTemplate(local.tree, "offline-demo", { parameters }),
+        );
+      } finally {
+        await rebuilt.close();
+      }
+    }
   });
   async function bundle(
     entry: unknown = definition,
@@ -248,8 +297,8 @@ describe("Data-only Template Bundles", () => {
       "builtin:template.web-app",
     ]);
     expect(created.code, created.err).toBe(0);
-    expect(await readFile(join(project, "package.json"), "utf8")).toContain(
-      '"@ipab/web-app": "file:',
+    expect(await readFile(join(project, "package.json"), "utf8")).not.toContain(
+      "file:",
     );
     const reopened = new State(work.stateDir);
     expect(reopened.pins()).toEqual([]);

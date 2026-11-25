@@ -213,7 +213,9 @@ ipab init custom-app --template my-template-pin --param enabled=true
 ```
 
 模板是 **Content Bundle 数据**，不是可执行 App Bundle。`node` 是离线内置默认
-Template Bundle；本地合法 Bundle 目录、自足单根 CAR、准确内容 CID 和可用具名 pin
+Template Bundle；Node 与 Web App 模板在 CLI 构建时生成经过校验的 CAR，
+随 CLI 包交付，运行时直接读取，不依赖仓库源码或安装 hooks。
+本地合法 Bundle 目录、自足单根 CAR、准确内容 CID 和可用具名 pin
 使用同一完整类型与渲染契约。只有 CID／pin 来源读取当前 Store；本地目录、CAR
 及默认模板完全离线。init 从不执行 hooks、安装依赖、构建、运行 App 或自动 pin。
 成功 JSON 的 `templateCid` 是所选模板的准确内容 CID，`schemaCid`
@@ -274,24 +276,28 @@ date 及任意自定义 JavaScript filter 不支持。未带后缀的普通文�
 1 MiB 分配与累计输出，以及 1 秒渲染时间；定期让出事件循环检查取消，
 失败或取消不留下已创建项目文件。
 
-`web-app` 是仓库 [templates/web-app](templates/web-app) 中的真实 Liquid Template
+模板源码分别位于 [templates/node](templates/node) 和
+[templates/web-app](templates/web-app)。`web-app` 是真实 Liquid Template
 Bundle，包含 Vite + 原生 TypeScript 前端、自包含 Node 后端和
 `ipab.yaml`。`node`／`web-app` 是对应 built-in 模板 pin 的 Init 简写。
 内置 pin、快捷名与目录／CAR／CID 使用相同校验及展开协议，
 `templateCid` 报告准确内容身份。
-Web 模板依赖尚未发布的 private `@ipab/web-app`；内置快捷名自动提供当前本地包的
-`file:` 引用，不生成虚构的 registry 版本。也可用 `--param webAppDependency=...`
-明确覆盖。目录／CAR／CID 分发没有设备路径默认值，必须提供这个参数。
-移动项目到另一台设备前须更新本地依赖来源。
+内置 Web 模板默认引用 CLI 所安装 `@ipab/web-app` 的准确版本，本轮准备版本为
+`0.1.0-rc.0`；该框架版本实际发布后，生成项目可直接从 registry 安装。
+不再自动写入设备专用的绝对 `file:` 路径。本地开发或未发布时须显式使用
+`--param webAppDependency=file:...`。目录／CAR／CID 分发必须明确提供
+`webAppDependency` 参数，内置快捷名也允许覆盖该参数。
 
 ```powershell
+ipab init dashboard --template web-app `
+  --param 'webAppDependency=file:D:/Code/ipab/packages/web-app'
 ipab bundle build .\templates\web-app --no-import
 ipab init dashboard --template .\templates\web-app\dist\bundle.car `
   --param 'webAppDependency=file:D:/Code/ipab/packages/web-app'
 ```
 
 模板 CAR 只包含模板数据和项目文件，不包含构建后的 Web App、框架依赖或自己的
-`dist/` 输出。先构建本地框架，再在生成项目内显式安装依赖。
+`dist/` 输出。使用本地框架时先构建框架，再在生成项目内显式安装依赖。
 
 旧显式本地目录中的 `ipab-template.json` v1 暂时兼容（不接受 `--param`）；
 有 `.bundle.yaml` 时必须按新的 Bundle 契约验证，不能降级绕过校验。

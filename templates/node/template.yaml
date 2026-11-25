@@ -1,0 +1,11 @@
+version: 1
+root: project
+render:
+  suffix: .liquid
+parameters:
+  name:
+    type: string
+    required: true
+  description:
+    type: string
+    default: ""

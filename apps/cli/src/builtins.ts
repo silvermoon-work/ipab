@@ -1,14 +1,13 @@
-import { CarBlockIterator } from "@ipld/car/iterator";
-import { encodeBundleCar, streamChunks } from "@ipab/bundle-builder";
 import { appBuiltinAlias, builtinAppSchema } from "./app-definition.js";
 import {
   builtinTemplateSchema,
   templateBuiltinAlias,
+  templateSchema,
   templateSchemaCid,
 } from "./template-definition.js";
-import { builtinTemplateNames, builtinTemplateTree } from "./app-templates.js";
+import { builtinTemplateNames } from "./app-templates.js";
+import { builtinTemplateSource } from "./template-source.js";
 import type { NamedPin, PinMetadata } from "./state.js";
-import { HostError } from "./errors.js";
 
 async function loadBuiltins(): Promise<{
   pins: readonly NamedPin[];
@@ -39,24 +38,13 @@ async function loadBuiltins(): Promise<{
     });
   }
   for (const [name, selector] of builtinTemplateNames) {
-    const tree = await builtinTemplateTree(selector);
-    const encoded = await encodeBundleCar(tree);
-    try {
-      if (!encoded.schema.cid.equals(templateSchemaCid))
-        throw new HostError("Built-in template has an unexpected Bundle type.");
-      const car = await CarBlockIterator.fromIterable(
-        streamChunks(encoded.stream),
-      );
-      for await (const block of car)
-        blocks.set(block.cid.toV1().toString(), block.bytes);
-      add(name, encoded.cid.toString(), {
-        kind: "bundle",
-        typeName: encoded.schema.manifest.name,
-        schemaCid: encoded.schema.cid.toString(),
-      });
-    } finally {
-      await encoded.close();
-    }
+    const template = await builtinTemplateSource(selector);
+    for (const [cid, bytes] of template.blocks) blocks.set(cid, bytes);
+    add(name, template.cid, {
+      kind: "bundle",
+      typeName: templateSchema.name,
+      schemaCid: templateSchemaCid.toString(),
+    });
   }
   return { pins, blocks };
 }

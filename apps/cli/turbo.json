@@ -1,0 +1,14 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/templates/**"]
+    },
+    "test": {
+      "dependsOn": ["build"]
+    },
+    "test-coverage": {
+      "dependsOn": ["build"]
+    }
+  }
+}

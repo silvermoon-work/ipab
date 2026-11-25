@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CID } from "multiformats/cid";
 import { bundleLimits, openBundle } from "@ipab/bundle";
 import { encodeBundleCar, type ReadonlyFileTree } from "@ipab/bundle-builder";
@@ -7,6 +8,23 @@ import { openContent } from "@ipab/ipfs-store";
 import { readCar, selectedTree, type AuthoringOptions } from "./authoring.js";
 import { HostError } from "./errors.js";
 import { builtinTemplateSchema } from "./template-definition.js";
+
+export async function builtinTemplateSource(
+  selector: "node" | "web-app",
+  options: AuthoringOptions = {},
+) {
+  const car = await readCar(
+    fileURLToPath(
+      new URL(`../dist/builtins/template.${selector}.car`, import.meta.url),
+    ),
+    options,
+  );
+  const source = await templateSource(car.root.toString(), {
+    ...options,
+    resolveCid: car.resolveCid,
+  });
+  return { ...source, blocks: car.blocks };
+}
 
 export async function templateSource(
   source: string,

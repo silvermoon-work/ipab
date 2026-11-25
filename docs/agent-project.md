@@ -218,7 +218,7 @@ main dispatch 只 dry-run，准确 SHA 日常及完整远程证据缺失时阻�
 RC 从 rc.0 连续增长，用 rc dist-tag；稳定版用 latest。发布前核对目标版本缺失、
 全部 runtime/peer 依赖已存在，registry 失败不代表缺失。
 不复制原仓库的版本／SHA 授权，不自动发布、推 tag、修改已有 dist-tag 或上传远端产物。
-根固定已发布 devtool.publish-gate 0.2.0-rc.0，五个实际发布包的 prepublishOnly
+根固定已发布 devtool.publish-gate 0.2.0，五个实际发布包的 prepublishOnly
 准确为 publish-gate check --workflow ci.yaml --workflow
 release-validation.yaml。
 重复 workflow 的整体成功检查由共享门禁提供；IPAB 仍保留更严格的

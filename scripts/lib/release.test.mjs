@@ -85,13 +85,13 @@ test("only permits the exact lifecycle and passes native pnpm options without by
     );
 });
 
-test("all deliverables consume the pinned published RC and native pnpm runs its rejecting lifecycle", async () => {
+test("all deliverables consume the pinned published stable gate and native pnpm runs its rejecting lifecycle", async () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const workspace = JSON.parse(
     await readFile(join(root, "package.json"), "utf8"),
   );
   const name = "@silvermoon-work/devtool.publish-gate";
-  assert.equal(workspace.devDependencies[name], "0.2.0-rc.0");
+  assert.equal(workspace.devDependencies[name], "0.2.0");
   const installed = JSON.parse(
     await readFile(join(root, "node_modules", name, "package.json"), "utf8"),
   );

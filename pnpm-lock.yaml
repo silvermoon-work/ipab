@@ -147,8 +147,8 @@ importers:
         specifier: workspace:*
         version: link:packages/web-app
       '@silvermoon-work/devtool.publish-gate':
-        specifier: 0.2.0-rc.0
-        version: 0.2.0-rc.0
+        specifier: 0.2.0
+        version: 0.2.0
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -1099,8 +1099,8 @@ packages:
   '@rolldown/pluginutils@1.1.1':
     resolution: {integrity: sha512-glFIJDvLNDtJhT9qrMFWLPbvS+skxgt4L0K8Ei2YtnhPysAJnsI7nyxSJxKj4ADeKX0OLjC4ntRkwpLOoS3rwA==}
 
-  '@silvermoon-work/devtool.publish-gate@0.2.0-rc.0':
-    resolution: {integrity: sha512-EEbRLWPvcIAsgkBphX7Vy0t+WIyVvLSQYPas3J3mOjmc7BH/LMCxv6nV+Ct4SAQ1BGvUeaeYZ72TReibD59XRA==}
+  '@silvermoon-work/devtool.publish-gate@0.2.0':
+    resolution: {integrity: sha512-5KYmQ9AbUHkMl8iWjdqMTf00mQ60fGPMrCmR1e4CMXNqYHaicJ2l7GaGDwYN5rI5D5gv0vDAK06ed29kLlk9WQ==}
     engines: {node: '>=22.15.0'}
     hasBin: true
 
@@ -3475,7 +3475,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.1.1': {}
 
-  '@silvermoon-work/devtool.publish-gate@0.2.0-rc.0':
+  '@silvermoon-work/devtool.publish-gate@0.2.0':
     dependencies:
       commander: 15.1.0
       semver: 7.8.6

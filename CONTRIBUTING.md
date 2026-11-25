@@ -197,10 +197,10 @@ GitHub-hosted runner 的有效 registry 也必须与之相符，不通过 `--reg
 源码与 declaration/source maps 一起交付，
 测试、开发脚本、coverage、配置和依赖目录不进入包。
 
-### 共享发布门禁试用
+### 共享发布门禁
 
 根开发依赖固定已发布的
-`@silvermoon-work/devtool.publish-gate@0.2.0-rc.0`，不用 `rc` alias 或同仓候选。
+`@silvermoon-work/devtool.publish-gate@0.2.0`，不用 dist-tag alias 或同仓候选。
 所有实际发布包准确声明：
 
 ```json
@@ -226,9 +226,9 @@ registry 值来自当前有效配置，且须与发布专用官方 npm 声明一
 本地测试以 native pnpm 临时目录 dry-run 验证安装后的门禁拒绝非 Actions 上下文，
 不假装本地通过了完整远端发布授权。
 
-安装该明确选定的新 RC 时，pnpm 为准确
-`@silvermoon-work/devtool.publish-gate@0.2.0-rc.0` 添加了 release-age 例外；
-它只允许试用此已发布版本，不关闭全局 supply-chain 策略。
+安装该明确选定的新正式版时，仅为准确
+`@silvermoon-work/devtool.publish-gate@0.2.0` 保留 release-age 例外，
+替换原 RC 例外；它只允许消费此已发布版本，不关闭全局 supply-chain 策略。
 IPAB 发布仍须另行授权，不因接入或门禁检查成功自动发布。
 
 代理先读 [AGENTS.md](AGENTS.md) 和 [项目指导](docs/agent-project.md)。

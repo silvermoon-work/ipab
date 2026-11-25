@@ -433,16 +433,22 @@ function printable(text: string): string {
     .join("");
 }
 
-function endedDisplay(endedAt: string, now: number): string {
-  const ended = Date.parse(endedAt);
-  if (!Number.isFinite(ended))
-    throw new HostError("Execution record has an invalid end time.");
-  const age = now - ended;
-  if (age < 0 || age >= 86_400_000)
-    return new Date(ended).toISOString().slice(0, 10);
-  return age >= 3_600_000
-    ? `${Math.floor(age / 3_600_000)}h`
-    : `${Math.floor(age / 60_000)}m`;
+function runTime(value: string, field: "start" | "end"): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()))
+    throw new HostError(`Execution record has an invalid ${field} time.`);
+  const pad = (part: number): string => String(part).padStart(2, "0");
+  const day = [
+    String(date.getFullYear()).padStart(4, "0"),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("-");
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map(pad)
+    .join(":");
+  const offset = -date.getTimezoneOffset();
+  const zone = `${offset < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(offset) / 60))}${pad(Math.abs(offset) % 60)}`;
+  return `${day} ${time} ${zone}`;
 }
 
 function runDuration(record: Pick<RunRecord, "startedAt" | "endedAt">): string {
@@ -452,7 +458,7 @@ function runDuration(record: Pick<RunRecord, "startedAt" | "endedAt">): string {
   const duration = Date.parse(record.endedAt) - started;
   if (!Number.isFinite(duration) || duration < 0)
     throw new HostError("Execution record has an invalid duration.");
-  return `${duration / 1000}s`;
+  return `${Math.floor(duration / 1000)}s`;
 }
 
 function table(headers: string[], rows: string[][], empty: string): string {
@@ -483,8 +489,8 @@ function runDetails(record: RunRecord): string {
     ["Origin", record.origin],
     ["App CID", record.appCid],
     ["Argv", JSON.stringify(record.argv)],
-    ["Started", record.startedAt],
-    ["Ended", record.endedAt],
+    ["Started", runTime(record.startedAt, "start")],
+    ["Ended", runTime(record.endedAt, "end")],
     ["Status", record.status],
     [
       "App exit",
@@ -1114,15 +1120,14 @@ async function performCli(
             ? "none"
             : cid + (names.has(cid) ? ` (${names.get(cid)!})` : "");
         const shortId = state.shortRunId.bind(state);
-        const now = Date.now();
         const rows = page.items.length
           ? page.items
               .map((record) =>
                 [
                   `run ${record.id}`,
                   `  Status:   ${record.status}`,
-                  `  Started:  ${record.startedAt}`,
-                  `  Ended:    ${record.endedAt} (${endedDisplay(record.endedAt, now)})`,
+                  `  Started:  ${runTime(record.startedAt, "start")}`,
+                  `  Ended:    ${runTime(record.endedAt, "end")}`,
                   `  Duration: ${runDuration(record)}`,
                   `  App:      ${reference(record.appCid)}`,
                   `  Output:   ${reference(record.outputCid)}`,

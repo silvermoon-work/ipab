@@ -34,6 +34,7 @@ import { buildApp, initApp } from "./app-authoring.js";
 import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
 import { logFiles } from "./logs.js";
+import { builtinContent } from "./builtins.js";
 
 export interface IO {
   out(text: string): void;
@@ -174,7 +175,10 @@ add requires an unused short name and an exact CID; verifies the full DAG and re
 Pinning does not execute or trust an App, install dependencies, or start a daemon.
 delete releases only this pin's ownership on its original backend; no block deletion or GC.
 rename changes only the name, not the CID, type metadata, registration, history or ownership.
-list/show read local registration, not live node status; list excludes builtin shortcuts and reports unfinished operations separately.
+list/show read user registrations and packaged built-in pins, not live node status.
+Built-in Schema/template pins are read-only: they cannot be added, deleted or renamed.
+Their content comes from the IPAB installation, without a user Store retention claim.
+list reports unfinished user operations separately.
 --kind accepts bundle or schema; ordinary content remains visible without a kind filter.
 --type matches exact schema CID (or Schema pin name/builtin shortcut); filters combine with AND.
 User Alias commands are replaced; legacy metadata is preserved but requires explicit verified pin add.
@@ -463,7 +467,7 @@ export function parse(argv: readonly string[]): Parsed {
   }
   // Validate syntactic values before state access, let alone a backend connection.
   if (result.path.startsWith("pin ") && result.path !== "pin list") {
-    pinName(result.positional[0]!);
+    pinName(result.positional[0]!, result.path === "pin show");
     if (result.path === "pin add") exactCid(result.positional[1]!);
     if (result.path === "pin rename") pinName(result.positional[1]!);
   }
@@ -505,7 +509,8 @@ async function performCli(
     }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)
       syntax("Non-interactive history remove requires --yes.");
-    state = new State(stateLocation(parsed.flags, env).path);
+    const builtins = await builtinContent();
+    state = new State(stateLocation(parsed.flags, env).path, builtins.pins);
     const items = effectiveConfig(state.config(), parsed.flags, env);
     const value = (key: string) =>
       items.find((item) => item.key === key)!.value;
@@ -552,9 +557,17 @@ async function performCli(
               io.err(text);
             },
             resolveCid: async (cid: CID, options: { signal?: AbortSignal }) => {
+              options.signal?.throwIfAborted();
+              const builtin = builtins.blocks.get(cid.toV1().toString());
+              if (builtin) return builtin.slice();
               return (await getStore()).block.get(cid.toString(), options);
             },
           };
+          const builtinSource = first ? state.pin(first) : undefined;
+          const source =
+            builtinSource?.builtin && builtinSource.metadata?.kind === "bundle"
+              ? builtinSource.cid
+              : first;
           if (parsed.path === "bundle build" || parsed.path === "build")
             io.err(
               parsed.path === "build"
@@ -569,9 +582,11 @@ async function performCli(
                   ...request,
                   ...(typeof parsed.options.template === "string"
                     ? {
-                        template: state.pin(parsed.options.template)
-                          ? state.resolve(parsed.options.template)
-                          : parsed.options.template,
+                        template: state.pin(parsed.options.template)?.builtin
+                          ? parsed.options.template
+                          : state.pin(parsed.options.template)
+                            ? state.resolve(parsed.options.template)
+                            : parsed.options.template,
                       }
                     : {}),
                   ...(parsed.parameters
@@ -588,9 +603,9 @@ async function performCli(
                     outputDir: String(value("bundle.outputDir")),
                   })
                 : parsed.path === "bundle init"
-                  ? await initBundle(first!, second!, request)
+                  ? await initBundle(source!, second!, request)
                   : parsed.path === "bundle build"
-                    ? await buildBundle(first!, {
+                    ? await buildBundle(source!, {
                         ...request,
                         schemaOnly: Boolean(parsed.options["schema-only"]),
                         replace: Boolean(parsed.options.replace),
@@ -601,7 +616,7 @@ async function performCli(
                       })
                     : parsed.path === "bundle import"
                       ? await importBundle(first!, getStore, request)
-                      : await inspectBundle(first!, request);
+                      : await inspectBundle(source!, request);
           const importing = "output" in result && !parsed.options["no-import"];
           if (importing) {
             io.err("Importing build result into Store (without pinning)...");
@@ -704,12 +719,13 @@ async function performCli(
         emit(
           { items: listed, pending, legacyAliases },
           table(
-            ["NAME", "CID", "KIND", "BUNDLE TYPE"],
+            ["NAME", "CID", "KIND", "BUNDLE TYPE", "SOURCE"],
             listed.map((pin) => [
               pin.name,
               pin.cid,
               pin.kind,
               pin.typeName ?? "(no Bundle type metadata)",
+              pin.builtin ? "built-in (read-only)" : "user",
             ]),
             "No named pins.",
           ) +
@@ -754,7 +770,7 @@ async function performCli(
         const result = pinDetails(pin);
         emit(
           result,
-          `Name: ${printable(result.name)}\nCID: ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}${result.schemaCid ? `\nSchema CID: ${result.schemaCid}` : ""}\nSource: local registration (not live node verification)`,
+          `Name: ${printable(result.name)}\nCID: ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}${result.schemaCid ? `\nSchema CID: ${result.schemaCid}` : ""}\nSource: ${result.builtin ? "built-in (read-only; content bundled with IPAB)" : "local registration (not live node verification)"}`,
         );
         break;
       }

@@ -62,12 +62,19 @@ expose.
 
 `runWebApp` binds `127.0.0.1` at a random port and returns `Promise<void>`. Its
 `onDiagnostic(message)` callback (default `console.error`) reports a URL
-**waiting for frontend connection**, not a claim that the frontend rendered.
-Open that URL yourself; this initial API does not launch a browser. An optional
-`signal`, SIGINT or SIGTERM aborts active calls, closes HTTP connections and
-rejects with `AbortError`; cleanup errors reject explicitly. The App owns its
-context and must close it separately. Handlers must cooperate with the per-call
-abort signal: uncooperative arbitrary Node work cannot be forcibly stopped.
+**waiting for frontend connection**, not a claim that the frontend rendered. By
+default, the ready server launches that URL in the system browser using `open`
+on macOS, `rundll32.exe` on Windows, or `xdg-open` on Linux. Set
+`openBrowser: false` to disable launching programmatically. The framework also
+recognises the reserved App argument `--no-open`: `ipab exec APP --no-open` (no
+extra `--` is needed). This argument takes precedence over `openBrowser`,
+including in existing Apps rebuilt with this framework. Launch failures report a
+diagnostic with the URL and leave the server available for manual access; a
+successful launcher exit does not prove the page rendered. An optional `signal`,
+SIGINT or SIGTERM aborts active calls, closes HTTP connections and rejects with
+`AbortError`; cleanup errors reject explicitly. The App owns its context and
+must close it separately. Handlers must cooperate with the per-call abort
+signal: uncooperative arbitrary Node work cannot be forcibly stopped.
 
 Each host tab has an independent random session. The process stays alive before
 the first handshake; after the last disconnect it allows three seconds for a

@@ -53,6 +53,7 @@ export interface NamedPin {
   owner: string;
   status: "pending" | "ready" | "deleting";
   metadata: PinMetadata | null;
+  builtin?: true;
 }
 
 export function exactCid(value: string, schema = false): string {
@@ -67,7 +68,13 @@ export function exactCid(value: string, schema = false): string {
   return cid.toString();
 }
 
-export function pinName(value: string): void {
+export function pinName(value: string, builtin = false): void {
+  if (value.startsWith("builtin:")) {
+    if (builtin && /^builtin:[A-Za-z][A-Za-z0-9._-]*$/.test(value)) return;
+    syntax(
+      "Built-in pins are read-only and cannot be added, deleted or renamed.",
+    );
+  }
   if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(value))
     syntax("Invalid pin name; builtin names are reserved.");
   try {
@@ -106,7 +113,10 @@ function persistedHold(value: string, owner: string): Hold {
 export class State {
   readonly db: DatabaseSync;
   readonly identity: string;
-  constructor(readonly directory: string) {
+  constructor(
+    readonly directory: string,
+    private readonly builtins: readonly NamedPin[] = [],
+  ) {
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, "state.sqlite"));
     this.db
@@ -201,14 +211,17 @@ export class State {
     }
   }
   pins(): NamedPin[] {
-    return this.db
+    const user = this.db
       .prepare("SELECT name,owner,value FROM named_pins ORDER BY name")
       .all()
       .map((row) =>
         this.readPin(String(row.name), String(row.owner), String(row.value)),
       );
+    return [...user, ...this.builtins];
   }
   pin(name: string): NamedPin | undefined {
+    const builtin = this.builtins.find((pin) => pin.name === name);
+    if (builtin) return builtin;
     const row = this.db
       .prepare("SELECT owner,value FROM named_pins WHERE name=?")
       .get(name);
@@ -259,6 +272,7 @@ export class State {
     };
   }
   savePin(pin: NamedPin): void {
+    pinName(pin.name);
     if (
       !this.db
         .prepare(
@@ -274,6 +288,7 @@ export class State {
     );
   }
   deletePin(name: string): void {
+    pinName(name);
     this.db.prepare("DELETE FROM named_pins WHERE name=?").run(name);
   }
   registrations(): Association[] {

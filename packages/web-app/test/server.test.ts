@@ -1,4 +1,5 @@
 import { request as httpRequest } from "node:http";
+import * as processes from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defineWebAppMethod,
@@ -8,7 +9,23 @@ import {
   type WebAppMethod,
 } from "../src/index.js";
 
+vi.mock("node:child_process", async () => {
+  const original =
+    await vi.importActual<typeof processes>("node:child_process");
+  return {
+    ...original,
+    spawn: vi.fn(() =>
+      original.spawn(process.execPath, ["-e", ""], { stdio: "ignore" }),
+    ),
+  };
+});
+
 const running: { controller: AbortController; finished: Promise<void> }[] = [];
+const argv = process.argv;
+const platformDescriptor = Object.getOwnPropertyDescriptor(
+  process,
+  "platform",
+)!;
 afterEach(async () => {
   for (const run of running.splice(0)) {
     run.controller.abort();
@@ -16,6 +33,9 @@ afterEach(async () => {
   }
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.mocked(processes.spawn).mockReset();
+  Object.defineProperty(process, "platform", platformDescriptor);
+  process.argv = argv;
 });
 
 function string(value: unknown): string {
@@ -63,12 +83,15 @@ async function start(overrides: Partial<RunWebAppOptions> = {}) {
       },
     },
     frontendRoot: "resources/web",
+    openBrowser: false,
     handlers: { echo },
     signal: controller.signal,
-    onDiagnostic(message) {
-      ready(message.match(/http:\/\/[^ ]+/)![0]);
-    },
     ...overrides,
+    onDiagnostic(message) {
+      const url = message.match(/http:\/\/[^ ]+/)?.[0];
+      if (url) ready(url);
+      overrides.onDiagnostic?.(message);
+    },
   });
   void finished.catch(() => {});
   running.push({ controller, finished });
@@ -97,6 +120,85 @@ async function start(overrides: Partial<RunWebAppOptions> = {}) {
 }
 
 describe("local server", () => {
+  it.each([
+    ["win32", "rundll32.exe", ["url.dll,FileProtocolHandler"]],
+    ["darwin", "open", []],
+    ["linux", "xdg-open", []],
+  ] as const)(
+    "opens the ready URL by default on %s",
+    async (platform, command, prefix) => {
+      const original =
+        await vi.importActual<typeof processes>("node:child_process");
+      Object.defineProperty(process, "platform", { value: platform });
+      vi.mocked(processes.spawn).mockImplementation(() =>
+        original.spawn(process.execPath, ["-e", ""], { stdio: "ignore" }),
+      );
+      const controller = new AbortController();
+      let ready!: (url: string) => void;
+      const urlPromise = new Promise<string>((resolve) => {
+        ready = resolve;
+      });
+      const finished = runWebApp({
+        context: { appCid: "x", readFile: () => Promise.reject(new Error()) },
+        frontendRoot: "web",
+        handlers: {},
+        signal: controller.signal,
+        onDiagnostic(message) {
+          ready(message.match(/http:\/\/[^ ]+/)![0]);
+        },
+      });
+      void finished.catch(() => {});
+      running.push({ controller, finished });
+      const url = await urlPromise;
+      expect((await fetch(url)).status).toBe(200);
+      expect(processes.spawn).toHaveBeenCalledExactlyOnceWith(
+        command,
+        [...prefix, url],
+        { stdio: "ignore", shell: false },
+      );
+    },
+  );
+
+  it("does not launch a browser when disabled", async () => {
+    await start();
+    expect(processes.spawn).not.toHaveBeenCalled();
+  });
+
+  it("honours --no-open in App arguments even when opening is enabled", async () => {
+    process.argv = [process.execPath, "app.cjs", "--no-open"];
+    const app = await start({ openBrowser: true });
+    expect(processes.spawn).not.toHaveBeenCalled();
+    expect((await fetch(app.url)).status).toBe(200);
+  });
+
+  it.each(["missing", "exit"] as const)(
+    "reports a browser launch %s failure and keeps the URL available",
+    async (failure) => {
+      const original =
+        await vi.importActual<typeof processes>("node:child_process");
+      vi.mocked(processes.spawn).mockImplementation(() =>
+        failure === "missing"
+          ? original.spawn("ipab-missing-browser-command", [], {
+              stdio: "ignore",
+            })
+          : original.spawn(process.execPath, ["-e", "process.exit(7)"], {
+              stdio: "ignore",
+            }),
+      );
+      const diagnostic = vi.fn();
+      const app = await start({ openBrowser: true, onDiagnostic: diagnostic });
+      await vi.waitFor(() => {
+        expect(diagnostic).toHaveBeenCalledWith(
+          expect.stringContaining("Could not open browser"),
+        );
+      });
+      expect(diagnostic).toHaveBeenLastCalledWith(
+        expect.stringContaining(app.url),
+      );
+      expect((await fetch(app.url)).status).toBe(200);
+    },
+  );
+
   it("serves only selected bundle assets and an opaque framework frame", async () => {
     const app = await start();
     expect(app.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);

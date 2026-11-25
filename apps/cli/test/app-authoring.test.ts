@@ -840,9 +840,30 @@ describe("App-first authoring", () => {
         process.platform === "win32" ? "junction" : "dir",
       );
     }
-    const built = await cli(work.stateDir, ["--json", "build", project]);
-    expect(built.code, built.err).toBe(0);
-    expect(result(built.out)).toMatchObject({
+    const pkgPath = join(project, "package.json");
+    const pkg = object(
+      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+      "package",
+    );
+    expect(pkg.packageManager).toBeUndefined();
+    await writeFile(
+      pkgPath,
+      JSON.stringify({
+        ...pkg,
+        scripts: {
+          ...object(pkg.scripts, "scripts"),
+          build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build`,
+        },
+      }),
+    );
+    const runner = process.env.npm_execpath!;
+    expect(runner).toMatch(/pnpm(?:\.cjs|\.js|\.exe)?$/);
+    const built = await promisify(execFile)(
+      runner.endsWith(".exe") ? runner : process.execPath,
+      [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
+      { cwd: project },
+    );
+    expect(result(built.stdout)).toMatchObject({
       kind: "app-bundle",
       imported: true,
     });
@@ -872,11 +893,6 @@ describe("App-first authoring", () => {
     await expect(
       bundle.readFile("scripts/ipab-prebuild.mjs"),
     ).rejects.toThrow();
-    const pkgPath = join(project, "package.json");
-    const pkg = object(
-      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
-      "package",
-    );
     const oldCar = await readFile(join(project, "dist", "app.car"));
     await writeFile(
       pkgPath,
@@ -917,6 +933,7 @@ describe("App-first authoring", () => {
         `
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+console.error("prebuild diagnostic");
 const output = process.env.IPAB_BUILD_DIR;
 await mkdir(join(output, "web"));
 await writeFile(join(output, "app.cjs"), ${JSON.stringify(source)});
@@ -949,7 +966,7 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       "--no-import",
     ]);
     expect(first.code, first.err).toBe(0);
-    expect(first.err).toContain("ipab-prebuild");
+    expect(first.err).toContain("prebuild diagnostic");
     expect(result(first.out).imported).toBe(false);
     const carPath = join(project, "dist", "app.car");
     const original = await readFile(carPath);
@@ -1211,7 +1228,7 @@ setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
       runPrebuild(project, output, pkg, [], { signal: already }),
     ).rejects.toThrow("Already stopped.");
   }, 30_000);
-  it("uses the declared pnpm runner without its optional lifecycle hooks", async () => {
+  it("uses active pnpm with or without a declaration, without optional lifecycle hooks", async () => {
     await mkdir(project);
     const output = join(project, "output");
     await mkdir(output);
@@ -1229,12 +1246,24 @@ setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
         "postipab-prebuild": "node missing.cjs",
       },
     };
-    await writeFile(join(project, "package.json"), JSON.stringify(pkg));
     await writeFile(
       join(project, "write.cjs"),
       'require("node:fs").writeFileSync(require("node:path").join(process.env.IPAB_BUILD_DIR,"marker"),"pnpm hook");',
     );
-    await runPrebuild(project, output, pkg, [], {});
-    expect(await readFile(join(output, "marker"), "utf8")).toBe("pnpm hook");
+    for (const declaration of [undefined, workspace.packageManager]) {
+      const current = { ...pkg, packageManager: declaration };
+      await writeFile(join(project, "package.json"), JSON.stringify(current));
+      await runPrebuild(project, output, current, [], {});
+      expect(await readFile(join(output, "marker"), "utf8")).toBe("pnpm hook");
+      expect(processes.spawn).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.arrayContaining([
+          "--config.manage-package-manager-versions=false",
+          "--config.enable-pre-post-scripts=false",
+        ]),
+        expect.any(Object),
+      );
+      await unlink(join(output, "marker"));
+    }
   }, 30_000);
 });

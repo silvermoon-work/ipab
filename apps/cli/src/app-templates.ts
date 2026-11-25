@@ -20,9 +20,48 @@ import {
   templateSchema,
 } from "./template-definition.js";
 import { templateSource } from "./template-source.js";
-import { nodeError } from "./authoring.js";
+import { nodeError, selectedTree } from "./authoring.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+
+export const builtinTemplateNames = new Map([
+  ["builtin:template.node", "node"],
+  ["builtin:template.web-app", "web-app"],
+] as const);
+
+export async function builtinTemplateTree(
+  selector: "node" | "web-app",
+  options: AuthoringOptions = {},
+): Promise<ReadonlyFileTree> {
+  if (selector === "web-app") {
+    const directory = fileURLToPath(
+      new URL("../../../templates/web-app/", import.meta.url),
+    );
+    return selectedTree(
+      directory,
+      undefined,
+      resolve(directory, "dist"),
+      options,
+    );
+  }
+  const encoder = new TextEncoder();
+  return memoryTree(
+    new Map([
+      [".bundle.yaml", encoder.encode(stringify(templateSchema))],
+      [
+        "template.yaml",
+        encoder.encode(stringify(templateSchema.entry.defaultValue)),
+      ],
+      ...[...nodeTemplate()].map(
+        ([path, bytes]) =>
+          [
+            `project/${path}`,
+            typeof bytes === "string" ? encoder.encode(bytes) : bytes,
+          ] as const,
+      ),
+    ]),
+  );
+}
 
 function nodeTemplate(): Map<string, string | Uint8Array> {
   return new Map([
@@ -388,25 +427,10 @@ export async function appTemplate(
   options: AuthoringOptions & { parameters?: readonly string[] },
 ): Promise<{ files: Map<string, string | Uint8Array>; cid: string | null }> {
   options.signal?.throwIfAborted();
+  for (const [alias, name] of builtinTemplateNames)
+    if (selector === alias) selector = name;
   if (selector === "node") {
-    const project = nodeTemplate();
-    const encoder = new TextEncoder();
-    const tree = memoryTree(
-      new Map([
-        [".bundle.yaml", encoder.encode(stringify(templateSchema))],
-        [
-          "template.yaml",
-          encoder.encode(stringify(templateSchema.entry.defaultValue)),
-        ],
-        ...[...project].map(
-          ([path, bytes]) =>
-            [
-              `project/${path}`,
-              typeof bytes === "string" ? encoder.encode(bytes) : bytes,
-            ] as const,
-        ),
-      ]),
-    );
+    const tree = await builtinTemplateTree("node", options);
     const encoded = await encodeBundleCar(tree, options);
     try {
       return {

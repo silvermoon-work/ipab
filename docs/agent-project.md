@@ -106,6 +106,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   只调用 scripts.ipab-prebuild，不回调 scripts.build，也不运行额外 lifecycle
   hooks
   或让 pnpm 自动下载／切换版本。scripts.build 保持 ipab build。
+  未声明 packageManager 时优先沿用 npm_execpath 标识的 npm/pnpm，
+  没有上下文才使用 npm；明确声明始终优先并校验准确版本。
   钩子只写本次 `IPAB_BUILD_DIR`，不得清除
   `IPAB_BUILD_CHAIN` 后递归构建；IPAB 从新产物组装并保留原程序字节。
   入口必须为有效 UTF-8 Node CJS，只解析不执行，不将 ESM 原文冒充 CJS；
@@ -115,6 +117,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   内置快捷名自动提供本地 private 框架的 file 引用，目录／CAR／CID 使用时
   显式传入 webAppDependency 参数；Vite 只在项目构建期执行。
   框架提供宿主页／opaque iframe、显式方法及事件；不是 Node 安全沙箱，
+  服务就绪后默认打开系统浏览器，openBrowser:false 关闭；
+  框架保留的 App 参数 --no-open 优先禁止打开，打开失败报告 URL 并保留服务。
   不替换 IPAB 输出最终提交规则。协议与限制见 README 和框架 README。
 - Template 新契约是专用 Content Bundle 数据，不是 App。完整 templateSchema
   用 encodeSchema 编码，离线类型 alias builtin:project-template.v1 对应
@@ -134,7 +138,12 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
   原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，
   不触发 Store 操作，不改 register/历史 CID。执行/历史恢复必须跳过 named pin
-  owner。list/show 只读本地登记；--kind 只接受 bundle/schema，普通 content
+  owner。list/show 合并只读内置 pin 与用户本地登记；内置 Schema／模板来自
+  安装包，计算并验证准确 CID，提供离线 block 源，不伪造用户 Store owner。
+  builtin:node-app.v1、builtin:project-template.v1、builtin:template.node、
+  builtin:template.web-app 显示 built-in 来源与 builtin:true；保留 builtin
+  命名空间，禁止 add/delete/rename，普通用户 pin 的持久保留规则不变。
+  --kind 只接受 bundle/schema，普通 content
   仍可 pin；--type 支持准确 schema CID、Schema pin 短名与 builtin，按 AND 过滤。
 - history list 使用逐条记录显示完整 CID，argv 仅 join 空格后转义控制字符，
   不截断或用 pin 替代 CID。exec --log APP / open --log CONTENT 是按次调试开关，

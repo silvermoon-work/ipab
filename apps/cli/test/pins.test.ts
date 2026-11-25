@@ -13,6 +13,7 @@ import { IpfsStore } from "@ipab/ipfs-store";
 import { addPin, deletePin, pinDetails, renamePin } from "../src/pins.js";
 import { State, type NamedPin } from "../src/state.js";
 import { appSchema, appSchemaCid } from "../src/app-definition.js";
+import { builtinContent } from "../src/builtins.js";
 import {
   Ownership,
   recoverInactive,
@@ -79,9 +80,11 @@ function kuboFixture() {
 describe("named pins", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let state: State;
+  let builtinPins: ReturnType<typeof pinDetails>[];
   beforeEach(async () => {
     work = await fixture();
     state = new State(work.stateDir);
+    builtinPins = (await builtinContent()).pins.map(pinDetails);
     const config = join(work.root, "store.json");
     await writeFile(config, JSON.stringify(work.store.configuration));
     vi.stubEnv("TASK_CONTENT_CONFIG", config);
@@ -162,6 +165,7 @@ describe("named pins", () => {
         },
         { name: "space", kind: "content" },
         { name: "unixfs-file", kind: "content" },
+        ...builtinPins,
       ],
       pending: [],
       legacyAliases: [],
@@ -226,11 +230,20 @@ describe("named pins", () => {
       ).toMatchObject({ items: [{ name: "reader", cid: root }] });
     expect(await jsonCli(["pin", "list", "--type", "node-type"])).toMatchObject(
       {
-        items: [{ name: "node-type" }, { name: "reader" }],
+        items: [
+          { name: "node-type" },
+          { name: "reader" },
+          ...builtinPins.filter(
+            (pin) => pin.schemaCid === schema.cid.toString(),
+          ),
+        ],
       },
     );
     expect(await jsonCli(["pin", "list", "--kind", "schema"])).toMatchObject({
-      items: [{ name: "node-type" }],
+      items: [
+        { name: "node-type" },
+        ...builtinPins.filter((pin) => pin.kind === "schema"),
+      ],
     });
     expect(
       await jsonCli([
@@ -365,7 +378,7 @@ describe("named pins", () => {
     }
     const result = await cli(work.stateDir, ["--json", "pin", "list"]);
     expect(JSON.parse(result.out) as unknown).toMatchObject({
-      items: [],
+      items: builtinPins,
       pending: [{ name: "broken" }, { name: "missing" }, { name: "schema" }],
     });
     expect(result.err).toContain("not usable pins");

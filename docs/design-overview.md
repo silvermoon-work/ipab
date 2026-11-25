@@ -93,7 +93,15 @@ rename 在单一 SQLite 事务中只改 name；ready 才能解析或改名，临
 
 旧 aliases 表不删、不作为 pin 解析；list 单独展示未保留的迁移来源，
 用户显式 add 验证并实际保留后才可使用原名。register 和历史保存准确 CID，
-不随 pin 改名重写。只读 builtin 类型快捷名不是用户 pin，仍可离线解析。
+不随 pin 改名重写。
+
+内置 Schema 和预制模板以只读 built-in pin 合并到 list/show：
+`builtin:node-app.v1`、`builtin:project-template.v1`、
+`builtin:template.node`、`builtin:template.web-app`。
+安装内容按相同协议计算并验证 CID，内置 block 源支持离线检查／模板读取；
+不在用户 SQLite 伪造 Store owner，也不联网确认 Kubo pin。
+SOURCE 与 JSON `builtin:true` 区分其来源；保留 builtin 命名空间，
+add/delete/rename 均拒绝修改。普通用户 pin 的 retain／恢复规则不变。
 
 <a id="node-app-profile"></a>
 

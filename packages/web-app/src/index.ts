@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   createServer,
   type IncomingMessage,
@@ -57,6 +58,7 @@ export interface RunWebAppOptions {
   context: WebAppContext;
   frontendRoot: string;
   handlers: Readonly<Record<string, WebAppMethod>>;
+  openBrowser?: boolean;
   onDiagnostic?: (message: string) => void;
   signal?: AbortSignal;
 }
@@ -87,6 +89,28 @@ function safePath(path: string): string {
   return path;
 }
 
+function openBrowser(url: string, diagnostic: (message: string) => void) {
+  const [command, args] =
+    process.platform === "win32"
+      ? (["rundll32.exe", ["url.dll,FileProtocolHandler", url]] as const)
+      : process.platform === "darwin"
+        ? (["open", [url]] as const)
+        : (["xdg-open", [url]] as const);
+  const child = spawn(command, args, { stdio: "ignore", shell: false });
+  child.once("error", (error) => {
+    diagnostic(
+      `Could not open browser: ${error.message}. Open ${url} manually.`,
+    );
+  });
+  child.once("exit", (code, signal) => {
+    if (signal || (code !== null && code !== 0))
+      diagnostic(
+        `Could not open browser (${signal ?? String(code)}). Open ${url} manually.`,
+      );
+  });
+  child.unref();
+}
+
 interface Session {
   calls: Map<string, AbortController>;
   events: JsonValue[];
@@ -102,6 +126,13 @@ export async function runWebApp(options: RunWebAppOptions): Promise<void> {
       throw new Error("Handlers must use defineWebAppMethod with both parsers");
   }
   const diagnostic = options.onDiagnostic ?? console.error;
+  const report = (message: string) => {
+    try {
+      diagnostic(message);
+    } catch (error) {
+      stop(error instanceof Error ? error : new Error("Diagnostic failed"));
+    }
+  };
   const secret = randomBytes(24).toString("hex");
   const sessions = new Map<string, Session>();
   const assets = new Set<AbortController>();
@@ -413,7 +444,13 @@ export async function runWebApp(options: RunWebAppOptions): Promise<void> {
   if (options.signal?.aborted) interrupted();
   else {
     try {
-      diagnostic(`Web App URL: ${origin}/ (waiting for frontend connection)`);
+      report(`Web App URL: ${origin}/ (waiting for frontend connection)`);
+      if (
+        options.openBrowser !== false &&
+        !process.argv.slice(2).includes("--no-open") &&
+        server.listening
+      )
+        openBrowser(`${origin}/`, report);
     } catch (error) {
       stop(error instanceof Error ? error : new Error("Diagnostic failed"));
     }

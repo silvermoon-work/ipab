@@ -84,26 +84,36 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
     throw new HostError(
       "ipab-prebuild supports exact npm or pnpm packageManager declarations.",
     );
-  const name =
-    typeof declaration === "string" && declaration.startsWith("pnpm@")
-      ? "pnpm"
-      : "npm";
-  const suffix = name === "npm" ? "npm-cli.js" : "pnpm.cjs";
   const inherited = process.env.npm_execpath;
+  const runnerName = (entry: string) => {
+    const file = basename(entry);
+    if (["npm-cli.js", "npm"].includes(file)) return "npm";
+    if (["pnpm.cjs", "pnpm.js", "pnpm.exe", "pnpm"].includes(file))
+      return "pnpm";
+    return undefined;
+  };
+  const name =
+    typeof declaration === "string"
+      ? declaration.startsWith("pnpm@")
+        ? "pnpm"
+        : "npm"
+      : (inherited && runnerName(inherited)) || "npm";
+  const suffix = name === "npm" ? "npm-cli.js" : "pnpm.cjs";
   const candidates = [
-    ...(inherited &&
-    (inherited.endsWith(suffix) ||
-      (name === "pnpm" && basename(inherited) === "pnpm.exe"))
-      ? [inherited]
-      : []),
+    ...(inherited && runnerName(inherited) === name ? [inherited] : []),
     ...[dirname(process.execPath), ...(process.env.PATH ?? "").split(delimiter)]
       .filter(Boolean)
-      .map((directory) => join(directory, "node_modules", name, "bin", suffix)),
+      .flatMap((directory) => [
+        join(directory, "node_modules", name, "bin", suffix),
+        join(directory, process.platform === "win32" ? `${name}.exe` : name),
+      ]),
   ];
-  for (const entry of candidates) {
+  for (const candidate of candidates) {
     try {
+      const entry = await realpath(candidate);
+      if (runnerName(entry) !== name) continue;
       if ((await lstat(entry)).isFile()) {
-        const native = entry.endsWith(".exe");
+        const native = !/\.(?:js|cjs)$/.test(entry);
         if (typeof declaration === "string") {
           const expected = declaration.split("@")[1]!.split("+")[0];
           const { stdout } = await promisify(execFile)(
@@ -123,7 +133,7 @@ async function packageManager(pkg: Record<string, unknown>): Promise<{
     }
   }
   throw new HostError(
-    `Could not locate ${name}'s JavaScript CLI. Run ipab through ${name} exec, or explicitly install the project's declared package manager.`,
+    `Could not locate ${name}'s CLI. Run ipab through ${name} exec, or explicitly install the project's declared package manager.`,
   );
 }
 

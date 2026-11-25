@@ -17,7 +17,12 @@ export function pinDetails(pin: NamedPin) {
     throw new HostError(
       `Pin "${pin.name}" is ${pin.status}. Retry ipab pin add ${pin.name} ${pin.cid}, or ipab pin delete ${pin.name}.`,
     );
-  return { name: pin.name, cid: pin.cid, ...pin.metadata };
+  return {
+    name: pin.name,
+    cid: pin.cid,
+    ...pin.metadata,
+    ...(pin.builtin ? { builtin: true as const } : {}),
+  };
 }
 
 function requiredPin(state: State, name: string): NamedPin {

@@ -16,6 +16,8 @@ import { HostError, message, object } from "../src/errors.js";
 import { pinName, exactCid, State } from "../src/state.js";
 import { appSchemaCid } from "../src/space.js";
 import { appBuiltinAlias } from "../src/app-definition.js";
+import { builtinContent } from "../src/builtins.js";
+import { pinDetails } from "../src/pins.js";
 import {
   fixture,
   cli,
@@ -26,8 +28,10 @@ import {
 
 describe("management contract", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
+  let builtinPins: ReturnType<typeof pinDetails>[];
   beforeEach(async () => {
     work = await fixture();
+    builtinPins = (await builtinContent()).pins.map(pinDetails);
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -66,7 +70,9 @@ describe("management contract", () => {
     state.saveRun(succeeded);
     state.close();
     const pins = await cli(work.stateDir, ["pin", "list"]);
-    expect(pins.out).toMatch(/^NAME\s+CID\s+KIND\s+BUNDLE TYPE\nreader\s+/);
+    expect(pins.out).toMatch(
+      /^NAME\s+CID\s+KIND\s+BUNDLE TYPE\s+SOURCE\nreader\s+/,
+    );
     expect(pins.out).toContain(another);
     expect(
       JSON.parse(
@@ -81,6 +87,7 @@ describe("management contract", () => {
           typeName: null,
           schemaCid: null,
         },
+        ...builtinPins,
       ],
       pending: [],
       legacyAliases: [],
@@ -538,6 +545,7 @@ describe("management contract", () => {
       items: [
         { name: "a", cid: schema },
         { name: "z", cid: another },
+        ...builtinPins,
       ],
       legacyAliases: [{ name: "legacy", cid: another }],
     });
@@ -564,10 +572,11 @@ describe("management contract", () => {
     reopened.close();
   });
 
-  it("builtin type shortcuts stay offline, are not user pins and cannot be occupied", async () => {
+  it("builtin pins stay offline, are visible and cannot be changed", async () => {
     const listed = await cli(work.stateDir, ["pin", "list"]);
     expect(listed.code).toBe(0);
-    expect(listed.out).toBe("No named pins.");
+    expect(listed.out).toContain(appBuiltinAlias);
+    expect(listed.out).toContain("built-in (read-only)");
     expect(
       (await cli(work.stateDir, ["register", "set", appBuiltinAlias, another]))
         .out,
@@ -578,6 +587,7 @@ describe("management contract", () => {
     for (const args of [
       ["pin", "add", appBuiltinAlias, another],
       ["pin", "delete", appBuiltinAlias],
+      ["pin", "rename", appBuiltinAlias, "new-name"],
       ["pin", "rename", "reader", appBuiltinAlias],
     ]) {
       const response = await cli(work.stateDir, args);
@@ -587,7 +597,10 @@ describe("management contract", () => {
       JSON.parse(
         (await cli(work.stateDir, ["--json", "pin", "list"])).out,
       ) as unknown,
-    ).toEqual({ items: [], pending: [], legacyAliases: [] });
+    ).toEqual({ items: builtinPins, pending: [], legacyAliases: [] });
+    const shown = await cli(work.stateDir, ["pin", "show", appBuiltinAlias]);
+    expect(shown.code).toBe(0);
+    expect(shown.out).toContain("content bundled with IPAB");
   });
 
   it("registrations validate full-token templates and require deliberate replacement", async () => {

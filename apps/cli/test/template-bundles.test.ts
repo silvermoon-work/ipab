@@ -24,6 +24,8 @@ import {
 } from "../src/template-definition.js";
 import { templateSource } from "../src/template-source.js";
 import { State } from "../src/state.js";
+import { builtinContent } from "../src/builtins.js";
+import { pinDetails } from "../src/pins.js";
 import { cli, fixture } from "./helpers.js";
 
 const encode = (value: string) => new TextEncoder().encode(value);
@@ -149,6 +151,110 @@ describe("Data-only Template Bundles", () => {
     expect((await inspectBundle(templateBuiltinAlias)).entry.path).toBe(
       "template.yaml",
     );
+  });
+  it("exposes complete read-only builtin pins and resolves their content without a Store", async () => {
+    const builtins = await builtinContent();
+    const names = [
+      "builtin:node-app.v1",
+      "builtin:project-template.v1",
+      "builtin:template.node",
+      "builtin:template.web-app",
+    ];
+    expect(builtins.pins.map((pin) => pin.name)).toEqual(names);
+    const offline = ["--store-rpc", "http://127.0.0.1:1", "--json"];
+    const listed = await cli(work.stateDir, [...offline, "pin", "list"]);
+    expect(listed.code, listed.err).toBe(0);
+    expect(JSON.parse(listed.out) as unknown).toEqual({
+      items: builtins.pins.map(pinDetails),
+      pending: [],
+      legacyAliases: [],
+    });
+    const state = new State(work.stateDir, builtins.pins);
+    try {
+      for (const pin of builtins.pins) {
+        expect(state.resolve(pin.name)).toBe(pin.cid);
+        const shown = await cli(work.stateDir, [
+          ...offline,
+          "pin",
+          "show",
+          pin.name,
+        ]);
+        expect(shown.code, shown.err).toBe(0);
+        expect(JSON.parse(shown.out) as unknown).toMatchObject({
+          name: pin.name,
+          cid: pin.cid,
+          builtin: true,
+        });
+        const inspected = await cli(work.stateDir, [
+          ...offline,
+          "bundle",
+          "inspect",
+          pin.cid,
+        ]);
+        expect(inspected.code, inspected.err).toBe(0);
+        expect(JSON.parse(inspected.out) as unknown).toMatchObject({
+          cid: pin.cid,
+          schemaCid: pin.metadata!.schemaCid,
+        });
+        expect(() => {
+          state.savePin(pin);
+        }).toThrow("read-only");
+        expect(() => {
+          state.deletePin(pin.name);
+        }).toThrow("read-only");
+        for (const args of [
+          ["pin", "add", pin.name, pin.cid],
+          ["pin", "delete", pin.name],
+          ["pin", "rename", pin.name, "new-name"],
+          ["pin", "rename", "user-pin", pin.name],
+        ]) {
+          const result = await cli(work.stateDir, args);
+          expect(result.code).toBe(2);
+          expect(result.err).toContain("read-only");
+        }
+      }
+    } finally {
+      state.close();
+    }
+    const filtered = await cli(work.stateDir, [
+      ...offline,
+      "pin",
+      "list",
+      "--kind",
+      "bundle",
+      "--type",
+      templateBuiltinAlias,
+    ]);
+    expect(JSON.parse(filtered.out) as unknown).toMatchObject({
+      items: [
+        { name: "builtin:template.node", builtin: true },
+        { name: "builtin:template.web-app", builtin: true },
+      ],
+    });
+    const inspected = await cli(work.stateDir, [
+      ...offline,
+      "bundle",
+      "inspect",
+      "builtin:template.web-app",
+    ]);
+    expect(inspected.code, inspected.err).toBe(0);
+    const project = join(work.root, "builtin-web");
+    const created = await cli(work.stateDir, [
+      ...offline,
+      "init",
+      "builtin-web",
+      project,
+      "--template",
+      "builtin:template.web-app",
+    ]);
+    expect(created.code, created.err).toBe(0);
+    expect(await readFile(join(project, "package.json"), "utf8")).toContain(
+      '"@ipab/web-app": "file:',
+    );
+    const reopened = new State(work.stateDir);
+    expect(reopened.pins()).toEqual([]);
+    expect(reopened.holds()).toEqual([]);
+    reopened.close();
   });
   it("loads identical local, single-root CAR and CID templates with binary and dotfile preservation", async () => {
     const source = await bundle();

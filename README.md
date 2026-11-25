@@ -79,8 +79,8 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   也接受离线内置类型 alias
   `builtin:node-app.v1`，set/remove 都解析并保存准确 CID。
   不接受 UnixFS 目录 CID 或旧 builtin 注册键；builtin 不是 App 执行目标。
-- 用户短名由具名 pin 提供；只读内置类型 `builtin:node-app.v1` 不是用户 pin，
-  不出现在 `pin list` 中，用户不能占用它；其离线解析能力不变。
+- 用户短名由具名 pin 提供；内置 Schema／模板也以只读 built-in pin
+  出现在 `pin list` 中，用户不能占用、删除或改名；其离线解析能力不变。
   `register list/set/remove` 保存解析后的准确 CID。改变已有关联需要
   `--replace`；
   相同值幂等成功。pin 改名／删除不影响关联或历史保存的准确 CID。
@@ -89,10 +89,25 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
 
 ### 具名 pin
 
-具名 pin 同时承担内容保留责任和 `NAME → 准确 CID` 短名解析；不另设 Alias
+用户具名 pin 同时承担内容保留责任和 `NAME → 准确 CID` 短名解析；不另设 Alias
 与 pin 开关。名称以 ASCII 字母开头，后续允许字母、数字、`.`、`_`、`-`，
 不能本身是 CID，不能占用 builtin 名字。不同名字允许指向同一 CID，各有独立
 且不依赖可变名称的 Store owner。
+
+内置 pin 的内容由 IPAB 安装提供，按相同 Bundle／Schema 协议计算并验证 CID；
+无需联网或额外建立用户 Store owner，也不冒充 Kubo 的物理 pin。
+它们始终只读，不能 `pin add/delete/rename`；安装升级可更新内置模板的准确 CID。
+`pin list/show` 的 SOURCE 标明 `built-in (read-only)`，JSON 额外标记
+`builtin: true`。
+内置内容可直接用名字或准确 CID 供 Bundle 检查／模板初始化读取，
+不需要先导入用户 Store：
+
+| 内置 pin                      | 类别   | 内容                         |
+| ----------------------------- | ------ | ---------------------------- |
+| `builtin:node-app.v1`         | schema | Node App Bundle 完整类型定义 |
+| `builtin:project-template.v1` | schema | Template Bundle 完整类型定义 |
+| `builtin:template.node`       | bundle | 默认 Node 项目模板           |
+| `builtin:template.web-app`    | bundle | 前后端 Web App 项目模板      |
 
 ```sh
 ipab build
@@ -103,6 +118,8 @@ ipab pin show reader
 ipab pin rename reader my-reader
 ipab exec my-reader
 ipab pin delete my-reader
+ipab pin show builtin:template.web-app
+ipab init dashboard --template builtin:template.web-app
 ```
 
 - `pin add NAME CID` 要求未占用名字和准确 CID，不支持覆盖、replace 或名称链。
@@ -127,7 +144,7 @@ ipab pin delete my-reader
 - 类型识别复用 Bundle／Schema 解析校验：根目录有 `.bundle.yaml` 就必须通过
   Bundle 校验；独立 DAG-CBOR 的 `entry` 字段声明类型定义，声明但不合法则失败，
   不 catch 降级为普通内容。其他 DAG-CBOR 不强制视作 Schema。
-  add 保存校验得到的类型元数据；list/show 只读本地登记，不隐式联网或宣称刚
+  add 保存校验得到的类型元数据；list/show 只读用户登记与内置内容，不隐式联网或宣称刚
   在线验证了节点状态。
 - SQLite 在 Store 操作前原子预留名称、稳定 owner、原后端与恢复记录；
   retain 后提交引用和类型信息，confirm 与 Store 关闭成功后才登记为可用。
@@ -139,7 +156,8 @@ ipab pin delete my-reader
 
 pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 daemon、不自动换后端。
 `--json pin list` 返回 `items`、`pending`、`legacyAliases`；成功项包含完整
-`name`、`cid`、`kind`、`typeName`、`schemaCid`，普通内容最后两字段为 `null`。
+`name`、`cid`、`kind`、`typeName`、`schemaCid`，普通内容最后两字段为 `null`；
+内置项另有 `builtin: true`，用户项保持原字段形状。
 
 #### 旧 Alias 迁移
 
@@ -256,7 +274,8 @@ date 及任意自定义 JavaScript filter 不支持。未带后缀的普通文�
 
 `web-app` 是仓库 [templates/web-app](templates/web-app) 中的真实 Liquid Template
 Bundle，包含 Vite + 原生 TypeScript 前端、自包含 Node 后端和
-`ipab.yaml`。内置快捷名与目录／CAR／CID 使用相同校验及展开协议，
+`ipab.yaml`。`node`／`web-app` 是对应 built-in 模板 pin 的 Init 简写。
+内置 pin、快捷名与目录／CAR／CID 使用相同校验及展开协议，
 `templateCid` 报告准确内容身份。
 Web 模板依赖尚未发布的 private `@ipab/web-app`；内置快捷名自动提供当前本地包的
 `file:` 引用，不生成虚构的 registry 版本。也可用 `--param webAppDependency=...`
@@ -329,7 +348,9 @@ ipab init dashboard --template .\templates\web-app\dist\bundle.car `
 IPAB 不加载 Vite／esbuild 配置、不安装工具，不通过是否存在脚本来猜测策略。
 钩子可自由使用 Vite、esbuild 或其他工具；模板预置的 Vite 为 `8.3.8`。
 
-IPAB 使用项目声明的准确 npm/pnpm `packageManager`；未声明使用 npm。
+IPAB 使用项目声明的准确 npm/pnpm `packageManager`；未声明时沿用启动
+`npm run build`／`pnpm run build`／`exec` 的 npm/pnpm，
+直接调用且没有包管理器上下文时使用 npm。
 不支持的声明、版本不匹配或工具不存在明确失败，不自动安装或切换版本。
 通过 npm 执行时使用 `--ignore-scripts`，通过 pnpm 执行时关闭
 `enable-pre-post-scripts` 和 `manage-package-manager-versions`；
@@ -375,9 +396,14 @@ npm install
 npm run build -- --no-import
 ipab bundle import .\dist\app.car
 ipab exec <返回的App CID>
+# 只打印 URL，不自动打开浏览器：
+ipab exec <返回的App CID> --no-open
 ```
 
-运行后打开 stderr 报告的本机 URL。前端 Vite 产物与 Node 后端在同一 App Bundle，
+运行后默认用系统浏览器打开本机 URL，也始终向 stderr 报告该 URL。
+`--no-open` 关闭框架的自动打开行为，适用于 SSH／无桌面环境；
+打开失败明确报告并保留服务，可手动访问 URL。
+前端 Vite 产物与 Node 后端在同一 App Bundle，
 运行不需要 Vite dev server 或 node_modules。前端与后端分开构建、通过框架通信；
 IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 Viewer／Task 业务。
 框架 API、请求校验及页面生命周期见

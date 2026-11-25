@@ -1,5 +1,36 @@
 # @ipab/bundle-viewer (private)
 
+`runBundleViewer` accepts exactly one of `source`, `contentCid` or `folder`.
+`source` resolves an existing local directory first, then a host named pin using
+`context.resolvePin`, then a CID. Only absent matches permit fallback; directory
+access errors, non-directory existing files and pin lookup failures are
+explicit. Named pins resolve once, not on every update. Legacy aliases are not
+used. Hosts without pin lookup can still use exact CIDs or directories, but
+unresolved names report the missing capability.
+
+CID mode keeps its immutable one-time snapshot. Explicit `folder` mode reads a
+local Bundle directory and exposes bounded revision/chunk methods over the
+existing MessagePort bridge. The browser checks roughly once per second and
+renders coherent new JSON in-place; large state uses <=8000-character chunks
+rather than raising the 64 KiB RPC limit. No arbitrary filesystem path is
+accepted by the browser.
+
+Folder reloads validate the exact type, prepare referenced resources and recheck
+all selected bytes before publishing. Inputs are limited to 258 distinct files,
+1 MiB per input file, 3 MiB aggregate raw inputs and the existing 1 MiB
+canonical state budget. Symbolic links and path escapes are rejected. These are
+best-effort local filesystem checks, not a sandbox/transactional filesystem
+snapshot. No whole-directory scanner, Store import or background daemon runs.
+Reloads are demand-driven while tabs are connected, not unlimited file watchers.
+
+Invalid initial contents still start a preview page showing the error; editing
+into a valid Bundle recovers. Invalid edits hide the last successful view rather
+than labeling it as current; recovery reuses its React component state. New tabs
+and HTTP refresh receive current SSR. Generic components remain responsible for
+handling data changes; the Check App opts into preserving valid checkpoint IDs.
+Connection, timers, pending chunk calls and local file reads stop on
+close/abort.
+
 An optional `prepareData(data, { readFile, signal })` runs once in Node after
 entry/type validation and before the server starts. It may resolve explicit
 resources in the selected Content Bundle; errors reject startup. Its returned

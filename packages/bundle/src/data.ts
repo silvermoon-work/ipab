@@ -1,4 +1,9 @@
-export { parseBundleManifest, parseData, canonicalJson } from "./parsing.js";
+export {
+  parseBundleManifest,
+  parseData,
+  canonicalJson,
+  safePath,
+} from "./parsing.js";
 export {
   encodeSchema,
   inspectSchema,

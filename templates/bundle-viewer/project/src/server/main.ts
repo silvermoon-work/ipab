@@ -6,10 +6,13 @@ declare const ipab: Parameters<typeof runBundleViewer>[0]["context"];
 
 void (async () => {
   const args = process.argv.slice(2).filter((value) => value !== "--no-open");
-  if (args.length !== 1) throw new Error("Expected one Content Bundle CID");
+  const folder =
+    args.length === 2 && args[0] === "--folder" ? args[1] : undefined;
+  if (!folder && (args.length !== 1 || args[0] === "--folder"))
+    throw new Error("Expected one folder, pin or CID, or --folder PATH");
   await runBundleViewer({
     context: ipab,
-    contentCid: args[0]!,
+    ...(folder ? { folder } : { source: args[0]! }),
     schema,
     viewer,
     frontendRoot: "resources/web",

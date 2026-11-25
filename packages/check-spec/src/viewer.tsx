@@ -9,9 +9,11 @@ const mobileQuery = "(max-width: 650px)";
 export function CheckBundleViewer({
   spec,
   navigation = false,
+  preserveSelection = false,
 }: {
   spec: unknown;
   navigation?: boolean;
+  preserveSelection?: boolean;
 }) {
   const result = validateCheckView(spec);
   if (!result.valid)
@@ -37,7 +39,7 @@ export function CheckBundleViewer({
     );
   return (
     <Definition
-      key={JSON.stringify(result.spec)}
+      key={preserveSelection ? "live" : JSON.stringify(result.spec)}
       spec={result.spec}
       navigation={navigation}
     />

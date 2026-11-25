@@ -48,6 +48,7 @@ export function defineWebAppMethod<
 }
 export interface WebAppContext {
   appCid: string;
+  resolvePin?: (name: string) => Promise<string | undefined>;
   readFile(
     rootCid: string,
     path: string,

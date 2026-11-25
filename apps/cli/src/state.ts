@@ -210,6 +210,15 @@ export class State {
       throw error;
     }
   }
+  resolvePin(name: string): string | undefined {
+    const pin = this.pin(name);
+    if (!pin) return undefined;
+    if (pin.status !== "ready")
+      throw new HostError(
+        `Pin "${name}" is ${pin.status}; retry pin add/delete before using it.`,
+      );
+    return exactCid(pin.cid);
+  }
   pins(): NamedPin[] {
     const user = this.db
       .prepare("SELECT name,owner,value FROM named_pins ORDER BY name")

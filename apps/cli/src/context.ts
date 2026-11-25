@@ -3,6 +3,7 @@ import { CHUNK_BYTES, relativePath } from "./space.js";
 
 export interface AppContext {
   readonly appCid: string;
+  resolvePin(name: string): Promise<string | undefined>;
   readFile(
     rootCid: string,
     path: string,
@@ -126,6 +127,15 @@ export function createContext(port: Port): {
     }
   };
   const context: AppContext = {
+    async resolvePin(name) {
+      if (!name || name.length > 256)
+        throw new HostError("Pin name must contain 1..256 characters.");
+      const result = await rpc("resolvePin", name);
+      if (result === null) return undefined;
+      if (typeof result !== "string")
+        throw new HostError("Invalid pin lookup response.");
+      return result;
+    },
     get appCid() {
       if (!appCid)
         throw new HostError("IPAB context identity is not initialized.");

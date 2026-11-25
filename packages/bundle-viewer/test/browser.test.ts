@@ -4,6 +4,7 @@ import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectWebApp } from "@ipab/web-app/browser";
 import { hydrateBundleViewer, type BundleViewer } from "../src/browser.js";
+import { liveView } from "../src/live.js";
 
 vi.mock("@ipab/web-app/browser", () => ({ connectWebApp: vi.fn() }));
 const closeConnection = vi.fn();
@@ -25,6 +26,7 @@ afterEach(async () => {
   document.body.replaceChildren();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 const viewer: BundleViewer = ({ data }) => {
   const id = useId();
@@ -44,6 +46,97 @@ function markup(data: unknown = "SSR") {
   document.body.innerHTML = `<div id="ipab-viewer">${renderToString(createElement(viewer, { data }), { identifierPrefix: "ipab-viewer-" })}</div><script id="ipab-viewer-state" type="application/json">${JSON.stringify(data)}</script>`;
 }
 describe("isomorphic hydration", () => {
+  it("updates in-place, preserves component state while hiding errors, and stops polling on close", async () => {
+    vi.useFakeTimers();
+    markup("Initial");
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<script id="ipab-viewer-live" type="application/json">{"revision":"one","error":""}</script>',
+    );
+    document.getElementById("ipab-viewer")!.innerHTML = renderToString(
+      liveView(viewer, { data: "Initial", error: "" }),
+      { identifierPrefix: "ipab-viewer-" },
+    );
+    const diagnostic = vi.spyOn(console, "error");
+    let state = { revision: "two", error: "", chunks: 1 };
+    const request = vi.fn((method: string) =>
+      Promise.resolve(
+        method === "viewerRevision" ? state : JSON.stringify("Updated"),
+      ),
+    );
+    vi.mocked(connectWebApp).mockResolvedValue({
+      close: closeConnection,
+      request,
+      onEvent: vi.fn(),
+    });
+    await act(async () => {
+      closeViewer = (await hydrateBundleViewer(viewer)).close;
+    });
+    await act(async () => {
+      document.querySelector("button")!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(document.querySelector("button")!.textContent).toBe("Updated: 1");
+    state = { revision: "invalid", error: "Broken Markdown", chunks: 0 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(document.querySelector('[role="alert"]')!.textContent).toBe(
+      "Broken Markdown",
+    );
+    expect(
+      document.querySelector("button")!.closest("[hidden]"),
+    ).not.toBeNull();
+    state = { revision: "three", error: "", chunks: 1 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(document.querySelector("button")!.textContent).toBe("Updated: 1");
+    expect(document.querySelector("button")!.closest("[hidden]")).toBeNull();
+    await act(async () => {
+      closeViewer?.();
+      await Promise.resolve();
+    });
+    const calls = request.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(request.mock.calls.length).toBe(calls);
+    expect(diagnostic).not.toHaveBeenCalled();
+    diagnostic.mockRestore();
+  });
+  it("shows failed update transport and retries rather than displaying stale success", async () => {
+    vi.useFakeTimers();
+    markup();
+    document.getElementById("ipab-viewer")!.innerHTML =
+      '<div style="height:100%"><p role="alert">Invalid edit</p><div hidden="" style="height:100%"></div></div>';
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<script id="ipab-viewer-live" type="application/json">{"revision":"invalid","error":"Invalid edit"}</script>',
+    );
+    const request = vi.fn().mockRejectedValue(new Error("Disconnected"));
+    vi.mocked(connectWebApp).mockResolvedValue({
+      close: closeConnection,
+      request,
+      onEvent: vi.fn(),
+    });
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    await act(async () => {
+      closeViewer = (await hydrateBundleViewer(viewer)).close;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(document.querySelector('[role="alert"]')!.textContent).toContain(
+      "Retrying",
+    );
+    expect(diagnostic).toHaveBeenCalledWith(
+      "Folder preview update failed",
+      expect.any(Error),
+    );
+    diagnostic.mockRestore();
+  });
   it("reuses SSR nodes and IDs, then becomes interactive and cleans up once", async () => {
     markup();
     const node = document.querySelector("button")!;

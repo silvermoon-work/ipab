@@ -178,6 +178,13 @@ pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 dae
 
 ## App 开发（上层 Node profile）
 
+Node App 的 `ipab.resolvePin(name)` 提供只读宿主具名 pin 查询（名称最多 256
+字符）：ready 用户／内置 pin 返回准确 CID，不存在返回 undefined；
+pending/deleting、损坏状态及 IPC 错误明确拒绝。它不读取旧 Alias、不联网、
+不保留内容，也不改写 App argv。需要此能力的 App 应使用新版宿主。
+Viewer 模板用它实现目录／具名 pin／CID 的单参数自动识别；目录仍优先，
+同名 pin 只解析一次，不自动跟随重命名或内容变化。
+
 根 `init`／`build` 面向 App；`bundle` 分组仍是不会编译代码的底层工具。
 使用已构建并链接到全局的本地 `ipab`（首轮 RC 尚未发布到 npm）：
 

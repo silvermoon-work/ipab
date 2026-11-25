@@ -387,6 +387,9 @@ importers:
       '@ipab/web-app':
         specifier: workspace:*
         version: link:../web-app
+      multiformats:
+        specifier: 'catalog:'
+        version: 14.0.5
     devDependencies:
       '@types/jsdom':
         specifier: 'catalog:'

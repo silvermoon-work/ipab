@@ -1,11 +1,22 @@
 {
   "name": "@ipab/bundle",
   "version": "0.1.0-rc.0",
-  "private": true,
+  "private": false,
   "description": "Validated UnixFS Content Bundles and single-block DAG-CBOR schemas.",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "homepage": "https://github.com/silvermoon-work/ipab#readme",
+  "bugs": {
+    "url": "https://github.com/silvermoon-work/ipab/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.15.0"
   },
@@ -25,6 +36,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "lint-package": "node scripts/lint-package.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node scripts/test.mjs",
     "test-ci": "node scripts/test-ci.mjs",

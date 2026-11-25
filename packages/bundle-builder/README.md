@@ -1,6 +1,7 @@
 # Bundle builder
 
-Private deterministic CAR construction; no Store upload or pinning.
+Deterministic CAR construction; no Store upload or pinning. The first npm
+release is being prepared as `0.1.0-rc.0`.
 
 `encodeBundleCar(tree, { signal?, limits? })` fully consumes and validates a
 repeatable `ReadonlyFileTree` before returning

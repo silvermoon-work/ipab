@@ -10,27 +10,29 @@ pnpm check
 根 check 依次执行格式、构建、类型、全仓库 lint、门禁脚本测试、成员完整覆盖率
 和交付包检查，仍是提交前的全量质量验证。
 不能通过排除源码、删除测试、放宽门槛或吞掉错误来取得通过结果。
-当前 `apps/cli` 是 private code package，包含真实 CLI、子进程和 writable
-Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包发布检查无任务。
+五个 code package 显式登记为 npm 交付项，首轮版本统一为 `0.1.0-rc.0`；
+根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
+真实 `publint --strict` 检查，不把零任务当作发布验证。
 
 ## 工程命令
 
-| 命令                 | 用途                                               |
-| -------------------- | -------------------------------------------------- |
-| `pnpm build`         | Turbo 按依赖顺序构建成员                           |
-| `pnpm typecheck`     | 检查根配置及所有成员类型                           |
-| `pnpm lint`          | 全仓库 lint，包括根配置、成员源码与测试            |
-| `pnpm format-check`  | 只读格式检查                                       |
-| `pnpm format`        | 有意修改格式时使用                                 |
-| `pnpm test`          | 单轮成员测试，不开启覆盖率                         |
-| `pnpm test-ci`       | 日常成员测试，显式不选 `release-e2e`，不开覆盖率   |
-| `pnpm test-coverage` | 成员覆盖率及四项门槛检查                           |
-| `pnpm test-tooling`  | exact-SHA CI 证据与矩阵门禁脚本回归                |
-| `pnpm lint-package`  | 构建并检查声明该命令的交付包                       |
-| `pnpm check-ci`      | 日常完整静态检查、门禁脚本测试与关键行为验证       |
-| `pnpm check`         | 全部静态检查、门禁脚本测试、完整覆盖率与包检查     |
-| `pnpm check-release` | `pnpm check` 后执行真实 `pnpm test-pnpm`，失败即停 |
-| `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出      |
+| 命令                 | 用途                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| `pnpm build`         | Turbo 按依赖顺序构建成员                                        |
+| `pnpm typecheck`     | 检查根配置及所有成员类型                                        |
+| `pnpm lint`          | 全仓库 lint，包括根配置、成员源码与测试                         |
+| `pnpm format-check`  | 只读格式检查                                                    |
+| `pnpm format`        | 有意修改格式时使用                                              |
+| `pnpm test`          | 单轮成员测试，不开启覆盖率                                      |
+| `pnpm test-ci`       | 日常成员测试，显式不选 `release-e2e`，不开覆盖率                |
+| `pnpm test-coverage` | 成员覆盖率及四项门槛检查                                        |
+| `pnpm test-tooling`  | exact-SHA CI 证据与矩阵门禁脚本回归                             |
+| `pnpm lint-package`  | 构建并检查声明该命令的交付包                                    |
+| `pnpm check-ci`      | 日常完整静态检查、门禁脚本测试与关键行为验证                    |
+| `pnpm check`         | 全部静态检查、门禁脚本测试、完整覆盖率与包检查                  |
+| `pnpm check-release` | `pnpm check` 后执行真实 `pnpm test-pnpm`，失败即停              |
+| `pnpm publish-npm`   | 仅在授权的 Actions 中校验并发布单包；手动 dispatch 永远 dry-run |
+| `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出                   |
 
 ## 依赖安装与集成验证
 
@@ -48,13 +50,16 @@ Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包
 运行时不重建模板，也不读取仓库模板目录。Turbo 将模板源码纳入 CLI 构建缓存键，
 CLI 的 test 与 test-coverage 先构建自身以准备资源。
 
-`pnpm build && pnpm test-pnpm` 验证真实 pnpm 开发链路：先打包并在独立临时目录
-安装 CLI tarball，再从安装后的 CLI 离线列出内置 pin、
+`pnpm build && pnpm test-pnpm` 验证真实 npm 交付和 pnpm 开发链路：
+从真实 `deliverable.yaml` 发现并打包全部五个包，在独立临时目录安装所有 tarball，
+检查全部 ESM 子路径及严格 Node TypeScript 消费者（显式 `types: ["node"]`）。
+再从安装后的 CLI 验证版本、离线列出内置 pin、
 初始化 Node 与 Web App 模板、实际安装依赖、执行生成项目原有的
 `pnpm typecheck`／`pnpm build` 并检查 CAR。使用当前设备 registry，
 关闭 Corepack 联网，输出和本地 Store 均隔离，完成后清理。
-CLI 的内部库依赖显式链接到已构建 workspace，暂不声称验证其他四个包的 npm 交付；
-Web 项目显式传入本地框架 file 参数，不依赖尚未发布的 registry 版本。
+内部库均来自本次 tarball，不链接 workspace，不读取仓库源码。
+生成 Web 项目沿用默认准确框架版本，临时 pnpm overrides 只将该版本映射到本次
+tarball，以验证尚未发布版本，不改生成项目的 package.json 或渲染参数。
 临时安装配置沿用仓库对 esbuild 构建脚本的明确许可，不修改设备全局策略。
 生成项目仍实际安装依赖，不修改其 packageManager 或 build 脚本；
 缺失／损坏内置 CAR 必须明确失败，不能回退仓库模板源码。
@@ -143,13 +148,39 @@ dist；测试源码、成员脚本、共享 Vitest 配置与 `scripts/lib/` 参�
    旧 `Release verification (v1)` 及新的日常汇总均不能单独作为完整发布证据。
 
 该 workflow 是 dry-run 验证，不含 publish、tag、dist-tag、远程制品上传或
-写权限，当前仍没有 npm 交付项或部署操作。未来发布流程还必须校验完整验证
-workflow 本身的准确 SHA、main dispatch 来源、全部 full matrix 与 v2 汇总成功；
+写权限。发布流程还校验完整验证 workflow 本身的准确 SHA、
+main dispatch 来源、全部 full matrix 与 v2 汇总成功；
 只核对 job 名称或仅运行本地 `pnpm check-release` 不构成发布授权/远程证据。
 
-迁入真实 npm 包时再登记包内 `deliverable.yaml`，补齐源码链接、exports、
-delivery allowlist、许可证、source/declaration maps 和 `publint --strict`。
-发布只使用授权的准确包／版本／提交及 Trusted Publishing，
-保留成功的准确 SHA main CI 门槛，不保存 npm token 或复制个人 registry 配置。
+### 单包 npm 发布
+
+Trusted Publisher 的约定为 `silvermoon-work/ipab`、
+`publish-npm.yaml`、environment `npm`，每个包须允许直接 `npm publish`。
+在 GitHub 配置 `npm` environment 的保护规则和所需审批，不放 npm token。
+只使用 GitHub-hosted runner 和 npm >=11.5.1 的 OIDC Trusted Publishing。
+
+发布 tag 为 `@ipab/<包名>@<准确版本>`，与每个 `deliverable.yaml` 的
+`tagPrefix` 一一对应。一个 tag 只发布一个包；创建并推送 tag 是对准确包、
+版本和提交的显式授权。不得自动创建、移动或批量推送 release tag。
+手动 dispatch 只能从 main 选择自身准确 SHA、包名和版本，始终 `--dry-run`；
+它仍须满足相同的远程证据与依赖可用性门禁。
+
+首轮单包顺序为 `ipfs-store` → `bundle` → `bundle-builder` → `cli`；
+`web-app` 独立，但须在 CLI 之前发布。五包都准备 `0.1.0-rc.0`，
+不是授权现在发布；确认最终 commit 后逐包批准 tag。
+
+`publish-npm` 校验 main ancestry、准确 SHA 最新成功 main-push CI，
+以及该 SHA 最新成功 `Release validation` 的准确 attempt、全部完整矩阵及汇总；
+不会用 release-local 重跑全量 CI 替代已有证据。
+冻结安装后只构建并 lint 所选包及其构建依赖，使用 pnpm pack 解析
+workspace/catalog，再核对 tarball 中的准确 public 包身份及 runtime/peer 依赖。
+目标版本已存在、RC 不从 rc.0 连续增长、依赖不存在或 registry/API 失败均阻止发布。
+Registry 包不存在或 HTTP 错误不是版本缺失的证明。
+稳定 `x.y.z` 用 `latest`，`x.y.z-rc.n` 用 `rc`，不支持其他 prerelease；
+不会递归发布依赖、上传远端制品或修改已有 dist-tag。
+
+发布 workflow 不覆盖 registry；GitHub-hosted runner 使用自己的 npm 默认配置，
+本机检查尊重本机 NRM registry。源码与 declaration/source maps 一起交付，
+测试、开发脚本、coverage、配置和依赖目录不进入包。
 
 代理先读 [AGENTS.md](AGENTS.md) 和 [项目指导](docs/agent-project.md)。

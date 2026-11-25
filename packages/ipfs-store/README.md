@@ -1,14 +1,13 @@
 # @ipab/ipfs-store
 
-Private workspace package, not yet published under this name. Source and tests
-were migrated from `silvermoon-work/task-engine` at `0f3dd99`, including the
-Kubo indirect-through pin fix. The original MIT license and
-storage/CID/coordination contracts are preserved; existing published packages
-and repositories are unchanged. Tests use the shared workspace Vitest
-configuration and strict type-aware lint. Runtime response boundaries are
-checked explicitly. In-flight cancellation preserves Error reasons; a non-Error
-reason is reported as an Error with that original reason in `cause`, rather than
-rejecting an untyped value.
+The first npm release is being prepared as `0.1.0-rc.0`. Source and tests were
+migrated from `silvermoon-work/task-engine` at `0f3dd99`, including the Kubo
+indirect-through pin fix. The original MIT license and storage/CID/coordination
+contracts are preserved; existing published packages and repositories are
+unchanged. Tests use the shared workspace Vitest configuration and strict
+type-aware lint. Runtime response boundaries are checked explicitly. In-flight
+cancellation preserves Error reasons; a non-Error reason is reported as an Error
+with that original reason in `cause`, rather than rejecting an untyped value.
 
 Run `pnpm check` from the repository root. With Kubo installed, the optional
 real-daemon regression runs against disposable offline repositories:

@@ -1,0 +1,3 @@
+package: "@ipab/bundle"
+tagPrefix: "@ipab/bundle@"
+access: public

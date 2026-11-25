@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli, help, parse } from "../src/cli.js";
 import {
@@ -512,7 +512,10 @@ describe("management contract", () => {
       }
     for (const group of ["pin", "register", "config", "history", ""])
       expect((await cli(work.stateDir, group ? [group] : [])).code).toBe(0);
-    expect((await cli(work.stateDir, ["--version"])).out).toBe("0.0.0");
+    const pkg = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect((await cli(work.stateDir, ["--version"])).out).toBe(pkg.version);
     expect(existsSync(work.stateDir)).toBe(false);
   });
 

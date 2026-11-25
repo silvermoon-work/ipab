@@ -1,0 +1,3 @@
+package: "@ipab/bundle-builder"
+tagPrefix: "@ipab/bundle-builder@"
+access: public

@@ -8,9 +8,9 @@
 关联管理叫 register，不是 apps；open 不提供临时应用覆盖。
 Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`，
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
-`workspace:*` 引用 Store。`@ipab/bundle-builder` 也为 private；
+`workspace:*` 引用 Store。`@ipab/bundle-builder` 同属 npm 交付项；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-五个 code 成员均 private，不迁移旧发布归属；新增 `@ipab/web-app`
+五个 code 成员显式登记 npm 交付，首轮统一准备 `0.1.0-rc.0`；新增 `@ipab/web-app`
 是本机浏览器桥接框架。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
@@ -20,8 +20,8 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 - 使用根 `.node-version` 的准确开发 Node 和 `packageManager` 的准确 pnpm。
 - workspace 为 `apps/*` 与 `packages/*`；共享依赖使用 catalog，内部依赖使用
   `workspace:*`。
-- 根包及 CLI 成员 private，CLI 非 npm 交付项。验证执行实际业务源码／测试；
-  没有交付成员时 lint-package 零任务不代表发布验证。
+- 根包 private，五个 code 成员是单包 npm 交付项，声明 deliverable.yaml 和
+  真实 lint-package；验证执行实际业务源码／测试和全部 tarball 安装。
 - 沿用参考工程的 Turbo 依赖顺序与缓存，根目录统一执行 ESLint/Prettier。
 - .gitattributes 固定文本文件以 LF 检出，与 Prettier 一致；不依赖本机 core.autocrlf。
 - TypeScript strict 与 type-aware lint 覆盖所有成员源码和测试。
@@ -76,7 +76,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   builtin 外置；默认模式不安装依赖或执行 npm
   hooks／JS 配置／App，显式 ipab-prebuild 的可信项目执行规则见下，不 pin。
   CLI 默认将构建 CAR 导入当前 Store，
-  --no-import 关闭导入；CLI private，生成项目不得声明虚构 registry
+  --no-import 关闭导入；CLI 首轮准备发布，生成项目不得声明虚构 registry
   @ipab/cli 版本；使用本地链接命令。输出限项目 dist/ 内或项目外，不穿过符号链接。
   builtin:node-app.v1 离线解析完整 appSchema；register
   set/remove 可接受此只读 builtin 快捷名，
@@ -189,9 +189,15 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 
 ## Publishing
 
-当前有只读手动 Release validation workflow，没有 npm 发布 workflow 或交付声明。
+当前有只读手动 Release validation 和单包 publish-npm workflow，
+五个 code package 已登记交付，根保持 private。
 它要求当前 dispatch 的准确 main SHA 已有新版日常 push 矩阵/汇总成功，
 再运行三种 Node 完整检查与真实安装链路，产生 Release verification (v2)。
 日常 CI verification (v2) 与旧 Release verification (v1) 不是完整发布证据。
-迁入真实交付包时再建立单包发布流程并核对新仓库的 Trusted Publisher，
-不复制原仓库的版本／SHA 授权，不自动发布或重命名已有包。
+Trusted Publisher 使用 publish-npm.yaml 和 environment npm，允许直接 npm
+publish。
+每包 tagPrefix 为准确 @ipab/<包名>@，tag 后缀必须等于该包准确版本；
+main dispatch 只 dry-run，准确 SHA 日常及完整远程证据缺失时阻止。
+RC 从 rc.0 连续增长，用 rc dist-tag；稳定版用 latest。发布前核对目标版本缺失、
+全部 runtime/peer 依赖已存在，registry 失败不代表缺失。
+不复制原仓库的版本／SHA 授权，不自动发布、推 tag、修改已有 dist-tag 或上传远端产物。

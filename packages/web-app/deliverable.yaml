@@ -1,0 +1,3 @@
+package: "@ipab/web-app"
+tagPrefix: "@ipab/web-app@"
+access: public

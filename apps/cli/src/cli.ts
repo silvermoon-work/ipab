@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { readFile } from "node:fs/promises";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { randomUUID } from "node:crypto";
 import type { CID } from "multiformats/cid";
@@ -12,7 +13,7 @@ import {
   storeConfiguration,
   type GlobalOptions,
 } from "./config.js";
-import { HostError, message, syntax } from "./errors.js";
+import { HostError, message, object, syntax } from "./errors.js";
 import {
   filters,
   listHistory,
@@ -744,7 +745,15 @@ async function performCli(
       return 0;
     }
     if (parsed.version) {
-      io.out("0.0.0");
+      const pkg = object(
+        JSON.parse(
+          await readFile(new URL("../package.json", import.meta.url), "utf8"),
+        ) as unknown,
+        "CLI package",
+      );
+      if (typeof pkg.version !== "string" || !pkg.version.trim())
+        throw new HostError("CLI package is missing its version.");
+      io.out(pkg.version);
       return 0;
     }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)

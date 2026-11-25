@@ -7,7 +7,8 @@
 IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/stdout/stderr，
 通过独立 IPC 提供 IPFS 文件流及可写输出 Space。**它不是沙箱**：应用拥有
 当前用户的 Node、文件系统、网络和环境权限；只执行你信任的应用。
-当前 workspace 为 private，不包含 npm 发布或节点管理流程。
+根 workspace 保持 private；五个 npm 包首轮准备
+`0.1.0-rc.0`，不包含节点管理流程。
 
 ## 使用
 
@@ -30,7 +31,7 @@ ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 
 ### 本机命令与 Kubo
 
-CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前保持 private，尚未发布到 npm。
+CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前准备 `0.1.0-rc.0`，尚未发布到 npm。
 在仓库根目录构建并将本地包链接到全局（支持 macOS、Linux 和 Windows）：
 
 ```sh
@@ -178,7 +179,7 @@ pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 dae
 ## App 开发（上层 Node profile）
 
 根 `init`／`build` 面向 App；`bundle` 分组仍是不会编译代码的底层工具。
-使用已构建并链接到全局的本地 `ipab`（CLI private，未发布到 npm）：
+使用已构建并链接到全局的本地 `ipab`（首轮 RC 尚未发布到 npm）：
 
 ```powershell
 ipab init hello

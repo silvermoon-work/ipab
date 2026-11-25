@@ -2,6 +2,13 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    tags: [
+      {
+        name: "release-e2e",
+        description:
+          "Repeated real compiler/build variants validated before release",
+      },
+    ],
     coverage: {
       autoAttachSubprocess: true,
       include: ["src/**/*.{ts,tsx}"],

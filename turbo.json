@@ -1,6 +1,11 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalDependencies": [".node-version", "tsconfig.json", "vitest.config.ts"],
+  "globalDependencies": [
+    ".node-version",
+    "tsconfig.json",
+    "vitest.config.ts",
+    "scripts/lib/**"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -12,10 +17,17 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "env": ["VITEST_MAX_WORKERS"],
+      "outputs": []
+    },
+    "test-ci": {
+      "dependsOn": ["build"],
+      "env": ["VITEST_MAX_WORKERS"],
       "outputs": []
     },
     "test-coverage": {
       "dependsOn": ["^build"],
+      "env": ["VITEST_MAX_WORKERS"],
       "outputs": ["coverage/**"]
     },
     "lint-package": {

@@ -24,8 +24,7 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
-      - run: pnpm test-pnpm
+      - run: pnpm check-ci
   compatibility:
     name: Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
@@ -43,10 +42,9 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
-      - run: pnpm test-pnpm
-  release-verification:
-    name: Release verification (v1)
+      - run: pnpm check-ci
+  ci-verification:
+    name: CI verification (v2)
     needs: [check, compatibility]
     if: always()
     runs-on: ubuntu-latest
@@ -58,6 +56,6 @@ jobs:
           COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
         run: |
           if [ "$CHECK_RESULT" != success ] || [ "$COMPATIBILITY_RESULT" != success ]; then
-            echo "::error::Every required validation job and matrix must succeed."
+            echo "::error::Every required daily validation job and matrix must succeed."
             exit 1
           fi

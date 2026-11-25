@@ -97,6 +97,8 @@ ipab --help
 - [Bundle 工具](docs/reference.md#bundle-开发底层)：初始化、构建、检查与导入。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)
+- [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check-ci`、全量
+  `pnpm check` 与发布前只读 `pnpm check-release`。
 
 ## 许可证
 

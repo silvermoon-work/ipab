@@ -418,64 +418,74 @@ describe("App-first authoring", () => {
       (await cli(work.stateDir, ["pin", "delete", "my-reader"])).code,
     ).toBe(0);
   }, 60_000);
-  it("rebuilds deterministic CARs from cwd and preserves outputs after typecheck failure", async () => {
-    await initApp("hello", project);
-    await projectTools(project);
-    const response = await cli(work.stateDir, ["--json", "build", project]);
-    expect(response.code, response.err).toBe(0);
-    const firstCar = await readFile(join(project, "dist", "app.car"));
-    const storeConfig = join(work.root, "store.json");
-    expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
-    const defaultBuild = await promisify(execFile)(
-      process.execPath,
-      [
-        resolve("dist", "main.js"),
-        "--state-dir",
-        work.stateDir,
-        "--json",
-        "--store-rpc",
-        "http://127.0.0.1:1",
-        "build",
-        "--replace",
-        "--no-import",
-      ],
-      { cwd: project },
-    );
-    expect(result(defaultBuild.stdout).output).toBe(
-      join(project, "dist", "app.car"),
-    );
-    expect(result(defaultBuild.stdout).imported).toBe(false);
-    expect(
-      (await cli(work.stateDir, ["build", project, "--replace"])).code,
-    ).toBe(0);
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(firstCar);
-    const imported = await subprocess(
-      [
-        "--state-dir",
-        work.stateDir,
-        "--json",
-        "bundle",
-        "import",
+  it(
+    "rebuilds deterministic CARs from cwd and preserves outputs after typecheck failure",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await initApp("hello", project);
+      await projectTools(project);
+      const response = await cli(work.stateDir, ["--json", "build", project]);
+      expect(response.code, response.err).toBe(0);
+      const firstCar = await readFile(join(project, "dist", "app.car"));
+      const storeConfig = join(work.root, "store.json");
+      expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
+      const defaultBuild = await promisify(execFile)(
+        process.execPath,
+        [
+          resolve("dist", "main.js"),
+          "--state-dir",
+          work.stateDir,
+          "--json",
+          "--store-rpc",
+          "http://127.0.0.1:1",
+          "build",
+          "--replace",
+          "--no-import",
+        ],
+        { cwd: project },
+      );
+      expect(result(defaultBuild.stdout).output).toBe(
         join(project, "dist", "app.car"),
-      ],
-      storeConfig,
-    );
-    expect(imported.code, imported.stderr).toBe(0);
-    expect(result(imported.stdout.toString()).cid).toBe(
-      result(response.out).cid,
-    );
-    await writeFile(
-      join(project, "src", "main.ts"),
-      'const invalid: number = "not a number";\n',
-    );
-    const failed = await cli(work.stateDir, ["build", project, "--replace"]);
-    expect(failed.code).toBe(1);
-    expect(failed.err).toContain("typecheck failed");
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(firstCar);
-    expect(
-      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
-    ).toEqual([]);
-  }, 60_000);
+      );
+      expect(result(defaultBuild.stdout).imported).toBe(false);
+      expect(
+        (await cli(work.stateDir, ["build", project, "--replace"])).code,
+      ).toBe(0);
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+        firstCar,
+      );
+      const imported = await subprocess(
+        [
+          "--state-dir",
+          work.stateDir,
+          "--json",
+          "bundle",
+          "import",
+          join(project, "dist", "app.car"),
+        ],
+        storeConfig,
+      );
+      expect(imported.code, imported.stderr).toBe(0);
+      expect(result(imported.stdout.toString()).cid).toBe(
+        result(response.out).cid,
+      );
+      await writeFile(
+        join(project, "src", "main.ts"),
+        'const invalid: number = "not a number";\n',
+      );
+      const failed = await cli(work.stateDir, ["build", project, "--replace"]);
+      expect(failed.code).toBe(1);
+      expect(failed.err).toContain("typecheck failed");
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+        firstCar,
+      );
+      expect(
+        (await readdir(project)).filter((name) =>
+          name.startsWith(".ipab-app-"),
+        ),
+      ).toEqual([]);
+    },
+  );
   it("rejects unsafe config/output and cleans only fresh owned staging after bundle failure", async () => {
     await initApp("hello", project);
     await unlink(join(project, "ipab.yaml"));
@@ -542,123 +552,129 @@ describe("App-first authoring", () => {
     );
     await expect(buildApp(resolve(work.root, "missing"))).rejects.toThrow();
   }, 60_000);
-  it("builds deterministic deduplicated complete Schema collections from YAML or legacy JSON", async () => {
-    await initApp("hello", project);
-    await projectTools(project);
-    const emptyBuild = await buildApp(project);
-    const emptyBundle = await loadCar(emptyBuild.output);
-    expect(
-      JSON.parse(
-        await new Response(await emptyBundle.readFile("app.json")).text(),
-      ) as unknown,
-    ).not.toHaveProperty("supportedSchemas");
-    await expect(
-      emptyBundle.readFile("resources/supported-schemas.car"),
-    ).rejects.toThrow();
-    expect(
-      await new Response(
-        await emptyBundle.readFile("resources/app.cjs"),
-      ).text(),
-    ).toContain("Hello from your IPAB App.");
-    await mkdir(join(project, "schemas"));
-    const definition = {
-      name: "Note",
-      entry: {
-        path: "note.json",
-        schema: { type: "string" },
-        contentType: "application/json",
-        defaultValue: "",
-      },
-    };
-    const second = {
-      ...definition,
-      name: "Other note",
-      description: "Second type",
-    };
-    for (const [name, value] of [
-      ["note.json", definition],
-      ["same.json", { ...definition, description: "" }],
-      ["other.json", second],
-    ] as const)
-      await writeFile(join(project, "schemas", name), JSON.stringify(value));
-    const selected = {
-      entry: "src/main.ts",
-      resources: [],
-      build: { includeSource: false },
-      supportedSchemas: [
-        "schemas/note.json",
-        "schemas/same.json",
-        "schemas/other.json",
-      ],
-      app: {},
-    };
-    const yamlPath = join(project, "ipab.yaml");
-    await writeFile(
-      yamlPath,
-      `# Comments do not enter the Bundle.\n${stringify(selected)}`,
-    );
-    const first = await buildApp(project, { replace: true });
-    const firstBytes = await readFile(first.output);
-    const bundle = await loadCar(first.output);
-    const metadata = JSON.parse(
-      await new Response(await bundle.readFile("app.json")).text(),
-    ) as unknown;
-    expect(metadata).toMatchObject({
-      supportedSchemas: "resources/supported-schemas.car",
-    });
-    const nestedBytes = new Uint8Array(
-      await new Response(
-        await bundle.readFile("resources/supported-schemas.car"),
-      ).arrayBuffer(),
-    );
-    const iterator = await CarBlockIterator.fromIterable(
-      ReadableStream.from([nestedBytes]),
-    );
-    const roots = (await iterator.getRoots()).map((cid) => cid.toString());
-    const encoded = await Promise.all(
-      [definition, second].map((value) => encodeSchema(value)),
-    );
-    const expected = encoded.map((block) => block.cid.toString()).sort();
-    expect(roots).toEqual(expected);
-    const records: string[] = [];
-    for await (const block of iterator) records.push(block.cid.toString());
-    expect(records).toEqual(expected);
-    expect(
-      [
-        ...(await readSupportedSchemas(ReadableStream.from([nestedBytes]))),
-      ].sort(),
-    ).toEqual(expected);
-    await expect(bundle.readFile("schemas/note.json")).rejects.toThrow();
-    await writeFile(
-      yamlPath,
-      stringify({
-        ...selected,
-        supportedSchemas: [...selected.supportedSchemas].reverse(),
-      }),
-    );
-    expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
-    expect(await readFile(first.output)).toEqual(firstBytes);
-    await unlink(yamlPath);
-    await writeFile(join(project, "ipab.json"), JSON.stringify(selected));
-    expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
-    expect(await readFile(first.output)).toEqual(firstBytes);
-    for (const invalid of [
-      "{",
-      '{"name":"One","name":"Two","entry":{}}',
-      JSON.stringify({ type: "string" }),
-      JSON.stringify({
+  it(
+    "builds deterministic deduplicated complete Schema collections from YAML or legacy JSON",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await initApp("hello", project);
+      await projectTools(project);
+      const emptyBuild = await buildApp(project);
+      const emptyBundle = await loadCar(emptyBuild.output);
+      expect(
+        JSON.parse(
+          await new Response(await emptyBundle.readFile("app.json")).text(),
+        ) as unknown,
+      ).not.toHaveProperty("supportedSchemas");
+      await expect(
+        emptyBundle.readFile("resources/supported-schemas.car"),
+      ).rejects.toThrow();
+      expect(
+        await new Response(
+          await emptyBundle.readFile("resources/app.cjs"),
+        ).text(),
+      ).toContain("Hello from your IPAB App.");
+      await mkdir(join(project, "schemas"));
+      const definition = {
+        name: "Note",
+        entry: {
+          path: "note.json",
+          schema: { type: "string" },
+          contentType: "application/json",
+          defaultValue: "",
+        },
+      };
+      const second = {
         ...definition,
-        entry: { ...definition.entry, defaultValue: 1 },
-      }),
-    ]) {
-      await writeFile(join(project, "schemas", "note.json"), invalid);
-      await expect(buildApp(project, { replace: true })).rejects.toThrow();
+        name: "Other note",
+        description: "Second type",
+      };
+      for (const [name, value] of [
+        ["note.json", definition],
+        ["same.json", { ...definition, description: "" }],
+        ["other.json", second],
+      ] as const)
+        await writeFile(join(project, "schemas", name), JSON.stringify(value));
+      const selected = {
+        entry: "src/main.ts",
+        resources: [],
+        build: { includeSource: false },
+        supportedSchemas: [
+          "schemas/note.json",
+          "schemas/same.json",
+          "schemas/other.json",
+        ],
+        app: {},
+      };
+      const yamlPath = join(project, "ipab.yaml");
+      await writeFile(
+        yamlPath,
+        `# Comments do not enter the Bundle.\n${stringify(selected)}`,
+      );
+      const first = await buildApp(project, { replace: true });
+      const firstBytes = await readFile(first.output);
+      const bundle = await loadCar(first.output);
+      const metadata = JSON.parse(
+        await new Response(await bundle.readFile("app.json")).text(),
+      ) as unknown;
+      expect(metadata).toMatchObject({
+        supportedSchemas: "resources/supported-schemas.car",
+      });
+      const nestedBytes = new Uint8Array(
+        await new Response(
+          await bundle.readFile("resources/supported-schemas.car"),
+        ).arrayBuffer(),
+      );
+      const iterator = await CarBlockIterator.fromIterable(
+        ReadableStream.from([nestedBytes]),
+      );
+      const roots = (await iterator.getRoots()).map((cid) => cid.toString());
+      const encoded = await Promise.all(
+        [definition, second].map((value) => encodeSchema(value)),
+      );
+      const expected = encoded.map((block) => block.cid.toString()).sort();
+      expect(roots).toEqual(expected);
+      const records: string[] = [];
+      for await (const block of iterator) records.push(block.cid.toString());
+      expect(records).toEqual(expected);
+      expect(
+        [
+          ...(await readSupportedSchemas(ReadableStream.from([nestedBytes]))),
+        ].sort(),
+      ).toEqual(expected);
+      await expect(bundle.readFile("schemas/note.json")).rejects.toThrow();
+      await writeFile(
+        yamlPath,
+        stringify({
+          ...selected,
+          supportedSchemas: [...selected.supportedSchemas].reverse(),
+        }),
+      );
+      expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
       expect(await readFile(first.output)).toEqual(firstBytes);
-    }
-    expect(
-      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
-    ).toEqual([]);
-  }, 60_000);
+      await unlink(yamlPath);
+      await writeFile(join(project, "ipab.json"), JSON.stringify(selected));
+      expect((await buildApp(project, { replace: true })).cid).toBe(first.cid);
+      expect(await readFile(first.output)).toEqual(firstBytes);
+      for (const invalid of [
+        "{",
+        '{"name":"One","name":"Two","entry":{}}',
+        JSON.stringify({ type: "string" }),
+        JSON.stringify({
+          ...definition,
+          entry: { ...definition.entry, defaultValue: 1 },
+        }),
+      ]) {
+        await writeFile(join(project, "schemas", "note.json"), invalid);
+        await expect(buildApp(project, { replace: true })).rejects.toThrow();
+        expect(await readFile(first.output)).toEqual(firstBytes);
+      }
+      expect(
+        (await readdir(project)).filter((name) =>
+          name.startsWith(".ipab-app-"),
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("rejects ambiguous or invalid data configs and unsafe, missing or symlinked Schema sources", async () => {
     await initApp("hello", project);
@@ -877,114 +893,125 @@ describe("App-first authoring", () => {
       "Invalid IPAB_BUILD_CHAIN",
     );
   });
-  it("builds the real Web App template with Vite, preserving front-end assets in one Node App CAR", async () => {
-    const initialized = await initApp("web-demo", project, {
-      template: "web-app",
-    });
-    expect(initialized.templateCid).toMatch(/^bafy/);
-    await projectTools(project);
-    for (const name of ["esbuild", "vite", "@ipab/web-app"]) {
-      if (name.startsWith("@ipab/"))
-        await mkdir(join(project, "node_modules", "@ipab"), {
-          recursive: true,
-        });
-      await symlink(
-        dirname(require.resolve(`${name}/package.json`)),
-        join(project, "node_modules", name),
-        process.platform === "win32" ? "junction" : "dir",
+  it(
+    "builds the real Web App template with Vite, preserving front-end assets in one Node App CAR",
+    { tags: ["release-e2e"], timeout: 120_000 },
+    async () => {
+      const initialized = await initApp("web-demo", project, {
+        template: "web-app",
+      });
+      expect(initialized.templateCid).toMatch(/^bafy/);
+      await projectTools(project);
+      for (const name of ["esbuild", "vite", "@ipab/web-app"]) {
+        if (name.startsWith("@ipab/"))
+          await mkdir(join(project, "node_modules", "@ipab"), {
+            recursive: true,
+          });
+        await symlink(
+          dirname(require.resolve(`${name}/package.json`)),
+          join(project, "node_modules", name),
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
+      const pkgPath = join(project, "package.json");
+      const pkg = object(
+        JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+        "package",
       );
-    }
-    const pkgPath = join(project, "package.json");
-    const pkg = object(
-      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
-      "package",
-    );
-    expect(pkg.packageManager).toBeUndefined();
-    await writeFile(
-      pkgPath,
-      JSON.stringify({
-        ...pkg,
-        scripts: {
-          ...object(pkg.scripts, "scripts"),
-          build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build`,
+      expect(pkg.packageManager).toBeUndefined();
+      await writeFile(
+        pkgPath,
+        JSON.stringify({
+          ...pkg,
+          scripts: {
+            ...object(pkg.scripts, "scripts"),
+            build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build`,
+          },
+        }),
+      );
+      const runner = process.env.npm_execpath!;
+      expect(runner).toMatch(/pnpm(?:\.cjs|\.mjs|\.js|\.exe)?$/);
+      const built = await promisify(execFile)(
+        runner.endsWith(".exe") ? runner : process.execPath,
+        [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
+        { cwd: project },
+      );
+      expect(result(built.stdout)).toMatchObject({
+        kind: "app-bundle",
+        imported: true,
+      });
+      const bundle = await loadCar(join(project, "dist", "app.car"));
+      const html = await new Response(
+        await bundle.readFile("resources/web/index.html"),
+      ).text();
+      expect(html).toContain("<title>web-demo</title>");
+      const js = /src="\.\/([^"]+\.js)"/.exec(html)?.[1];
+      const css = /href="\.\/([^"]+\.css)"/.exec(html)?.[1];
+      expect(js).toBeDefined();
+      expect(css).toBeDefined();
+      expect(
+        await new Response(
+          await bundle.readFile(`resources/web/${js!}`),
+        ).text(),
+      ).toContain("Send a greeting");
+      expect(
+        await new Response(
+          await bundle.readFile(`resources/web/${css!}`),
+        ).text(),
+      ).toContain("#18334b");
+      const backend = await new Response(
+        await bundle.readFile("resources/app.cjs"),
+      ).text();
+      expect(backend).toContain("Your App is listening");
+      await expect(bundle.readFile("src/server/main.ts")).rejects.toThrow();
+      await expect(
+        bundle.readFile("node_modules/vite/package.json"),
+      ).rejects.toThrow();
+      await expect(
+        bundle.readFile("scripts/ipab-prebuild.mjs"),
+      ).rejects.toThrow();
+      const oldCar = await readFile(join(project, "dist", "app.car"));
+      await writeFile(
+        pkgPath,
+        JSON.stringify({
+          ...pkg,
+          scripts: {
+            "ipab-prebuild": `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} build --no-import`,
+          },
+        }),
+      );
+      const recursive = await cli(work.stateDir, [
+        "build",
+        project,
+        "--replace",
+        "--no-import",
+      ]);
+      expect(recursive.code).toBe(1);
+      expect(recursive.err).toContain("Recursive ipab build");
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(oldCar);
+    },
+  );
+  it(
+    "assembles fresh hook output, skips lifecycle hooks and rejects invalid programs without replacing the CAR",
+    { tags: ["release-e2e"], timeout: 120_000 },
+    async () => {
+      await initApp("hello", project);
+      await projectTools(project);
+      const config = {
+        entry: "app.cjs",
+        resources: ["web"],
+        build: {
+          strategy: "ipab-prebuild",
+          typecheck: [{ config: "tsconfig.json", entry: "src/main.ts" }],
         },
-      }),
-    );
-    const runner = process.env.npm_execpath!;
-    expect(runner).toMatch(/pnpm(?:\.cjs|\.mjs|\.js|\.exe)?$/);
-    const built = await promisify(execFile)(
-      runner.endsWith(".exe") ? runner : process.execPath,
-      [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
-      { cwd: project },
-    );
-    expect(result(built.stdout)).toMatchObject({
-      kind: "app-bundle",
-      imported: true,
-    });
-    const bundle = await loadCar(join(project, "dist", "app.car"));
-    const html = await new Response(
-      await bundle.readFile("resources/web/index.html"),
-    ).text();
-    expect(html).toContain("<title>web-demo</title>");
-    const js = /src="\.\/([^"]+\.js)"/.exec(html)?.[1];
-    const css = /href="\.\/([^"]+\.css)"/.exec(html)?.[1];
-    expect(js).toBeDefined();
-    expect(css).toBeDefined();
-    expect(
-      await new Response(await bundle.readFile(`resources/web/${js!}`)).text(),
-    ).toContain("Send a greeting");
-    expect(
-      await new Response(await bundle.readFile(`resources/web/${css!}`)).text(),
-    ).toContain("#18334b");
-    const backend = await new Response(
-      await bundle.readFile("resources/app.cjs"),
-    ).text();
-    expect(backend).toContain("Your App is listening");
-    await expect(bundle.readFile("src/server/main.ts")).rejects.toThrow();
-    await expect(
-      bundle.readFile("node_modules/vite/package.json"),
-    ).rejects.toThrow();
-    await expect(
-      bundle.readFile("scripts/ipab-prebuild.mjs"),
-    ).rejects.toThrow();
-    const oldCar = await readFile(join(project, "dist", "app.car"));
-    await writeFile(
-      pkgPath,
-      JSON.stringify({
-        ...pkg,
-        scripts: {
-          "ipab-prebuild": `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} build --no-import`,
-        },
-      }),
-    );
-    const recursive = await cli(work.stateDir, [
-      "build",
-      project,
-      "--replace",
-      "--no-import",
-    ]);
-    expect(recursive.code).toBe(1);
-    expect(recursive.err).toContain("Recursive ipab build");
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(oldCar);
-  }, 120_000);
-  it("assembles fresh hook output, skips lifecycle hooks and rejects invalid programs without replacing the CAR", async () => {
-    await initApp("hello", project);
-    await projectTools(project);
-    const config = {
-      entry: "app.cjs",
-      resources: ["web"],
-      build: {
-        strategy: "ipab-prebuild",
-        typecheck: [{ config: "tsconfig.json", entry: "src/main.ts" }],
-      },
-      app: { icon: "resources/web/icon.svg" },
-    };
-    await writeFile(join(project, "ipab.yaml"), stringify(config));
-    const hook = join(project, "prebuild.mjs");
-    const writeHook = async (source: string) =>
-      writeFile(
-        hook,
-        `
+        app: { icon: "resources/web/icon.svg" },
+      };
+      await writeFile(join(project, "ipab.yaml"), stringify(config));
+      const hook = join(project, "prebuild.mjs");
+      const writeHook = async (source: string) =>
+        writeFile(
+          hook,
+          `
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 console.error("prebuild diagnostic");
@@ -994,206 +1021,218 @@ await writeFile(join(output, "app.cjs"), ${JSON.stringify(source)});
 await writeFile(join(output, "web", "index.html"), "<h1>Fresh output</h1>");
 await writeFile(join(output, "web", "icon.svg"), "<svg/>");
 `,
+        );
+      await writeHook('console.log("fresh");');
+      const pkgPath = join(project, "package.json");
+      const pkg = object(
+        JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+        "package",
       );
-    await writeHook('console.log("fresh");');
-    const pkgPath = join(project, "package.json");
-    const pkg = object(
-      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
-      "package",
-    );
-    await writeFile(
-      pkgPath,
-      JSON.stringify({
-        ...pkg,
-        scripts: {
-          build: "ipab build",
-          "ipab-prebuild": "node prebuild.mjs",
-          "preipab-prebuild": "node missing-pre-hook.cjs",
-          "postipab-prebuild": "node missing-post-hook.cjs",
-        },
-      }),
-    );
-    const first = await cli(work.stateDir, [
-      "--json",
-      "build",
-      project,
-      "--no-import",
-    ]);
-    expect(first.code, first.err).toBe(0);
-    expect(first.err).toContain("prebuild diagnostic");
-    expect(result(first.out).imported).toBe(false);
-    const carPath = join(project, "dist", "app.car");
-    const original = await readFile(carPath);
-    const bundle = await loadCar(carPath);
-    expect(
-      await new Response(
-        await bundle.readFile("resources/web/index.html"),
-      ).text(),
-    ).toContain("Fresh output");
-    expect(
-      await new Response(await bundle.readFile("resources/app.cjs")).text(),
-    ).toBe('console.log("fresh");');
-    for (const source of [
-      'require("external-package");',
-      "require(process.argv[2]);",
-      'require("./web/other.cjs");',
-      "export const invalid = ;",
-      "export const valid = 1;",
-      'import { basename } from "node:path"; console.log(basename("app"));',
-    ]) {
-      await writeHook(source);
+      await writeFile(
+        pkgPath,
+        JSON.stringify({
+          ...pkg,
+          scripts: {
+            build: "ipab build",
+            "ipab-prebuild": "node prebuild.mjs",
+            "preipab-prebuild": "node missing-pre-hook.cjs",
+            "postipab-prebuild": "node missing-post-hook.cjs",
+          },
+        }),
+      );
+      const first = await cli(work.stateDir, [
+        "--json",
+        "build",
+        project,
+        "--no-import",
+      ]);
+      expect(first.code, first.err).toBe(0);
+      expect(first.err).toContain("prebuild diagnostic");
+      expect(result(first.out).imported).toBe(false);
+      const carPath = join(project, "dist", "app.car");
+      const original = await readFile(carPath);
+      const bundle = await loadCar(carPath);
+      expect(
+        await new Response(
+          await bundle.readFile("resources/web/index.html"),
+        ).text(),
+      ).toContain("Fresh output");
+      expect(
+        await new Response(await bundle.readFile("resources/app.cjs")).text(),
+      ).toBe('console.log("fresh");');
+      for (const source of [
+        'require("external-package");',
+        "require(process.argv[2]);",
+        'require("./web/other.cjs");',
+        "export const invalid = ;",
+        "export const valid = 1;",
+        'import { basename } from "node:path"; console.log(basename("app"));',
+      ]) {
+        await writeHook(source);
+        await expect(buildApp(project, { replace: true })).rejects.toThrow();
+        expect(await readFile(carPath)).toEqual(original);
+      }
+      await writeFile(hook, "process.exitCode = 7;");
+      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+        "ipab-prebuild failed",
+      );
+      expect(await readFile(carPath)).toEqual(original);
+      await writeFile(hook, 'console.log("No output");');
       await expect(buildApp(project, { replace: true })).rejects.toThrow();
       expect(await readFile(carPath)).toEqual(original);
-    }
-    await writeFile(hook, "process.exitCode = 7;");
-    await expect(buildApp(project, { replace: true })).rejects.toThrow(
-      "ipab-prebuild failed",
-    );
-    expect(await readFile(carPath)).toEqual(original);
-    await writeFile(hook, 'console.log("No output");');
-    await expect(buildApp(project, { replace: true })).rejects.toThrow();
-    expect(await readFile(carPath)).toEqual(original);
-    await writeHook('console.log("fresh");');
-    await writeFile(
-      hook,
-      `${await readFile(hook, "utf8")}\nawait writeFile(join(output, "app.cjs"), new Uint8Array([0xff]));`,
-    );
-    await expect(buildApp(project, { replace: true })).rejects.toThrow(
-      "valid Node CommonJS",
-    );
-    expect(await readFile(carPath)).toEqual(original);
-    expect(
-      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
-    ).toEqual([]);
-  }, 120_000);
-  it("uses project source defaults and mutually exclusive CLI overrides without retaining source", async () => {
-    await initApp("hello", project);
-    await projectTools(project);
-    await writeFile(
-      join(project, "ipab.yaml"),
-      stringify({
-        entry: "src/main.ts",
-        resources: [],
-        build: { includeSource: false },
-      }),
-    );
-    const disabled = await cli(work.stateDir, [
-      "--json",
-      "build",
-      project,
-      "--no-import",
-    ]);
-    expect(disabled.code, disabled.err).toBe(0);
-    expect(result(disabled.out)).not.toHaveProperty("source");
-    const withoutBytes = await readFile(join(project, "dist", "app.car"));
-    expect(await readdir(join(project, "dist"))).toEqual(["app.car"]);
-    const included = await cli(work.stateDir, [
-      "--json",
-      "build",
-      project,
-      "--with-source",
-      "--replace",
-      "--no-import",
-    ]);
-    expect(included.code, included.err).toBe(0);
-    const includedSource = object(result(included.out).source, "source");
-    expect(includedSource).toMatchObject({
-      output: join(project, "dist", "app.source.car"),
-    });
-    const sourceBytes = await readFile(String(includedSource.output));
-    await writeFile(
-      join(project, "ipab.yaml"),
-      stringify({
-        entry: "src/main.ts",
-        resources: [],
-        build: { includeSource: true },
-      }),
-    );
-    const excluded = await cli(work.stateDir, [
-      "--json",
-      "build",
-      project,
-      "--without-source",
-      "--replace",
-      "--no-import",
-    ]);
-    expect(excluded.code, excluded.err).toBe(0);
-    expect(result(excluded.out)).not.toHaveProperty("source");
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(
-      withoutBytes,
-    );
-    expect(await readFile(String(includedSource.output))).toEqual(sourceBytes);
-    await writeFile(join(project, ".gitignore"), "src/main.ts\n");
-    await expect(buildApp(project, { replace: true })).rejects.toThrow(
-      "excluded from source",
-    );
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(
-      withoutBytes,
-    );
-  }, 60_000);
-  it("strictly checks both backend and browser entries before running project compilation", async () => {
-    await initApp("hello", project);
-    await projectTools(project);
-    const serverConfigPath = join(project, "tsconfig.json");
-    const serverConfig = object(
-      JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
-      "tsconfig",
-    );
-    await writeFile(
-      serverConfigPath,
-      JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
-    );
-    await writeFile(join(project, "src", "other.ts"), "export {};\n");
-    await writeFile(
-      join(project, "src", "browser.ts"),
-      "document.body.textContent = 'browser';\nconst unchecked = (value) => value;\n",
-    );
-    const browserConfig = {
-      compilerOptions: {
-        target: "ES2022",
-        lib: ["ES2022", "DOM"],
-        types: [],
-        strict: false,
-        noCheck: true,
-      },
-      files: ["src/browser.ts"],
-    };
-    await writeFile(
-      join(project, "tsconfig.browser.json"),
-      JSON.stringify(browserConfig),
-    );
-    await writeFile(
-      join(project, "ipab.yaml"),
-      stringify({
-        entry: "server/app.cjs",
-        resources: ["web"],
-        build: {
-          strategy: "ipab-prebuild",
-          typecheck: [
-            { config: "tsconfig.json", entry: "src/main.ts" },
-            { config: "tsconfig.browser.json", entry: "src/browser.ts" },
-          ],
+      await writeHook('console.log("fresh");');
+      await writeFile(
+        hook,
+        `${await readFile(hook, "utf8")}\nawait writeFile(join(output, "app.cjs"), new Uint8Array([0xff]));`,
+      );
+      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+        "valid Node CommonJS",
+      );
+      expect(await readFile(carPath)).toEqual(original);
+      expect(
+        (await readdir(project)).filter((name) =>
+          name.startsWith(".ipab-app-"),
+        ),
+      ).toEqual([]);
+    },
+  );
+  it(
+    "uses project source defaults and mutually exclusive CLI overrides without retaining source",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await initApp("hello", project);
+      await projectTools(project);
+      await writeFile(
+        join(project, "ipab.yaml"),
+        stringify({
+          entry: "src/main.ts",
+          resources: [],
+          build: { includeSource: false },
+        }),
+      );
+      const disabled = await cli(work.stateDir, [
+        "--json",
+        "build",
+        project,
+        "--no-import",
+      ]);
+      expect(disabled.code, disabled.err).toBe(0);
+      expect(result(disabled.out)).not.toHaveProperty("source");
+      const withoutBytes = await readFile(join(project, "dist", "app.car"));
+      expect(await readdir(join(project, "dist"))).toEqual(["app.car"]);
+      const included = await cli(work.stateDir, [
+        "--json",
+        "build",
+        project,
+        "--with-source",
+        "--replace",
+        "--no-import",
+      ]);
+      expect(included.code, included.err).toBe(0);
+      const includedSource = object(result(included.out).source, "source");
+      expect(includedSource).toMatchObject({
+        output: join(project, "dist", "app.source.car"),
+      });
+      const sourceBytes = await readFile(String(includedSource.output));
+      await writeFile(
+        join(project, "ipab.yaml"),
+        stringify({
+          entry: "src/main.ts",
+          resources: [],
+          build: { includeSource: true },
+        }),
+      );
+      const excluded = await cli(work.stateDir, [
+        "--json",
+        "build",
+        project,
+        "--without-source",
+        "--replace",
+        "--no-import",
+      ]);
+      expect(excluded.code, excluded.err).toBe(0);
+      expect(result(excluded.out)).not.toHaveProperty("source");
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+        withoutBytes,
+      );
+      expect(await readFile(String(includedSource.output))).toEqual(
+        sourceBytes,
+      );
+      await writeFile(join(project, ".gitignore"), "src/main.ts\n");
+      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+        "excluded from source",
+      );
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+        withoutBytes,
+      );
+    },
+  );
+  it(
+    "strictly checks both backend and browser entries before running project compilation",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await initApp("hello", project);
+      await projectTools(project);
+      const serverConfigPath = join(project, "tsconfig.json");
+      const serverConfig = object(
+        JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
+        "tsconfig",
+      );
+      await writeFile(
+        serverConfigPath,
+        JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
+      );
+      await writeFile(join(project, "src", "other.ts"), "export {};\n");
+      await writeFile(
+        join(project, "src", "browser.ts"),
+        "document.body.textContent = 'browser';\nconst unchecked = (value) => value;\n",
+      );
+      const browserConfig = {
+        compilerOptions: {
+          target: "ES2022",
+          lib: ["ES2022", "DOM"],
+          types: [],
+          strict: false,
+          noCheck: true,
         },
-      }),
-    );
-    const pkgPath = join(project, "package.json");
-    const pkg = object(
-      JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
-      "package",
-    );
-    await writeFile(
-      pkgPath,
-      JSON.stringify({
-        ...pkg,
-        scripts: {
-          build: "node forbidden-build.cjs",
-          "ipab-prebuild": "node compile.cjs",
-        },
-      }),
-    );
-    await writeFile(
-      join(project, "compile.cjs"),
-      `
+        files: ["src/browser.ts"],
+      };
+      await writeFile(
+        join(project, "tsconfig.browser.json"),
+        JSON.stringify(browserConfig),
+      );
+      await writeFile(
+        join(project, "ipab.yaml"),
+        stringify({
+          entry: "server/app.cjs",
+          resources: ["web"],
+          build: {
+            strategy: "ipab-prebuild",
+            typecheck: [
+              { config: "tsconfig.json", entry: "src/main.ts" },
+              { config: "tsconfig.browser.json", entry: "src/browser.ts" },
+            ],
+          },
+        }),
+      );
+      const pkgPath = join(project, "package.json");
+      const pkg = object(
+        JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+        "package",
+      );
+      await writeFile(
+        pkgPath,
+        JSON.stringify({
+          ...pkg,
+          scripts: {
+            build: "node forbidden-build.cjs",
+            "ipab-prebuild": "node compile.cjs",
+          },
+        }),
+      );
+      await writeFile(
+        join(project, "compile.cjs"),
+        `
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const out = process.env.IPAB_BUILD_DIR;
@@ -1203,49 +1242,62 @@ mkdirSync(join(out, "web"));
 writeFileSync(join(out, "server/app.cjs"), '#!/usr/bin/env node\\nconsole.log("backend");');
 writeFileSync(join(out, "web/index.html"), "browser output");
 `,
-    );
-    await expect(buildApp(project)).rejects.toThrow("implicitly has an 'any'");
-    await expect(readFile(join(project, "dist", "hook-ran"))).rejects.toThrow();
-    await writeFile(
-      join(project, "src", "browser.ts"),
-      "document.body.textContent = 'browser';\n",
-    );
-    await writeFile(
-      join(project, "tsconfig.browser.json"),
-      JSON.stringify({ ...browserConfig, files: ["src/other.ts"] }),
-    );
-    await expect(buildApp(project)).rejects.toThrow("not included");
-    await expect(readFile(join(project, "dist", "hook-ran"))).rejects.toThrow();
-    await writeFile(
-      join(project, "tsconfig.browser.json"),
-      JSON.stringify(browserConfig),
-    );
-    await mkdir(join(project, "dist"));
-    await buildApp(project);
-    const bundle = await loadCar(join(project, "dist", "app.car"));
-    expect(
-      await new Response(await bundle.readFile("resources/app.cjs")).text(),
-    ).toBe('#!/usr/bin/env node\nconsole.log("backend");');
-    expect(
-      await new Response(
-        await bundle.readFile("resources/web/index.html"),
-      ).text(),
-    ).toBe("browser output");
-    await expect(bundle.readFile("resources/server/app.cjs")).rejects.toThrow();
-    const appBytes = await readFile(join(project, "dist", "app.car"));
-    const sourceBytes = await readFile(join(project, "dist", "app.source.car"));
-    await writeFile(
-      join(project, "compile.cjs"),
-      `${await readFile(join(project, "compile.cjs"), "utf8")}\nwriteFileSync("src/main.ts", "console.log('changed during hook');");`,
-    );
-    await expect(buildApp(project, { replace: true })).rejects.toThrow(
-      "source changed",
-    );
-    expect(await readFile(join(project, "dist", "app.car"))).toEqual(appBytes);
-    expect(await readFile(join(project, "dist", "app.source.car"))).toEqual(
-      sourceBytes,
-    );
-  }, 60_000);
+      );
+      await expect(buildApp(project)).rejects.toThrow(
+        "implicitly has an 'any'",
+      );
+      await expect(
+        readFile(join(project, "dist", "hook-ran")),
+      ).rejects.toThrow();
+      await writeFile(
+        join(project, "src", "browser.ts"),
+        "document.body.textContent = 'browser';\n",
+      );
+      await writeFile(
+        join(project, "tsconfig.browser.json"),
+        JSON.stringify({ ...browserConfig, files: ["src/other.ts"] }),
+      );
+      await expect(buildApp(project)).rejects.toThrow("not included");
+      await expect(
+        readFile(join(project, "dist", "hook-ran")),
+      ).rejects.toThrow();
+      await writeFile(
+        join(project, "tsconfig.browser.json"),
+        JSON.stringify(browserConfig),
+      );
+      await mkdir(join(project, "dist"));
+      await buildApp(project);
+      const bundle = await loadCar(join(project, "dist", "app.car"));
+      expect(
+        await new Response(await bundle.readFile("resources/app.cjs")).text(),
+      ).toBe('#!/usr/bin/env node\nconsole.log("backend");');
+      expect(
+        await new Response(
+          await bundle.readFile("resources/web/index.html"),
+        ).text(),
+      ).toBe("browser output");
+      await expect(
+        bundle.readFile("resources/server/app.cjs"),
+      ).rejects.toThrow();
+      const appBytes = await readFile(join(project, "dist", "app.car"));
+      const sourceBytes = await readFile(
+        join(project, "dist", "app.source.car"),
+      );
+      await writeFile(
+        join(project, "compile.cjs"),
+        `${await readFile(join(project, "compile.cjs"), "utf8")}\nwriteFileSync("src/main.ts", "console.log('changed during hook');");`,
+      );
+      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+        "source changed",
+      );
+      expect(await readFile(join(project, "dist", "app.car"))).toEqual(
+        appBytes,
+      );
+      expect(await readFile(join(project, "dist", "app.source.car"))).toEqual(
+        sourceBytes,
+      );
+    },
+  );
   it("preserves stream failures and diagnostic failures while stopping the owned hook", async () => {
     await mkdir(project);
     const output = join(project, "output");

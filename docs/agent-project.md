@@ -30,6 +30,10 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   `--root . --config ../../vitest.config.ts` 运行。
 - 全部四项覆盖率门槛为 90%，包含未测试源码，失败必须传播。
 - 提交前执行 `pnpm check`；局部验证使用成员命令或 Turbo filter。
+- 日常 PR/main 使用 `pnpm check-ci`，保留关键真实行为但不生成部分覆盖率；
+  只有重复编译的构建变体带 `release-e2e` tag。完整 `pnpm check` 不过滤测试，
+  发布前 `pnpm check-release`
+  再加入真实 pnpm 安装验证。门禁详情见 CONTRIBUTING.md。
 - 当前设备的 registry 由设备配置决定，不在仓库中写镜像或凭据。
 - 只在实际交付成员声明 `lint-package: publint --strict`，根通过 Turbo 调用。
 - 不复制参考工程的业务包、历史生命周期记录、发布授权或个人配置。
@@ -185,6 +189,9 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
 
 ## Publishing
 
-当前没有发布 workflow、发布门禁依赖或 npm 交付声明。
+当前有只读手动 Release validation workflow，没有 npm 发布 workflow 或交付声明。
+它要求当前 dispatch 的准确 main SHA 已有新版日常 push 矩阵/汇总成功，
+再运行三种 Node 完整检查与真实安装链路，产生 Release verification (v2)。
+日常 CI verification (v2) 与旧 Release verification (v1) 不是完整发布证据。
 迁入真实交付包时再建立单包发布流程并核对新仓库的 Trusted Publisher，
 不复制原仓库的版本／SHA 授权，不自动发布或重命名已有包。

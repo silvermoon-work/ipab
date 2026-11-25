@@ -23,6 +23,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node scripts/test.mjs",
+    "test-ci": "node scripts/test-ci.mjs",
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {

@@ -19,7 +19,9 @@
   "packageManager": "pnpm@11.28.12",
   "scripts": {
     "build": "turbo run build",
-    "check": "pnpm format-check && pnpm build && pnpm typecheck && pnpm lint && pnpm test-coverage && pnpm lint-package",
+    "check": "pnpm format-check && pnpm build && pnpm typecheck && pnpm lint && pnpm test-tooling && pnpm test-coverage && pnpm lint-package",
+    "check-ci": "node scripts/check-ci.mjs",
+    "check-release": "node scripts/check-release.mjs",
     "clean": "rimraf --glob \"{dist,coverage,.turbo}\" \"{apps,packages}/*/{dist,coverage,.turbo}\"",
     "format": "prettier --write .",
     "format-check": "prettier --check .",
@@ -27,9 +29,12 @@
     "lint-package": "turbo run lint-package",
     "link-cli": "node scripts/link-cli.mjs",
     "test": "turbo run test --concurrency=1",
+    "test-ci": "node scripts/test-ci.mjs",
     "test-pnpm": "node scripts/test-pnpm.mjs",
+    "test-tooling": "node scripts/test-tooling.mjs",
     "test-coverage": "turbo run test-coverage --concurrency=1",
-    "typecheck": "tsc --noEmit --project tsconfig.json && turbo run typecheck"
+    "typecheck": "tsc --noEmit --project tsconfig.json && turbo run typecheck",
+    "verify-ci": "node scripts/verify-ci.mjs"
   },
   "devDependencies": {
     "@ipab/web-app": "workspace:*",

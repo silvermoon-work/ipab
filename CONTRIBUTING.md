@@ -12,6 +12,23 @@ pnpm check
 当前 `apps/cli` 是 private code package，包含真实 CLI、子进程和 writable
 Store 回归测试；根不另建独立测试套件。没有 npm 交付项，包发布检查无任务。
 
+## 工程命令
+
+| 命令                 | 用途                                                  |
+| -------------------- | ----------------------------------------------------- |
+| `pnpm build`         | Turbo 按依赖顺序构建成员                              |
+| `pnpm typecheck`     | 检查根配置及所有成员类型                              |
+| `pnpm lint`          | 全仓库 lint，包括根配置、成员源码与测试               |
+| `pnpm format-check`  | 只读格式检查                                          |
+| `pnpm format`        | 有意修改格式时使用                                    |
+| `pnpm test`          | 单轮成员测试，不开启覆盖率                            |
+| `pnpm test-coverage` | 成员覆盖率及四项门槛检查                              |
+| `pnpm lint-package`  | 构建并检查声明该命令的交付包                          |
+| `pnpm check`         | 格式 → 构建 → 类型 → lint → 覆盖率 → 包检查，失败即停 |
+| `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出         |
+
+## 依赖安装与集成验证
+
 若脚本启动前报告 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` 且提示
 `version not present in registry manifest`，先检查当前设备 registry 的元数据
 和锁文件变更，不关闭 `minimumReleaseAge` 或 `verifyDepsBeforeRun`。

@@ -70,7 +70,8 @@ export const processIO: IO = {
 };
 const commands: Record<string, string> = {
   init: "init NAME [DIR] [--template TEMPLATE] [--param KEY=VALUE]...",
-  build: "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]",
+  build:
+    "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import] [--with-source | --without-source]",
   "bundle init": "bundle init TYPE DIR",
   "bundle build":
     "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace] [--no-import]",
@@ -116,6 +117,7 @@ Examples: ipab init hello
           ipab init hello .\\projects\\hello
           ipab init my-web-app --template web-app
           ipab --json build hello --replace
+          ipab build hello --without-source
 init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
 --template selects node (offline default), a Template Bundle directory, single-root CAR, exact CID or named pin.
 --param KEY=VALUE is repeatable: strings are literal; number, boolean and json parameters use JSON.
@@ -133,6 +135,12 @@ The commented init template teaches icon placement, name/description i18n and me
 Legacy ipab.json is accepted only when ipab.yaml is absent; keep exactly one config.
 supportedSchemas controls exact type support for open, not argv or direct exec.
 Default output is dist/app.car.
+Source snapshots default on; build.includeSource in ipab.yaml changes the project default.
+--with-source / --without-source override it and are mutually exclusive.
+The separate <output-name>.source.car follows project-local nested .gitignore rules.
+Source may contain private files not ignored by the project; review ignore rules before distribution.
+App metadata records only source.cid: no embedded source CAR/blocks, fetching or retention.
+Only the App CAR is imported; import and pin the source independently if needed.
 --output FILE selects a .car destination; --replace replaces only a regular artifact.
 build imports the result into the configured Store without pinning; --no-import emits only CAR.
 Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
@@ -383,7 +391,7 @@ export function parse(argv: readonly string[]): Parsed {
     result.path === "bundle build"
       ? ["replace", "schema-only", "no-import"]
       : result.path === "build"
-        ? ["replace", "no-import"]
+        ? ["replace", "no-import", "with-source", "without-source"]
         : result.path === "register set"
           ? ["replace"]
           : result.path === "history remove"
@@ -447,6 +455,8 @@ export function parse(argv: readonly string[]): Parsed {
     "history show": [1, 1],
     "history remove": [0, Number.MAX_SAFE_INTEGER],
   };
+  if (result.options["with-source"] && result.options["without-source"])
+    syntax("--with-source and --without-source are mutually exclusive.");
   const [minimum, maximum] = counts[result.path]!;
   if (result.positional.length < minimum || result.positional.length > maximum)
     syntax(`Invalid arguments.\n${help(result.path)}`);
@@ -597,6 +607,11 @@ async function performCli(
                 ? await buildApp(first, {
                     ...request,
                     replace: Boolean(parsed.options.replace),
+                    ...(parsed.options["with-source"]
+                      ? { includeSource: true }
+                      : parsed.options["without-source"]
+                        ? { includeSource: false }
+                        : {}),
                     ...(typeof parsed.options.output === "string"
                       ? { output: parsed.options.output }
                       : {}),
@@ -640,7 +655,7 @@ async function performCli(
           if ("output" in result)
             emit(
               { ...result, imported: importing },
-              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
+              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}${"source" in result ? `\nSource CID: ${result.source.cid}\nSource CAR: ${result.source.output} (not imported or pinned)` : ""}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
             );
           else if (result.kind === "bundle-import")
             emit(

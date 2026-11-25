@@ -30,6 +30,12 @@ export const appSchema = {
         version: { type: "string" },
         description: { type: "string" },
         entry: { type: "string" },
+        source: {
+          type: "object",
+          additionalProperties: false,
+          required: ["cid"],
+          properties: { cid: { type: "string" } },
+        },
         supportedSchemas: { type: "string" },
         author: {
           type: "object",
@@ -57,7 +63,7 @@ export const appSchema = {
 
 // This is the canonical full definition, not a separate identity for the alias.
 export const appSchemaCid = CID.parse(
-  "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
+  "bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq",
 );
 export const builtinTypes: ReadonlyMap<string, string> = new Map([
   [appBuiltinAlias, appSchemaCid.toString()],
@@ -83,6 +89,7 @@ export interface AppDescription {
   version: string;
   description: string;
   entry: string;
+  source?: { cid: string };
   supportedSchemas?: string;
   author?: { name: string; email?: string };
   license?: string;
@@ -124,6 +131,7 @@ export function appDescription(value: unknown): AppDescription {
           "version",
           "description",
           "entry",
+          "source",
           "supportedSchemas",
           "author",
           "license",
@@ -163,6 +171,36 @@ export function appDescription(value: unknown): AppDescription {
   if (item.icon !== undefined) nonblank(item.icon, "App icon");
   if (item.supportedSchemas !== undefined)
     nonblank(item.supportedSchemas, "App supportedSchemas");
+  let source: AppDescription["source"];
+  if (item.source !== undefined) {
+    const value = object(item.source, "App source");
+    if (
+      typeof value.cid !== "string" ||
+      Object.keys(value).some((key) => key !== "cid")
+    )
+      throw new HostError("App source requires only an exact Bundle CID.");
+    let cid: CID;
+    try {
+      cid = CID.parse(value.cid);
+    } catch (cause) {
+      const error = new HostError(
+        "App source.cid must be an exact Bundle CID.",
+      );
+      error.cause = cause;
+      throw error;
+    }
+    if (
+      cid.version !== 1 ||
+      ![0x55, 0x70].includes(cid.code) ||
+      cid.multihash.code !== 0x12 ||
+      cid.multihash.size !== 32 ||
+      cid.toString() !== value.cid
+    )
+      throw new HostError(
+        "App source.cid must be a canonical CIDv1 UnixFS SHA-256 CID.",
+      );
+    source = { cid: value.cid };
+  }
   let i18n: AppDescription["i18n"];
   if (item.i18n !== undefined) {
     const translations = object(item.i18n, "App i18n");
@@ -206,6 +244,7 @@ export function appDescription(value: unknown): AppDescription {
     version: item.version,
     entry: item.entry,
     description: item.description ?? "",
+    ...(source !== undefined ? { source } : {}),
     ...(author !== undefined ? { author } : {}),
     ...(item.license !== undefined ? { license: item.license } : {}),
     ...(item.icon !== undefined ? { icon: item.icon } : {}),

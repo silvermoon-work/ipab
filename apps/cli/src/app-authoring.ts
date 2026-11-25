@@ -7,9 +7,9 @@ import { compileFunction } from "node:vm";
 import { stringify } from "yaml";
 import { parseData } from "@ipab/bundle";
 import { filesystemTree } from "@ipab/bundle-builder/node";
-import { readBytes } from "@ipab/bundle-builder";
+import { encodeBundleCar, memoryTree, readBytes } from "@ipab/bundle-builder";
 import {
-  buildBundle,
+  writeCar,
   outputAvailable,
   scaffoldFiles,
   nodeError,
@@ -29,6 +29,7 @@ import {
 } from "./app-definition.js";
 import { appTemplate } from "./app-templates.js";
 import { buildChain, projectBuild, runPrebuild } from "./app-prebuild.js";
+import { captureSource, sourceFingerprint } from "./source-bundle.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -195,8 +196,14 @@ export async function buildApp(
     output?: string;
     outputDir?: string;
     replace?: boolean;
+    includeSource?: boolean;
   } = {},
-): Promise<Omit<BuildResult, "kind"> & { kind: "app-bundle" }> {
+): Promise<
+  Omit<BuildResult, "kind"> & {
+    kind: "app-bundle";
+    source?: Omit<BuildResult, "kind">;
+  }
+> {
   await builtinAppSchema();
   const root = resolve(directory);
   const stat = await lstat(root);
@@ -246,6 +253,10 @@ export async function buildApp(
       `${configPath} requires entry and an explicit resources array, with optional supportedSchemas array and app metadata overrides; unknown fields are not supported.`,
     );
   const prebuild = projectBuild(config.build);
+  const buildOptions =
+    config.build === undefined ? {} : object(config.build, "App build");
+  const includeSource =
+    options.includeSource ?? buildOptions.includeSource !== false;
   const entry = relativePath(config.entry);
   if (!prebuild && (!entry.startsWith("src/") || !entry.endsWith(".ts")))
     throw new HostError("App entry must be a .ts file under src/.");
@@ -322,6 +333,10 @@ export async function buildApp(
     throw new HostError(
       "App metadata cannot override the generated supportedSchemas declaration.",
     );
+  if (Object.hasOwn(overrides, "source"))
+    throw new HostError(
+      "App metadata cannot override the generated source declaration.",
+    );
   const supportedSchemas = await buildSupportedSchemas(tree, schemas, options);
   const description = appDescription({
     ...defaults,
@@ -358,6 +373,9 @@ export async function buildApp(
       "App CAR output must end in .car and be inside project dist/ or outside the project; source files cannot be replaced.",
     );
   await outputAvailable(output, Boolean(options.replace));
+  const sourceOutput = `${output.slice(0, -4)}.source.car`;
+  if (includeSource)
+    await outputAvailable(sourceOutput, Boolean(options.replace));
   let parent = dirname(output);
   for (;;) {
     try {
@@ -374,6 +392,25 @@ export async function buildApp(
     const next = dirname(parent);
     if (next === parent) break;
     parent = next;
+  }
+  const excludedOutputs = [output, sourceOutput, outputDirectory];
+  const sourceFiles = includeSource
+    ? await captureSource(root, excludedOutputs, options)
+    : undefined;
+  if (sourceFiles) {
+    const required = [
+      configPath,
+      "package.json",
+      ...(prebuild
+        ? prebuild.typecheck.flatMap((check) => [check.config, check.entry])
+        : ["tsconfig.json", entry, ...resources]),
+      ...schemas,
+    ];
+    for (const path of required)
+      if (!sourceFiles.has(path))
+        throw new HostError(
+          `Required App build input is excluded from source: ${path}. Fix .gitignore or use --without-source.`,
+        );
   }
   if (prebuild) {
     for (const check of prebuild.typecheck) {
@@ -446,6 +483,17 @@ export async function buildApp(
       throw new HostError(
         "App must bundle into one self-contained .cjs of at most 8 MiB; only Node builtins may remain external.",
       );
+    if (sourceFiles && !prebuild)
+      for (const path of Object.keys(program.metafile.inputs))
+        if (
+          !path.split(/[\\/]/).includes("node_modules") &&
+          !sourceFiles.has(
+            relative(root, resolve(root, path)).split(sep).join("/"),
+          )
+        )
+          throw new HostError(
+            `Compiled input is outside the source snapshot: ${path}. Include it in the project or use --without-source.`,
+          );
     options.signal?.throwIfAborted();
     const source = prebuiltSource ?? program.outputFiles[0]!.contents;
     await writeFile(join(bundleStage, "resources", "app.cjs"), source, {
@@ -453,10 +501,6 @@ export async function buildApp(
       signal: options.signal,
     });
     await writeFile(join(bundleStage, ".bundle.yaml"), stringify(appSchema), {
-      flag: "wx",
-      signal: options.signal,
-    });
-    await writeFile(join(bundleStage, "app.json"), json(description), {
       flag: "wx",
       signal: options.signal,
     });
@@ -505,8 +549,65 @@ export async function buildApp(
         16 * 1024 * 1024,
         options,
       );
-    const result = await buildBundle(bundleStage, { ...options, output });
-    return { ...result, kind: "app-bundle" };
+    if (
+      sourceFiles &&
+      sourceFingerprint(sourceFiles) !==
+        sourceFingerprint(await captureSource(root, excludedOutputs, options))
+    )
+      throw new HostError(
+        "App source changed during the build. Retry with stable project inputs.",
+      );
+    const encodedSource = sourceFiles
+      ? await encodeBundleCar(memoryTree(sourceFiles), options)
+      : undefined;
+    try {
+      await writeFile(
+        join(bundleStage, "app.json"),
+        json({
+          ...description,
+          ...(encodedSource
+            ? { source: { cid: encodedSource.cid.toString() } }
+            : {}),
+        }),
+        { flag: "wx", signal: options.signal },
+      );
+      const encoded = await encodeBundleCar(
+        await filesystemTree(bundleStage),
+        options,
+      );
+      try {
+        const source = encodedSource
+          ? {
+              cid: encodedSource.cid.toString(),
+              schemaCid: encodedSource.schema.cid.toString(),
+              output: sourceOutput,
+              bytes: await writeCar(
+                encodedSource,
+                sourceOutput,
+                Boolean(options.replace),
+                options,
+              ),
+            }
+          : undefined;
+        return {
+          kind: "app-bundle",
+          cid: encoded.cid.toString(),
+          schemaCid: encoded.schema.cid.toString(),
+          output,
+          bytes: await writeCar(
+            encoded,
+            output,
+            Boolean(options.replace),
+            options,
+          ),
+          ...(source ? { source } : {}),
+        };
+      } finally {
+        await encoded.close();
+      }
+    } finally {
+      await encodedSource?.close();
+    }
   } finally {
     await rm(stage, { recursive: true, force: true });
   }

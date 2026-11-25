@@ -91,7 +91,7 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   外层 App 保留其嵌套文件字节，不保证内部块独立可寻址。open 在唯一 App load
   后、spawn 前要求输入 schemaKey 准确在 roots 中，否则明确失败；exec 不根据声明
   改写／解析 argv 或匹配输入。register 仍本地离线，关联不证明声明。
-  新 App 完整定义 CID 为 bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a，
+  新 App 完整定义 CID 为 bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq，
   builtin 指向新身份，不静默接受旧身份；须重建并显式更新 pin/register。
   profile/runtime 已移除，完整类型 CID 确定 Node 合约。元数据不得改共享定义，
   SemVer／Intl locale tag／非空白／icon 存在检查在 App 专用层，license 只声明，
@@ -100,6 +100,18 @@ Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入
   复用 Store put 保存原始 block，不 pin／retain，不执行 App／GC 或启动 daemon；
   导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
   不打包或删除旧 staging。完整公共接口与资源路径见 docs/reference.md。
+- App build 默认生成独立 `<output-name>.source.car`；`build.includeSource`
+  配置默认 true，互斥 `--with-source`／`--without-source` 优先覆盖。
+  项目 `.bundle.yaml` 定义源码类型，内置模板生成以 package.json 为入口的
+  IPAB App Source；旧项目无定义时只在快照补默认定义，不修改项目。
+  源码按项目内嵌套 .gitignore 选择，包含未跟踪内容，不读取机器全局规则；
+  强制排除 .git、node_modules、根 dist、活跃输出目录、两个输出和自有 staging。
+  快照受 Bundle 预算限制，构建前后核对文件与字节，变化失败；
+  符号链接、忽略定义／入口／显式构建输入失败。App 只保存 source:{cid} 弱关联，
+  不内嵌源码 CAR 或 blocks，不自动 fetch/import/pin/retain 源码。
+  CLI 默认仅导入 App，源码需独立导入及保留。两个产物分别原子提交，不承诺
+  跨文件事务或任意环境可复现；关闭不删除既有源码产物。新增 source 改变 App
+  类型身份，旧包须重建并显式更新 pin/register，不能静默接受旧类型。
 - Init 支持 `--template node|web-app|显式本地目录`；本地 `ipab-template.json`
   v1 只列 source/target/render 文件映射，不运行脚本或安装模板依赖。
   默认 Node 编译不变；显式 `build.strategy=ipab-prebuild` 执行可信项目代码，

@@ -100,7 +100,7 @@ describe("Data-only Template Bundles", () => {
     ).toContain('"@ipab/web-app": "file:');
     expect(expected.files.has("ipab.yaml")).toBe(true);
     expect(expected.files.has("template.yaml")).toBe(false);
-    expect(expected.files.has(".bundle.yaml")).toBe(false);
+    expect(expected.files.has(".bundle.yaml")).toBe(true);
   });
   async function bundle(
     entry: unknown = definition,

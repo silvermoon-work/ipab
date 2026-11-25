@@ -64,7 +64,7 @@ describe("real UnixFS and Node subprocess runtime", () => {
     const encoded = await encodeSchema(appSchema);
     expect(encoded.cid.equals(appSchemaCid)).toBe(true);
     expect(encoded.cid.toString()).toBe(
-      "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
+      "bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq",
     );
     const legacy = {
       ...appSchema,
@@ -74,14 +74,14 @@ describe("real UnixFS and Node subprocess runtime", () => {
           ...appSchema.entry.schema,
           properties: Object.fromEntries(
             Object.entries(appSchema.entry.schema.properties).filter(
-              ([key]) => key !== "supportedSchemas",
+              ([key]) => key !== "source",
             ),
           ),
         },
       },
     };
     expect((await encodeSchema(legacy)).cid.toString()).toBe(
-      "bafyreigupykrgz6qvnm324bye4mu36rv7bhp2q5jzrn7zbkya54zay3qyq",
+      "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
     );
     const root = await importFiles(work.store, {
       ".bundle.yaml": JSON.stringify(legacy),

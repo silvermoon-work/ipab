@@ -195,7 +195,8 @@ ipab bundle import .\dist\app.car
 `init NAME [DIR]` 创建普通 private TypeScript npm package；NAME 为不带 scope
 的小写 npm 包名，省略 DIR 时创建 NAME 目录。目标必须不存在或为空，没有覆盖
 源码的 force 选项。生成 `package.json`、严格 `tsconfig.json`、`src/main.ts`、
-`ipab.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通 `tsc --noEmit` 与
+`ipab.yaml`、源码类型 `.bundle.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通
+`tsc --noEmit` 与
 `ipab build`，不声明不存在的 registry `@ipab/cli` 版本。
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
@@ -418,7 +419,7 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
 框架 API、请求校验及页面生命周期见
 [Web App framework](../packages/web-app/README.md)。
 
-`build [DIR] [-o FILE | --output FILE] [--replace] [--no-import]`
+`build [DIR] [-o FILE | --output FILE] [--replace] [--no-import] [--with-source | --without-source]`
 默认使用当前项目，
 默认 Node 策略读取以下数据配置，不加载 JS 配置、npm lifecycle hooks 或用户插件；
 显式 `ipab-prebuild` 策略则使用上面的可信项目编译契约：
@@ -427,6 +428,8 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
 entry: src/main.ts
 resources: []
 supportedSchemas: []
+build:
+  includeSource: true
 app:
   name: hello
   version: "0.0.0"
@@ -457,8 +460,8 @@ App 身份。不加载 JS 配置、不执行 hooks。
   await 等明确失败。
   程序不在构建时执行。
 - resources 默认为空，只接受 `assets/` 下明确列出的非隐藏普通文件，
-  无 glob、目录扫描或符号链接。资源在 Bundle 内为
-  `resources/assets/message.txt`。不自动打包源码、node_modules、配置、
+  无 glob、目录扫描或符号链接。资源在 App Bundle 内为
+  `resources/assets/message.txt`。App 本体不打包源码、node_modules、配置、
   `.env` 或未选中的资源；应用通过自己的 App CID 和 Space context 读取资源，
   不依赖 materialized 程序旁的本地文件。
 - supportedSchemas 默认为 `[]`，旧源配置省略也按空处理。只接受 `schemas/`
@@ -492,10 +495,61 @@ App 身份。不加载 JS 配置、不执行 hooks。
   `--output` 相对当前工作目录解析。已有普通 CAR 需 `--replace`，
   类型检查／编译／资源失败保留原产物；不能用 replace 覆盖源码。
 - `--json` 输出单个含 kind=`app-bundle`、cid、schemaCid、output、bytes 的结果，
-  另有 imported 布尔值，诊断／进度在 stderr。默认把构建 CAR 的原始 block 写入
+  另有 imported 布尔值；启用源码时另含 source 对象，见下节。诊断／进度在 stderr。默认把 App
+  CAR 的原始 block 写入
   当前 Store，**不 pin／retain**；`--no-import` 仅生成 CAR，不访问 Store。
   写入失败命令非零、保留已生成 CAR，可用 `bundle import FILE.car` 重试。
   没有自动执行、pin、watch 或另一个任务系统；未 pin 内容可能被外部 GC 回收。
+
+### 独立源码包与弱关联
+
+`build.includeSource` 默认为 `true`，默认 Node 与 `ipab-prebuild` 策略均适用。
+命令行优先于项目配置；`--with-source` 与 `--without-source`
+互斥，同时指定退出 2。
+
+```powershell
+ipab build --no-import
+ipab build --without-source --replace
+ipab build --with-source --replace --output .\dist\release.car
+```
+
+启用时生成独立 Content Bundle CAR：默认 `dist/app.source.car`，显式输出
+`release.car` 时为同目录 `release.source.car`。源码完整类型定义放在项目根
+`.bundle.yaml`；内置 Node/Web 模板生成 `IPAB App Source` 定义，以 `package.json`
+为 JSON object 入口，其余项目文件为资源。已有项目未提供定义时，在源码快照中
+使用此默认定义，不修改项目目录；已有定义必须正常通过通用 Bundle 校验，不降级。
+根定义、入口及明确选择的构建输入被忽略时失败，提示修正规则或禁用源码包。
+
+源码来自当前工作目录内容，包含未提交、未跟踪且未忽略的文件，不是 Git HEAD。
+使用项目根及子目录的 `.gitignore`，支持目录剪枝、否定和子目录覆盖；
+不依赖 Git 命令、仓库外祖先规则、`.git/info/exclude` 或机器全局配置。
+不管忽略规则如何，都排除 `.git`、`node_modules`、根 `dist/`、活跃默认输出目录、
+本次两个输出路径、根 `.ipab-app-*` staging 和 `.bundle-ignore` 控制文件。
+源码选择不读取 `.bundle-ignore` 中的规则。符号链接和非普通文件拒绝；
+字节、路径数量和深度受 Bundle 预算限制。**Gitignore 不是敏感信息扫描器**，
+分发前须检查规则；模板默认忽略 `.env` 和 `.env.*`。
+
+App 的 `app.json` 只包含弱关联：
+
+```json
+{ "source": { "cid": "<源码 Content Bundle 的准确 CID>" } }
+```
+
+该字段由构建生成，不允许 `app` 元数据覆盖。源码 CAR 和源码 blocks **不会嵌入 App
+Bundle**；App loader 只本地校验 CID 格式，不获取源码，
+App 的导入、执行和 pin 不递归导入、校验或保留源码。默认构建导入也仅导入
+App；源码需要独立操作，例如 `ipab bundle import .\dist\app.source.car`，
+再按需 `ipab pin add my-source <源码CID>`。
+`--json` 的可选 `source` 对象含 `cid`、`schemaCid`、`output`、`bytes`；
+顶层 `imported` 仅描述 App。关闭源码时不生成源码包、不写关联；
+不会删除以前生成的源码 CAR。
+
+构建前冻结所选文件，构建后重新核对文件集合和字节，发现变化则失败，
+不以构建后的源码冒充输入。编译／校验失败保留旧产物；两个 CAR 分别原子提交，
+不是跨文件事务，最终 App 提交失败时已完成的独立源码 CAR 可能保留。
+源码 CID 提供可校验的溯源，不保证可获取或任意环境下字节级复现：
+锁文件、准确工具链、外部依赖及 hooks 的环境／网络输入仍需项目自行控制。
+启用源码时，配置注释等原始字节的变化也会经由源码 CID 改变最终 App CID。
 
 ### App 元数据与内置类型
 
@@ -518,17 +572,17 @@ name／email／license／icon／version／supportedSchemas 路径的文本上限
 构建从普通 `package.json`
 的 name/version/description/author/license 复制元数据，
 `ipab.yaml.app`（或旧 `ipab.json.app`）可覆盖这些字段并添加 icon/i18n；
-不可覆盖生成的 entry 或 supportedSchemas。脚手架显式展示 name/version/description，
+不可覆盖生成的 entry、supportedSchemas 或 source。脚手架显式展示 name/version/description，
 删除某个覆盖字段即可继承 package.json，描述未提供时为空。`.bundle.yaml`
 的 name/description
 命名共享 Node App 类型，不是单个 App；单个 App 元数据变化会改变内容根 CID，
 不会改变共享类型 CID。
 
 离线 alias `builtin:node-app.v1` 对应完整定义和 canonical DAG-CBOR CID：
-`bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a`。
+`bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq`。
 alias 可用于 bundle init/inspect 与 register set/remove；状态只保存 CID。
 这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
-profile/runtime 字段仍被拒绝。本次添加可选 supportedSchemas 改变了共享类型身份，
+profile/runtime 字段仍被拒绝。本次添加可选 source 改变了共享类型身份，
 旧 App CID 不被静默接受；旧包应重建并显式更新 pin/register，不自动迁移。
 Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
 

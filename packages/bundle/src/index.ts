@@ -18,8 +18,9 @@ export {
   decodeSchema,
   schemaBlockBytes,
   declaresBundleSchema,
+  validateValue as validateSchemaValue,
 } from "./schema.js";
-export type { SchemaOptions } from "./schema.js";
+export type { SchemaOptions, ValidationContext } from "./schema.js";
 export { ContentBundleError } from "./errors.js";
 export type {
   ContentBundle,

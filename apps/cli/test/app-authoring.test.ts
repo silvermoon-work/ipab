@@ -992,6 +992,65 @@ describe("App-first authoring", () => {
     },
   );
   it(
+    "builds the React viewer template with shared SSR code, hydration assets and an exact supported type",
+    { timeout: 120_000 },
+    async () => {
+      await initApp("reader", project, {
+        template: resolve("../../templates/bundle-viewer"),
+        parameters: [
+          `bundleViewerDependency=link:${dirname(require.resolve("@ipab/bundle-viewer/package.json")).replaceAll("\\", "/")}`,
+        ],
+      });
+      await projectTools(project);
+      for (const name of [
+        "esbuild",
+        "vite",
+        "@ipab/bundle-viewer",
+        "react",
+        "react-dom",
+        "@types/react",
+        "@types/react-dom",
+      ]) {
+        await mkdir(dirname(join(project, "node_modules", name)), {
+          recursive: true,
+        });
+        await symlink(
+          dirname(require.resolve(`${name}/package.json`)),
+          join(project, "node_modules", name),
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
+      const built = await buildApp(project, { includeSource: false });
+      const bundle = await loadCar(built.output);
+      const html = await new Response(
+        await bundle.readFile("resources/web/index.html"),
+      ).text();
+      expect(html).toContain("<!--ipab:viewer-->");
+      expect(html).toContain("<!--ipab:state-->");
+      const js = /src="\.\/([^"]+\.js)"/.exec(html)?.[1];
+      expect(js).toBeDefined();
+      expect(
+        await new Response(
+          await bundle.readFile(`resources/web/${js!}`),
+        ).text(),
+      ).toContain("Missing SSR viewer or state");
+      const backend = await new Response(
+        await bundle.readFile("resources/app.cjs"),
+      ).text();
+      expect(backend).toContain(
+        "Content Bundle type does not match this viewer",
+      );
+      const schemas = await readSupportedSchemas(
+        await bundle.readFile("resources/supported-schemas.car"),
+      );
+      expect(schemas.size).toBe(1);
+      const declared = JSON.parse(
+        await readFile(join(project, "schemas/content.json"), "utf8"),
+      ) as unknown;
+      expect(schemas).toContain((await encodeSchema(declared)).cid.toString());
+    },
+  );
+  it(
     "assembles fresh hook output, skips lifecycle hooks and rejects invalid programs without replacing the CAR",
     { tags: ["release-e2e"], timeout: 120_000 },
     async () => {

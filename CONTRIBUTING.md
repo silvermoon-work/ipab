@@ -50,11 +50,14 @@ CLI 的 test 与 test-coverage 先构建自身以准备资源。
 
 `pnpm build && pnpm test-pnpm` 验证真实 pnpm 开发链路：先打包并在独立临时目录
 安装 CLI tarball，再从安装后的 CLI 离线列出内置 pin、
-初始化 Node 与 Web App 模板、实际安装依赖、执行生成项目原有的
+初始化 Node 与 Web App 内置模板及显式目录 React Bundle Viewer 标准模板、
+实际安装依赖、执行生成项目原有的
 `pnpm typecheck`／`pnpm build` 并检查 CAR。使用当前设备 registry，
 关闭 Corepack 联网，输出和本地 Store 均隔离，完成后清理。
 CLI 的内部库依赖显式链接到已构建 workspace，暂不声称验证其他四个包的 npm 交付；
 Web 项目显式传入本地框架 file 参数，不依赖尚未发布的 registry 版本。
+Bundle Viewer 使用本地 pnpm link 参数，保留其 workspace 运行依赖；
+真实构建测试同时验证共享服务端组件、hydration 资源及准确支持类型声明。
 临时安装配置沿用仓库对 esbuild 构建脚本的明确许可，不修改设备全局策略。
 生成项目仍实际安装依赖，不修改其 packageManager 或 build 脚本；
 缺失／损坏内置 CAR 必须明确失败，不能回退仓库模板源码。

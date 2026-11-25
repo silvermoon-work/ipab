@@ -37,6 +37,11 @@
     "verify-ci": "node scripts/verify-ci.mjs"
   },
   "devDependencies": {
+    "@ipab/bundle-viewer": "workspace:*",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
     "@ipab/web-app": "workspace:*",
     "@eslint/js": "catalog:",
     "@types/node": "catalog:",

@@ -16,7 +16,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./data": {
+      "types": "./dist/data.d.ts",
+      "import": "./dist/data.js"
+    }
   },
   "repository": {
     "type": "git",

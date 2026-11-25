@@ -61,6 +61,7 @@ export interface RunWebAppOptions {
   openBrowser?: boolean;
   onDiagnostic?: (message: string) => void;
   signal?: AbortSignal;
+  renderFrontend?: (options: { signal: AbortSignal }) => Promise<string>;
 }
 
 const mime: Record<string, string> = {
@@ -247,7 +248,32 @@ export async function runWebApp(options: RunWebAppOptions): Promise<void> {
       response.once("close", () => {
         controller.abort();
       });
+      response.setHeader(
+        "Content-Security-Policy",
+        `default-src 'none'; script-src ${origin}; style-src ${origin} 'unsafe-inline'; img-src ${origin} data:; font-src ${origin}; connect-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${origin}`,
+      );
       try {
+        if (relative === "index.html" && options.renderFrontend) {
+          try {
+            const html = await options.renderFrontend({
+              signal: controller.signal,
+            });
+            controller.signal.throwIfAborted();
+            if (Buffer.byteLength(html) > 8 * 1024 * 1024)
+              throw new Error("Rendered frontend exceeds 8 MiB");
+            response.setHeader("Cache-Control", "no-store");
+            response.setHeader("Content-Type", type);
+            response.setHeader("Access-Control-Allow-Origin", "null");
+            response.end(html);
+          } catch (error) {
+            report(
+              `Frontend rendering failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            if (!response.destroyed)
+              reply(response, { error: { code: "RenderFailed" } }, 500);
+          }
+          return;
+        }
         const stream = await options.context.readFile(
           options.context.appCid,
           `${root}/${relative}`,
@@ -273,10 +299,6 @@ export async function runWebApp(options: RunWebAppOptions): Promise<void> {
           "public, max-age=31536000, immutable",
         );
         response.setHeader("Access-Control-Allow-Origin", "null");
-        response.setHeader(
-          "Content-Security-Policy",
-          `default-src 'none'; script-src ${origin}; style-src ${origin} 'unsafe-inline'; img-src ${origin} data:; font-src ${origin}; connect-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${origin}`,
-        );
         try {
           while (!controller.signal.aborted) {
             const next = await reader.read();

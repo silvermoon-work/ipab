@@ -8,6 +8,13 @@ exposed. `allow-forms` enables JavaScript-managed `submit` events and
 `preventDefault()`; the iframe CSP retains `form-action 'none'` to prohibit
 network form navigation.
 
+An optional `renderFrontend({ signal }): Promise<string>` hook replaces only
+`/frame/index.html` with dynamically rendered HTML (maximum 8 MiB, `no-store`).
+It retains the opaque iframe and asset CSP; static assets remain immutable.
+Failures produce HTTP 500 and a backend diagnostic. The default static path is
+unchanged. [React Bundle viewers](../bundle-viewer) use this hook for content
+SSR and hydration, rather than rendering only the host shell.
+
 ```ts
 import { defineWebAppMethod, runWebApp } from "@ipab/web-app";
 

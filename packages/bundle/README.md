@@ -98,6 +98,16 @@ JSON-compatible type-definition data.
 
 ## API
 
+`validateSchemaValue(definitions, data, { charge, depth })` exposes the same
+structural entry validator used by `openBundle`. Supply definitions from
+`encodeSchema` / `inspectSchema`, parsed JSON-compatible data, a finite work
+budget through `charge`, and a positive validation depth. This validates data
+only; it does not load or verify a storage DAG.
+
+`@ipab/bundle/data` provides parsing, canonical JSON, schema encoding and entry
+validation without importing the Store/DAG runtime. Use it for trusted App
+adapters that already receive file access through an IPAB context.
+
 ```ts
 import { encodeSchema, openBundle, parseBundleManifest } from "@ipab/bundle";
 

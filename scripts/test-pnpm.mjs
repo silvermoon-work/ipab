@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -59,6 +59,104 @@ function runPnpm(args, cwd) {
     cwd,
   );
 }
+async function verifyInstalledViewer(project) {
+  function jsonCli(args) {
+    const result = spawnSync(
+      process.execPath,
+      [cli, "--state-dir", state, "--json", ...args],
+      { cwd: work, env, encoding: "utf8", shell: false },
+    );
+    if (result.error) throw result.error;
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  }
+  const app = jsonCli(["bundle", "import", join(project, "dist", "app.car")]);
+  const content = join(work, "viewer-content");
+  await mkdir(content);
+  await writeFile(
+    join(content, ".bundle.yaml"),
+    await readFile(join(project, "schemas", "content.json")),
+  );
+  await writeFile(
+    join(content, "message.json"),
+    JSON.stringify({ message: "SSR from installed viewer" }),
+  );
+  const data = jsonCli(["bundle", "build", content]);
+  const child = spawn(
+    process.execPath,
+    [cli, "--state-dir", state, "exec", app.cid, data.cid, "--no-open"],
+    { cwd: work, env, stdio: ["ignore", "ignore", "pipe"], shell: false },
+  );
+  let diagnostic = "";
+  let readyResolve, readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  child.stderr.on("data", (chunk) => {
+    diagnostic += chunk.toString();
+    const url = diagnostic.match(/http:\/\/127\.0\.0\.1:\d+\//)?.[0];
+    if (url) readyResolve(url);
+  });
+  const closed = new Promise((resolve, reject) => {
+    child.once("error", (error) => {
+      readyReject(error);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      readyReject(new Error(`Viewer exited before connection: ${diagnostic}`));
+      resolve(code);
+    });
+  });
+  try {
+    const url = await ready;
+    const host = await fetch(url, { signal: AbortSignal.timeout(10_000) }).then(
+      (response) => response.text(),
+    );
+    const secret = /nonce="([^"]+)"/.exec(host)?.[1];
+    assert.ok(secret, "The real App must serve its framework host");
+    const post = (path, body) =>
+      fetch(new URL(path, url), {
+        method: "POST",
+        headers: {
+          Origin: new URL(url).origin,
+          "X-IPAB-Web": secret,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+    const session = await post("/session", {}).then((response) =>
+      response.json(),
+    );
+    const response = await fetch(new URL("frame/index.html", url), {
+      signal: AbortSignal.timeout(10_000),
+    });
+    const html = await response.text();
+    assert.equal(response.status, 200, `${html}\n${diagnostic}`);
+    assert.ok(
+      html.includes("<h1>SSR from installed viewer</h1>"),
+      "SSR must contain the real Content Bundle entry, with working React hooks",
+    );
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await post("/disconnect", session)).status, 200);
+    assert.equal(await closed, 0, diagnostic);
+    console.log(
+      "Verified installed viewer App execution, real content SSR and lease shutdown.",
+    );
+  } finally {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      if (process.platform === "win32")
+        run("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], work);
+      else
+        assert.ok(
+          child.kill("SIGTERM"),
+          "Could not stop the owned viewer subprocess",
+        );
+    }
+    await closed;
+  }
+}
 try {
   const archive = join(work, "cli.tgz");
   runPnpm(["pack", "--out", archive], join(root, "apps", "cli"));
@@ -108,7 +206,7 @@ try {
     ],
     host,
   );
-  for (const template of ["node", "web-app"]) {
+  for (const template of ["node", "web-app", "bundle-viewer"]) {
     const project = join(work, template);
     console.log(
       `Verifying ${template} with ${workspace.packageManager} on ${process.version}`,
@@ -123,13 +221,20 @@ try {
         `pnpm-${template}`,
         project,
         "--template",
-        template,
+        template === "bundle-viewer"
+          ? join(root, "templates", template)
+          : template,
         ...(template === "web-app"
           ? [
               "--param",
               `webAppDependency=file:${join(root, "packages", "web-app").replaceAll("\\", "/")}`,
             ]
-          : []),
+          : template === "bundle-viewer"
+            ? [
+                "--param",
+                `bundleViewerDependency=link:${join(root, "packages", "bundle-viewer").replaceAll("\\", "/")}`,
+              ]
+            : []),
       ],
       root,
     );
@@ -174,6 +279,7 @@ try {
       project,
     );
     assert.equal(await readFile(packagePath, "utf8"), original);
+    if (template === "bundle-viewer") await verifyInstalledViewer(project);
   }
   const asset = await realpath(
     join(dirname(cli), "builtins", "template.web-app.car"),

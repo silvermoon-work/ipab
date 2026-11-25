@@ -120,6 +120,33 @@ async function start(overrides: Partial<RunWebAppOptions> = {}) {
 }
 
 describe("local server", () => {
+  it("renders only the frontend index and keeps static assets immutable", async () => {
+    const renderFrontend = vi
+      .fn()
+      .mockResolvedValue("<main>SSR content</main>");
+    const app = await start({ renderFrontend });
+    const response = await fetch(new URL("frame/index.html", app.url));
+    expect(await response.text()).toBe("<main>SSR content</main>");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const script = await fetch(new URL("frame/assets/app.js", app.url));
+    expect(await script.text()).toContain("export");
+    expect(script.headers.get("cache-control")).toContain("immutable");
+    expect(renderFrontend).toHaveBeenCalledTimes(1);
+    expect(app.paths).toEqual(["resources/web/assets/app.js"]);
+  });
+  it("reports oversized SSR responses without serving a partial page", async () => {
+    const diagnostic = vi.fn();
+    const app = await start({
+      renderFrontend: () => Promise.resolve("x".repeat(8 * 1024 * 1024 + 1)),
+      onDiagnostic: diagnostic,
+    });
+    expect((await fetch(new URL("frame/index.html", app.url))).status).toBe(
+      500,
+    );
+    expect(diagnostic).toHaveBeenLastCalledWith(
+      expect.stringContaining("exceeds 8 MiB"),
+    );
+  });
   it.each([
     ["win32", "rundll32.exe", ["url.dll,FileProtocolHandler"]],
     ["darwin", "open", []],

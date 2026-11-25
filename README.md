@@ -94,6 +94,8 @@ ipab --help
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。
 - [创建应用](docs/reference.md#app-开发上层-node-profile)：Node / Web
   App 模板与构建。
+- [React Bundle Viewer](templates/bundle-viewer)：用一个同构组件封装内容查看器，
+  提供真实内容 SSR 与浏览器 hydration。
 - [Bundle 工具](docs/reference.md#bundle-开发底层)：初始化、构建、检查与导入。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)

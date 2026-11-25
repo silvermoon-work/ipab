@@ -1,0 +1,26 @@
+{
+  "name": {{ name | json }},
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": {{ description | json }},
+  "engines": { "node": ">=22.15.0" },
+  "scripts": {
+    "build": "ipab build",
+    "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
+    "typecheck": "node scripts/typecheck.mjs"
+  },
+  "dependencies": {
+    "@ipab/bundle-viewer": {{ bundleViewerDependency | json }},
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vite": "8.3.8"
+  }
+}

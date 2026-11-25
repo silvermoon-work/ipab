@@ -10,8 +10,16 @@ Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`�
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
 `workspace:*` 引用 Store。`@ipab/bundle-builder` 也为 private；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-五个 code 成员均 private，不迁移旧发布归属；新增 `@ipab/web-app`
+所有 code 成员均 private，不迁移旧发布归属；`@ipab/web-app`
 是本机浏览器桥接框架。
+`@ipab/bundle-viewer` 为 private React 同构封装，通过 Web App 的显式
+renderFrontend hook 渲染真实内容并 hydration；标准数据式模板位于
+templates/bundle-viewer，当前通过目录／CAR／CID 选择，不新增内置快捷名。
+一个共享 React component callback 负责视图，准确完整类型定义仍须声明；
+不自动兼容旧 DOM renderer／browser Task，不迁移旧 aliases 或文件 watch CLI。
+本地链接同构组件时，模板 Node prebuild 须将 react/react-dom alias 到生成项目
+的同一实例，Vite 保持 resolve.dedupe；相同版本不等于同一 hooks runtime。
+真实 pnpm 安装验证须实际运行构建 App，检查内容 SSR 与连接关闭，不只检查 CAR。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
 

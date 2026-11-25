@@ -124,7 +124,7 @@ describe("App-first authoring", () => {
       expect((await cli(work.stateDir, args)).code).toBe(2);
     const response = await cli(work.stateDir, [
       "--json",
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "init",
       "hello",
@@ -200,7 +200,7 @@ describe("App-first authoring", () => {
   it("resolves the full builtin definition offline while keeping generic commands compilation-free", async () => {
     const response = await cli(work.stateDir, [
       "--json",
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "bundle",
       "init",
@@ -235,7 +235,7 @@ describe("App-first authoring", () => {
   it("registers the exact builtin identity offline without treating it as an executable App", async () => {
     const registered = await cli(work.stateDir, [
       "--json",
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "register",
       "set",
@@ -436,7 +436,7 @@ describe("App-first authoring", () => {
           "--state-dir",
           work.stateDir,
           "--json",
-          "--store-rpc",
+          "--store-gateway",
           "http://127.0.0.1:1",
           "build",
           "--replace",

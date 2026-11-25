@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { link, lstat, mkdir, open, rm } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rm,
+  unlink,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { CID } from "multiformats/cid";
 import type { GatewayClient, IpfsClient } from "./index.js";
@@ -55,6 +63,66 @@ export class SharedContent implements GatewayClient {
     }
     await verifyBlock(cid, bytes);
     return bytes;
+  }
+  async readLocalBlock(cid: CID, signal: AbortSignal): Promise<Uint8Array> {
+    signal.throwIfAborted();
+    this.lifetime.signal.throwIfAborted();
+    try {
+      const bytes = await this.local(cid);
+      signal.throwIfAborted();
+      return bytes;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      throw new ContentError(
+        "missing_block",
+        `Missing local content block: ${cid.toString()}`,
+        { cause: error },
+      );
+    }
+  }
+  async inventory(signal: AbortSignal): Promise<Map<string, number>> {
+    signal.throwIfAborted();
+    this.lifetime.signal.throwIfAborted();
+    const directory = join(this.directory, "blocks");
+    const blocks = new Map<string, number>();
+    try {
+      const metadata = await lstat(directory);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error("Invalid shared content directory.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return blocks;
+      throw error;
+    }
+    for (const name of await readdir(directory)) {
+      signal.throwIfAborted();
+      let cid: CID;
+      try {
+        cid = CID.parse(name);
+      } catch {
+        // Unknown files and in-flight publications are not Store-owned blocks.
+        continue;
+      }
+      if (name !== cid.toV1().toString()) continue;
+      const metadata = await lstat(join(directory, name));
+      if (!metadata.isFile() || metadata.isSymbolicLink())
+        throw new Error("Invalid shared content block.");
+      blocks.set(name, metadata.size);
+    }
+    return blocks;
+  }
+  async removeBlock(key: string, signal: AbortSignal): Promise<number> {
+    signal.throwIfAborted();
+    this.lifetime.signal.throwIfAborted();
+    const path = join(
+      this.directory,
+      "blocks",
+      CID.parse(key).toV1().toString(),
+    );
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink())
+      throw new Error("Invalid shared content block.");
+    await unlink(path);
+    return metadata.size;
   }
   put(
     cid: CID,

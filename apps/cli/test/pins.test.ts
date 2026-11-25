@@ -22,12 +22,10 @@ import {
 } from "../src/history.js";
 import { app, cli, content, fixture, importFiles, record } from "./helpers.js";
 
-function kuboFixture() {
-  const apiUrl = "http://pin-fixture.invalid";
+function gatewayFixture() {
+  const gateway = "http://pin-fixture.invalid";
   const blocks = new Map<string, Uint8Array>();
-  const pins = new Map<string, { Type: string; Name: string }>();
   const calls: string[] = [];
-  let fail: string | undefined;
   const original = globalThis.fetch;
   const fetch = vi
     .spyOn(globalThis, "fetch")
@@ -36,41 +34,19 @@ function kuboFixture() {
         input instanceof URL
           ? input
           : new URL(input instanceof Request ? input.url : input);
-      if (url.origin !== apiUrl) return original(input, options);
-      const command = url.pathname.slice("/api/v0/".length);
-      calls.push(command);
-      const root = url.searchParams.get("arg")!;
-      if (command === "block/get") {
-        const bytes = blocks.get(root);
-        return bytes
-          ? new Response(Buffer.from(bytes))
-          : new Response('{"Message":"block was not found locally"}', {
-              status: 500,
-            });
-      }
-      if (command === "pin/ls")
-        return Response.json({ Keys: Object.fromEntries(pins) });
-      if (command === "pin/add")
-        pins.set(root, {
-          Type: "recursive",
-          Name: url.searchParams.get("name")!,
-        });
-      else if (command === "pin/rm") pins.delete(root);
-      else throw new Error(`Unexpected RPC: ${command}`);
-      if (fail === command) {
-        fail = undefined;
-        return Response.json({ Message: "uncertain outcome" }, { status: 503 });
-      }
-      return Response.json({ Pins: [root] });
+      if (url.origin !== gateway) return original(input, options);
+      expect(options?.method ?? "GET").toBe("GET");
+      expect(url.pathname).toMatch(/^\/ipfs\//);
+      calls.push(url.pathname);
+      const bytes = blocks.get(url.pathname.split("/").at(-1)!);
+      return bytes
+        ? new Response(Buffer.from(bytes))
+        : new Response("missing", { status: 404 });
     });
   return {
-    apiUrl,
+    gateway,
     blocks,
-    pins,
     calls,
-    failAfter(command: string) {
-      fail = command;
-    },
     close() {
       fetch.mockRestore();
     },
@@ -168,7 +144,6 @@ describe("named pins", () => {
         ...builtinPins,
       ],
       pending: [],
-      legacyAliases: [],
     });
     const human = await cli(work.stateDir, ["pin", "list"]);
     expect(human.out).toContain("BUNDLE TYPE");
@@ -218,7 +193,7 @@ describe("named pins", () => {
     ])
       expect(
         await jsonCli([
-          "--store-rpc",
+          "--store-gateway",
           "http://127.0.0.1:1",
           "pin",
           "list",
@@ -409,13 +384,11 @@ describe("named pins", () => {
     expect(state.pin("incomplete")?.status).toBe("pending");
     await deletePin(state, "incomplete");
     const root = await put(Buffer.from("migrate"));
-    state.db.prepare("INSERT INTO aliases VALUES (?,?)").run("legacy", root);
-    expect(() => state.resolve("legacy")).toThrow("not a pin");
+    expect(() => state.resolve("legacy")).toThrow("Unknown");
     expect(state.pins()).toEqual([]);
     await addPin(state, "legacy", root, work.store.configuration);
     expect(state.resolve("legacy")).toBe(root);
     expect(work.store.pins()).toContain(root);
-    expect(state.aliases()).toEqual([{ name: "legacy", cid: root }]);
   });
 
   it.each(["recoverOwner", "retain", "confirmRetained", "close"] as const)(
@@ -549,13 +522,7 @@ describe("named pins", () => {
     await addPin(state, "recover", root, work.store.configuration);
     expect(state.pin("recover")?.owner).toBe(pin.owner);
     const db = new DatabaseSync(
-      join(
-        work.store.configuration.backend === "local"
-          ? work.store.configuration.dataDir
-          : "",
-        "retention",
-        "retention.sqlite",
-      ),
+      join(work.store.configuration.dataDir, "retention", "retention.sqlite"),
     );
     expect(
       db
@@ -664,95 +631,96 @@ describe("named pins", () => {
       .run(JSON.stringify(pin), pin.name);
   });
 
-  it("uses the original Kubo backend after configuration changes, respects external pins and never calls daemon GC/config", async () => {
-    const rpc = kuboFixture();
+  it("replicates from a read-only gateway, pins locally and keeps the original local Store after configuration changes", async () => {
+    const upstream = gatewayFixture();
     const config = {
-      backend: "kubo" as const,
-      apiUrl: rpc.apiUrl,
-      coordinationDir: join(work.root, "kubo-retention"),
+      backend: "local" as const,
+      dataDir: join(work.root, "replica"),
+      gateway: upstream.gateway,
     };
-    const rpcStore = new IpfsStore(config);
+    const replica = new IpfsStore(config);
     try {
-      const root = await put(Buffer.from("Kubo shared"));
-      rpc.blocks.set(root, await work.store.block.get(root));
+      const root = await put(Buffer.from("LAN shared"));
+      upstream.blocks.set(root, await work.store.block.get(root));
       await addPin(state, "first", root, config);
       await addPin(state, "second", root, config);
-      const originalName = rpc.pins.get(root)?.Name;
-      expect(originalName).toContain("@silvermoon-work/task-engine/");
-      const calls = rpc.calls.length;
+      expect(await replica.usage()).toEqual({
+        cachedBytes: 10,
+        pinnedBytes: 10,
+      });
+      const calls = upstream.calls.length;
       renamePin(state, "first", "renamed");
-      expect(rpc.calls).toHaveLength(calls);
-      state.setConfig("store.rpc", null);
+      expect(upstream.calls).toHaveLength(calls);
+      state.setConfig("store.gateway", null);
       expect(
         (await cli(work.stateDir, ["pin", "delete", "renamed"])).code,
       ).toBe(0);
-      expect(rpc.pins.get(root)?.Name).toBe(originalName);
+      expect(replica.pins()).toContain(root);
       expect(state.resolve("second")).toBe(root);
       await deletePin(state, "second");
-      expect(rpc.pins.has(root)).toBe(false);
-      expect(rpc.blocks.has(root)).toBe(true);
-      const external = await put(Buffer.from("external"));
-      rpc.blocks.set(external, await work.store.block.get(external));
-      rpc.pins.set(external, {
-        Type: "recursive",
-        Name: "another participant",
+      expect(replica.pins()).toEqual([]);
+      expect(upstream.blocks.has(root)).toBe(true);
+      expect(await replica.gc()).toEqual({
+        removedBlocks: 1,
+        reclaimedBytes: 10,
       });
-      await addPin(state, "external", external, config);
-      await deletePin(state, "external");
-      expect(rpc.pins.get(external)?.Name).toBe("another participant");
-      const direct = await put(Buffer.from("external direct"));
-      rpc.blocks.set(direct, await work.store.block.get(direct));
-      rpc.pins.set(direct, { Type: "direct", Name: "another participant" });
-      await expect(addPin(state, "direct", direct, config)).rejects.toThrow(
-        "incomplete",
-      );
-      expect(rpc.pins.get(direct)?.Name).toBe("another participant");
-      expect(rpc.calls).not.toContain("repo/gc");
-      expect(rpc.calls).not.toContain("config");
-      expect(rpc.calls).not.toContain("shutdown");
+      expect(upstream.calls).toHaveLength(calls);
     } finally {
-      await rpcStore.close();
-      rpc.close();
+      await replica.close();
+      upstream.close();
     }
   });
 
-  it("handles uncertain Kubo pin/unpin outcomes, corrupt blocks and connection failures without false success", async () => {
-    const rpc = kuboFixture();
+  it("preserves retry metadata when a gateway serves corrupt or missing blocks", async () => {
+    const upstream = gatewayFixture();
     const config = {
-      backend: "kubo" as const,
-      apiUrl: rpc.apiUrl,
-      coordinationDir: join(work.root, "kubo-retention"),
+      backend: "local" as const,
+      dataDir: join(work.root, "replica"),
+      gateway: upstream.gateway,
     };
     try {
       const root = await put(Buffer.from("uncertain"));
-      rpc.blocks.set(root, await work.store.block.get(root));
-      rpc.failAfter("pin/add");
+      upstream.blocks.set(root, Buffer.from("wrong hash"));
       await expect(addPin(state, "uncertain", root, config)).rejects.toThrow(
         "incomplete",
       );
       const owner = state.pin("uncertain")!.owner;
+      upstream.blocks.set(root, await work.store.block.get(root));
       await addPin(state, "uncertain", root, config);
       expect(state.pin("uncertain")?.owner).toBe(owner);
-      rpc.failAfter("pin/rm");
-      await expect(deletePin(state, "uncertain")).rejects.toThrow("incomplete");
       await deletePin(state, "uncertain");
-      expect(rpc.pins.has(root)).toBe(false);
-      rpc.blocks.set(root, Buffer.from("wrong hash"));
-      await expect(addPin(state, "corrupt", root, config)).rejects.toThrow(
+      const missing = await put(Buffer.from("missing upstream"));
+      await expect(addPin(state, "offline", missing, config)).rejects.toThrow(
         "incomplete",
       );
-      rpc.blocks.set(root, await work.store.block.get(root));
-      await deletePin(state, "corrupt");
-      await expect(
-        addPin(state, "offline", root, {
-          ...config,
-          apiUrl: "http://127.0.0.1:1",
-          timeoutMs: 100,
-        }),
-      ).rejects.toThrow("incomplete");
       expect(state.pin("offline")?.status).toBe("pending");
     } finally {
-      rpc.close();
+      upstream.close();
     }
+  });
+  it("refuses legacy Kubo retention cleanup without changing the original responsibility or calling RPC", async () => {
+    const root = await put(Buffer.from("legacy"));
+    await addPin(state, "legacy", root, work.store.configuration);
+    const pin = state.pin("legacy")!;
+    const hold = state.hold(pin.owner)!;
+    const legacy = {
+      ...hold,
+      backend: { backend: "kubo", apiUrl: "http://legacy.invalid" },
+    };
+    state.db
+      .prepare("UPDATE holds SET value=? WHERE owner=?")
+      .run(JSON.stringify(legacy), pin.owner);
+    const fetch = vi.spyOn(globalThis, "fetch");
+    await expect(deletePin(state, "legacy")).rejects.toThrow(
+      "not migrated or released",
+    );
+    expect(state.pin("legacy")?.status).toBe("ready");
+    expect(
+      String(
+        state.db.prepare("SELECT value FROM holds WHERE owner=?").get(pin.owner)
+          ?.value,
+      ),
+    ).toBe(JSON.stringify(legacy));
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -89,6 +89,8 @@ const commands: Record<string, string> = {
   "config get": "config get [KEY]",
   "config set": "config set KEY VALUE",
   "config reset": "config reset KEY",
+  "store usage": "store usage",
+  "store gc": "store gc",
   "history list": "history list [OPTIONS]",
   "history show": "history show RUN_ID",
   "history remove":
@@ -99,6 +101,7 @@ const groups: Record<string, string> = {
   pin: "Retain content and manage short names",
   register: "Associate content types with Apps",
   config: "Manage local configuration",
+  store: "Query local storage and collect unreferenced blocks",
   history: "View and remove execution history",
 };
 const commandHelp: Record<
@@ -111,6 +114,22 @@ const commandHelp: Record<
     notes?: string[];
   }
 > = {
+  "store usage": {
+    summary: "Query cached and recursively pinned block bytes",
+    examples: ["ipab store usage", "ipab --json store usage"],
+    notes: [
+      "Local Store only; excludes metadata, temporary files and disk allocation overhead.",
+      "Pinned DAGs include all descendants, with shared blocks counted once.",
+    ],
+  },
+  "store gc": {
+    summary: "Delete unprotected blocks from the entire selected local Store",
+    examples: ["ipab store gc", "ipab --json store gc"],
+    notes: [
+      "Preserves pins, all participating owners, pending operations and staged imports.",
+      "Does not unpin, clear history, delete unknown files or request Kubo daemon GC.",
+    ],
+  },
   init: {
     summary: "Create a private TypeScript App project",
     arguments: ["NAME  Project name; DIR defaults to NAME (new/empty only)."],
@@ -300,21 +319,21 @@ const commandHelp: Record<
   "config get": {
     summary: "Show effective configuration",
     arguments: ["KEY  Optional configuration key; omit to show all values."],
-    examples: ["ipab config get", "ipab config get store.rpc"],
+    examples: ["ipab config get", "ipab config get store.gateway"],
   },
   "config set": {
     summary: "Save a local configuration value",
     examples: [
-      "ipab config set store.rpc http://127.0.0.1:5001",
+      "ipab config set store.gateway http://127.0.0.1:8080",
       "ipab config set history.enabled false",
     ],
     notes: [
-      "store.rpc is a Kubo RPC API URL, not a gateway; no daemon is started.",
+      "store.gateway is a read-only HTTP gateway; blocks, pins and GC remain local.",
     ],
   },
   "config reset": {
     summary: "Remove a saved configuration override",
-    examples: ["ipab config reset store.rpc"],
+    examples: ["ipab config reset store.gateway"],
   },
   "history list": {
     summary: "List execution history",
@@ -363,7 +382,7 @@ const commandHelp: Record<
 export function help(path = ""): string {
   const globalOptions = `Global options (before COMMAND):
   --state-dir PATH  Set the local state directory
-  --store-rpc URL   Use a Kubo RPC endpoint
+  --store-gateway URL  Use a read-only upstream HTTP gateway
   --json            Output management/development metadata, not App stdio`;
   const footer =
     "Full reference: https://github.com/silvermoon-work/ipab/blob/main/docs/reference.md";
@@ -385,6 +404,7 @@ Manage:
   pin       ${groups.pin}
   register  ${groups.register}
   config    ${groups.config}
+  store     ${groups.store}
   history   ${groups.history}
 
 ${globalOptions}
@@ -459,6 +479,20 @@ function runDuration(record: Pick<RunRecord, "startedAt" | "endedAt">): string {
   if (!Number.isFinite(duration) || duration < 0)
     throw new HostError("Execution record has an invalid duration.");
   return `${Math.floor(duration / 1000)}s`;
+}
+
+function storageBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let scaled = bytes;
+  let unit = 0;
+  while (scaled >= 1000 && unit < units.length - 1) {
+    scaled /= 1000;
+    unit++;
+  }
+  const exact = bytes.toLocaleString("en-US");
+  return unit === 0
+    ? `${exact} bytes`
+    : `${scaled.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${units[unit]} (${exact} bytes)`;
 }
 
 function table(headers: string[], rows: string[][], empty: string): string {
@@ -566,12 +600,16 @@ export function parse(argv: readonly string[]): Parsed {
       };
     }
     if (flag === "--json") flags.json = true;
-    else if (flag === "--state-dir" || flag === "--store-rpc") {
+    else if (flag === "--store-rpc")
+      syntax(
+        "Store RPC is no longer supported. Use --store-gateway with an HTTP gateway URL; existing Kubo pins are not migrated.",
+      );
+    else if (flag === "--state-dir" || flag === "--store-gateway") {
       const value = tokens.shift();
       if (!value || value.startsWith("-")) syntax(`${flag} needs a value.`);
       if (flag === "--state-dir") flags.stateDir = value;
       else {
-        flags.storeRpc = publicUrl(value);
+        flags.storeGateway = publicUrl(value);
       }
     } else syntax(`Unknown global option "${flag}".`);
   }
@@ -601,7 +639,11 @@ export function parse(argv: readonly string[]): Parsed {
     return result;
   }
   if (!["open", "init", "build"].includes(group)) {
-    if (!["bundle", "pin", "register", "config", "history"].includes(group))
+    if (
+      !["bundle", "pin", "register", "config", "history", "store"].includes(
+        group,
+      )
+    )
       syntax(`Unknown command "${group}".`);
     if (!tokens.length || tokens[0] === "-h" || tokens[0] === "--help") {
       result.help = true;
@@ -682,6 +724,8 @@ export function parse(argv: readonly string[]): Parsed {
     "config get": [0, 1],
     "config set": [2, 2],
     "config reset": [1, 1],
+    "store usage": [0, 0],
+    "store gc": [0, 0],
     "history list": [0, 0],
     "history show": [1, 1],
     "history remove": [0, Number.MAX_SAFE_INTEGER],
@@ -718,7 +762,10 @@ export function parse(argv: readonly string[]): Parsed {
   )
     syntax("--kind must be bundle or schema.");
   if (result.path.startsWith("config ") && result.positional[0]) {
-    if (!(result.path === "config get" && result.positional[0] === "state-dir"))
+    if (
+      !(result.path === "config get" && result.positional[0] === "state-dir") &&
+      !(result.path === "config reset" && result.positional[0] === "store.rpc")
+    )
       configKey(result.positional[0]);
     if (result.path === "config set")
       parseValue(configKey(result.positional[0]), result.positional[1], true);
@@ -760,6 +807,18 @@ async function performCli(
       syntax("Non-interactive history remove requires --yes.");
     const builtins = await builtinContent();
     state = new State(stateLocation(parsed.flags, env).path, builtins.pins);
+    if (
+      parsed.path === "config reset" &&
+      parsed.positional[0] === "store.rpc"
+    ) {
+      state.resetConfig("store.rpc");
+      io.out(
+        parsed.flags.json
+          ? JSON.stringify({ reset: ["store.rpc"] })
+          : "Removed legacy store.rpc configuration. Existing Kubo pins and content are unchanged.",
+      );
+      return 0;
+    }
     const items = effectiveConfig(state.config(), parsed.flags, env);
     const value = (key: string) =>
       items.find((item) => item.key === key)!.value;
@@ -771,6 +830,24 @@ async function performCli(
       ? filters(state, parsed.options)
       : {};
     switch (parsed.path) {
+      case "store usage":
+      case "store gc": {
+        store = new IpfsStore(await storeConfiguration(value("store.gateway")));
+        if (parsed.path === "store usage") {
+          const result = await store.usage();
+          emit(
+            result,
+            `Cached blocks: ${storageBytes(result.cachedBytes)}\nPinned blocks (deduplicated): ${storageBytes(result.pinnedBytes)}`,
+          );
+        } else {
+          const result = await store.gc();
+          emit(
+            result,
+            `Removed ${result.removedBlocks} blocks; reclaimed ${storageBytes(result.reclaimedBytes)}.`,
+          );
+        }
+        break;
+      }
       case "init":
       case "build":
       case "bundle init":
@@ -792,7 +869,7 @@ async function performCli(
         try {
           let pendingStore: Promise<IpfsStore> | undefined;
           const getStore = () => {
-            pendingStore ??= storeConfiguration(value("store.rpc")).then(
+            pendingStore ??= storeConfiguration(value("store.gateway")).then(
               (configuration) => {
                 store = new IpfsStore(configuration);
                 return store;
@@ -961,17 +1038,12 @@ async function performCli(
         const pending = pins
           .filter((pin) => pin.status !== "ready")
           .map(({ name, cid, status }) => ({ name, cid, status }));
-        const legacyAliases = state.aliases();
         if (pending.length)
           io.err(
             `Unfinished pin operations (not usable pins): ${JSON.stringify(pending)}. Retry pin add/delete.`,
           );
-        if (legacyAliases.length)
-          io.err(
-            "Legacy Alias metadata is preserved but is not pinned. Use the listed exact CIDs with pin add to migrate.",
-          );
         emit(
-          { items: listed, pending, legacyAliases },
+          { items: listed, pending },
           table(
             ["NAME", "CID", "KIND", "BUNDLE TYPE", "SOURCE"],
             listed.map((pin) => [
@@ -982,14 +1054,7 @@ async function performCli(
               pin.builtin ? "built-in (read-only)" : "user",
             ]),
             "No named pins.",
-          ) +
-            (legacyAliases.length
-              ? `\nLegacy Aliases (not pinned):\n${table(
-                  ["NAME", "CID"],
-                  legacyAliases.map((alias) => [alias.name, alias.cid]),
-                  "",
-                )}`
-              : ""),
+          ),
         );
         break;
       }
@@ -999,7 +1064,7 @@ async function performCli(
           state,
           first!,
           second!,
-          await storeConfiguration(value("store.rpc")),
+          await storeConfiguration(value("store.gateway")),
         );
         emit(
           result,
@@ -1191,7 +1256,7 @@ async function performCli(
           );
         const target = state.resolve(first!);
         await recoverInactive(state);
-        store = new IpfsStore(await storeConfiguration(value("store.rpc")));
+        store = new IpfsStore(await storeConfiguration(value("store.gateway")));
         let appCid: string;
         let appArgv: string[];
         if (parsed.path === "open") {

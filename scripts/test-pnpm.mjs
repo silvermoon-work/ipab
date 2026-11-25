@@ -259,7 +259,7 @@ try {
       cli,
       "--state-dir",
       state,
-      "--store-rpc",
+      "--store-gateway",
       "http://127.0.0.1:1",
       "pin",
       "list",

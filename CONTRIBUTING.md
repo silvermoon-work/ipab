@@ -128,9 +128,8 @@ pnpm exec turbo run test --filter=<package-name>
 构建后 pin/rename/exec、动态依赖及不安全路径拒绝、编译流错误回归，
 以及全部 runtime、子进程取消、IPC、持久保留、Schema/模板、Bundle、
 Builder 和 Store 集成测试（包括 Node 22 GC deadline 回归）。
-不按 integration 文件名或目录整体排除。既有真实离线 Kubo daemon 测试仍由
-`KUBO_REAL_TEST=1` 显式启用；它原先不在默认 CI 中，此次不改变该约定，
-也不访问共享 daemon。
+不按 integration 文件名或目录整体排除。Store 已统一为本地存储与只读上游
+HTTP Gateway，已移除 Kubo RPC 后端及其专用测试；不访问共享 daemon 管理接口。
 
 Turbo 为 `test-ci` 单独缓存，依赖成员自身 `build`，确保 CLI 子进程使用当前
 dist；测试源码、成员脚本、共享 Vitest 配置与 `scripts/lib/` 参与缓存失效。

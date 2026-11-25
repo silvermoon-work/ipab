@@ -1,246 +1,157 @@
 # @ipab/ipfs-store
 
-The first npm release is being prepared as `0.1.0-rc.0`. Source and tests were
-migrated from `silvermoon-work/task-engine` at `0f3dd99`, including the Kubo
-indirect-through pin fix. The original MIT license and storage/CID/coordination
-contracts are preserved; existing published packages and repositories are
-unchanged. Tests use the shared workspace Vitest configuration and strict
-type-aware lint. Runtime response boundaries are checked explicitly. In-flight
-cancellation preserves Error reasons; a non-Error reason is reported as an Error
-with that original reason in `cause`, rather than rejecting an untyped value.
+Verified local IPFS/UnixFS storage with optional read-only upstream HTTP
+gateways. The first npm release is being prepared as `0.1.0-rc.0`. Source was
+migrated from `silvermoon-work/task-engine`; the original MIT license and
+CID/protocol contracts are preserved. Kubo RPC storage is no longer supported.
 
-Run `pnpm check` from the repository root. With Kubo installed, the optional
-real-daemon regression runs against disposable offline repositories:
+Run `pnpm check` from the repository root. Source and tests use strict
+TypeScript, type-aware lint and the shared Vitest configuration.
 
-```powershell
-$env:KUBO_REAL_TEST = '1'
-pnpm --filter @ipab/ipfs-store exec vitest run --root . --config ..\..\vitest.config.ts test\kubo-real.test.ts
-Remove-Item Env:KUBO_REAL_TEST
-```
-
-Build the workspace first. No shared daemon is reconfigured or GC'd by this
-test.
-
-Shared verified IPFS/UnixFS acquisition for Builder and Engine, independent of
-task scheduling and Engine databases. Library callers own and inject content
-objects; importing this package does not read configuration or start a client.
+## Local Store and upstream gateways
 
 ```ts
 import { IpfsStore } from "@ipab/ipfs-store";
 
-const content = new IpfsStore({
+const store = new IpfsStore({
   dataDir: contentDirectory,
-  gateway: "https://gateway.example", // omit for strictly local operation
+  gateway: "http://lan-storage.example:8080", // optional; an HTTP Gateway, not RPC
   limits: { bytes: 256 * 1024 * 1024, blocks: 16_384, depth: 64 },
 });
-const output = await buildTaskBundle(input, { ...buildOptions, content });
-const engine = createTaskEngine({
-  store: engineDatabase,
-  ipfsStore: content,
-  authorize,
-});
-// Both borrow the same object. The host closes it after all consumers finish.
 ```
 
-`read(cidOrCidPath, { signal? })` returns a discriminated UnixFS node: files
+All writes, persistent pins, usage queries and garbage collection belong to the
+local Store. A gateway only supplies missing blocks, verified before atomic
+local publication. It may be a shared LAN Kubo Gateway or another compatible
+HTTP Gateway. No block is uploaded, no upstream pin is changed and no daemon
+management/GC RPC is issued. No gateway is guessed when unset; local misses
+fail. Successfully pinned complete DAGs remain available without the gateway.
+Unpinned cache can be collected and then needs an available source to reacquire.
+
+`read(cidOrCidPath, { signal? })` returns a discriminated `UnixfsNode`: files
 (`type: "file" | "raw"`) expose `content()` as an async byte stream; directories
 expose `entries()` as an async iterator. It does not materialize the whole file
-or apply Task portable-path rules. The UnixFS node profile is SHA-256 raw/DAG-PB
-regular files and UnixFS directories. Missing local blocks are fetched only
-through an explicit gateway, verified before atomic publication, and reused by
-later readers. Corrupt local content fails rather than silently fetching a
-replacement.
+or apply application portable-path rules. The node profile is SHA-256 raw/DAG-PB
+regular files and UnixFS directories. Corrupt local blocks fail, never silently
+fetching replacements.
 
 `prepare(cid, { signal? })` verifies the complete linked DAG with unique-block,
-byte and depth limits. `block.get` and verified `put` support offline block
-transfer; CAR encoding, task manifests, imports, path policy and DAG grafting
-are not store responsibilities. Low-level verified blocks are SHA-256
-codec-neutral. Full DAG preparation supports raw, DAG-PB and canonical DAG-CBOR
-and follows genuine IPLD links across these codecs, not CID-looking strings or
-objects. Unknown codecs, unsupported hashes, missing/corrupt blocks and exceeded
-budgets fail. Structured blocks also have a 64-level/100,000-node inspection
-limit. Shared subgraphs count once for bytes and blocks, but all paths must
-satisfy the DAG depth limit. `ContentBlocks` in `./dag` is the bounded in-memory
-block primitive for such transfers, not another application-level acquisition
-API. `contentLinks(cid, bytes)` in that subpath is the shared codec-aware link
-extractor used by both preparation paths (callers verify block integrity
-separately). It reuses the identity-safe codec from `ipfs-payload/dag-cbor`,
-which loads no TypeBox/AJV runtime. All pin, retain, finishImport and
-reconciliation preparation uses this same mixed-codec traversal with fresh
-backing reads. CAR framing remains outside Store; tests transfer mixed graphs
-through the existing CAR library and staging/finishImport, including
-parent-before-child delivery and incomplete imports.
+byte and depth limits. Full DAG preparation supports raw, DAG-PB and canonical
+DAG-CBOR and follows genuine IPLD links, not CID-looking strings or objects.
+Unknown codecs, unsupported hashes, missing/corrupt blocks and exceeded budgets
+fail. Structured blocks also have a 64-level/100,000-node inspection limit.
+Shared subgraphs count once for bytes/blocks, but all paths satisfy the depth
+limit. `block.get` and verified `put` support offline block transfer; low-level
+verified SHA-256 blocks are codec-neutral. CAR framing, manifests, path policy
+and DAG grafting remain outside Store.
 
-The additive `readContent(cid)` and `resolveContent(cid, path)` methods
-implement the type-only `ReadonlyIpfsAccess` contract. `readContent` returns the
-shared `IpfsNode` DU (`kind: "file"` with a `ReadableStream`, or
-`kind: "directory"` with an async entry stream). Entries carry target CIDs and
-validated file/directory kinds. File cancellation and directory enumeration
-retain host budgets/signals. `resolveContent` accepts directory-relative
-slash-separated segments and returns the target CID; empty path validates and
-returns the resource itself. Structured archives cannot be read or resolved as a
-third file variant. The existing `read` result shape is unchanged and is now
-named `UnixfsNode`; the exported `IpfsNode` name refers to the shared access
-contract. The temporary writer remains a host contract, not an unprotected alias
-for `put`.
+`ContentBlocks` in `./dag` is the bounded in-memory transfer primitive, not
+another application-level acquisition API. `contentLinks(cid, bytes)` is its
+shared codec-aware extractor; callers verify integrity separately. It reuses the
+identity-safe codec from `ipfs-payload/dag-cbor` without TypeBox/AJV runtime.
+Pin/retain/import/reconciliation always traverse fresh backing reads.
 
-`scope(limits?)` borrows the same backing store with an independent, no-larger
-reader budget and cancellation lifetime. Closing a scope does not close its
-parent. Engine uses scopes for its own retention limits; logical
-file/path/execution budgets remain in Builder/Engine, separately from
-unique-block accounting. `IpfsStore.fromClient(port, limits?, dataDir?)`
-explicitly adapts a caller-owned block source (for example an offline CAR); it
-never closes that source. Without a dataDir this adapter is memory-only. The
-borrowed **source** is read-only: adapter `put` still verifies and writes its
-own ContentBlocks/SharedContent, never a source `put`. Closing the adapter never
-closes the source. `writable` does not imply durable coordination: adapters
-expose `supportsRetention: false` and reject retention operations. Engine checks
-that separate capability. Neither construction nor import loads config.
+`readContent(cid)` and `resolveContent(cid, path)` implement the type-only
+`ReadonlyIpfsAccess` contract. `IpfsNode` is the shared DU: `kind: "file"` with
+a `ReadableStream`, or `kind: "directory"` with an async entry stream. Entries
+carry target CIDs and verified kinds. File cancellation and enumeration retain
+host budgets/signals. Paths are directory-relative slash-separated segments;
+empty path validates and returns the resource. Structured archives are not a
+third file variant. `putContent(byteStream)` creates verified local UnixFS
+content but does not establish persistent retention by itself.
 
-## Optional Kubo backend
+`scope(limits?)` borrows backing storage with independent, no-larger reader
+budgets/lifetime; closing it never closes its parent.
+`IpfsStore.fromClient(port, limits?, dataDir?)` adapts a caller-owned block
+source, never writing to or closing that source. Without dataDir it uses
+memory-only `ContentBlocks`. Adapters expose `supportsRetention: false` and
+reject coordinated retention, usage and GC. `withLocalSource(port)` creates a
+coordinated local read-through Store with a borrowed source.
 
-```ts
-const content = new IpfsStore({
-  backend: "kubo",
-  apiUrl: "http://127.0.0.1:5001",
-  coordinationDir: "/shared/task-content-retention",
-  timeoutMs: 30_000,
-  limits: {
-    bytes: 256 * 1024 * 1024,
-    blocks: 16_384,
-    blockBytes: 2 * 1024 * 1024,
-    depth: 64,
-  },
-});
+## Pins, ownership and imports
+
+`pin(root)` verifies the complete DAG and persists a recursive local pin.
+`unpin(root)` releases an unreferenced known pin without deleting blocks.
+Neither `put`, `prepare` nor closing a Store pins/unpins content. `limits.bytes`
+and `retainedBytes` measure in-process retention, not disk quotas.
+
+All cooperating hosts sharing a dataDir must preserve the same durable
+coordinationDir (default `<dataDir>/retention`) on SQLite-compatible storage. It
+contains reference/operation metadata, never blocks or CARs. Distinct
+registries/external writers are not a distributed ownership service.
+
+`registerOwner`, `retain`, `confirmRetained`, `recoverOwner` and `reconcile`
+coordinate persistent references. `retain` publishes durable intents before
+acquisition/pinning; call `confirmRetained` after committing business
+references. Use `reconcile(owner, () => readPersistedRoots())` to evaluate the
+snapshot inside the participant mutex. Recovery discards abandoned
+intents/imports only when the owner's old executions are stopped; its optional
+`isIdle` predicate and root callback run inside the mutex. Never recover active
+shared owners. Reconciliation verifies all participating roots before releasing
+unreferenced pins. Failures preserve retry metadata; removed-pin counts are not
+disk bytes.
+
+`stageBlock(session, cid, bytes)` records and publishes individual local blocks,
+including CAR parents before children. `finishImport(session, root, owner?)`
+verifies and recursively pins the complete DAG before dropping staging
+responsibility. `discardImport` drops that session's responsibility. Interrupted
+imports retain retry metadata and never claim a complete root.
+
+## Usage and explicit GC
+
+`await store.usage({ signal? })` returns `{ cachedBytes, pinnedBytes }`.
+`cachedBytes` sums canonical CID block file lengths, excluding coordination
+metadata, temporary/unknown files and filesystem allocation overhead.
+`pinnedBytes` is every durable recursive pin's verified DAG block union,
+including indirect descendants and shared subgraphs, deduplicated by CIDv1.
+
+`await store.gc({ signal? })` returns `{ removedBlocks, reclaimedBytes }`. It
+collects unprotected blocks across the entire local Store without unpinning. The
+participant mutex protects pin/owner changes and staging. Owner roots, pending
+retention roots and active staged blocks survive. Incomplete import parents are
+protected individually. Unknown files and temporary publications are untouched.
+
+Every protected DAG is verified with fresh local-only reads before deletion,
+using per-root content limits. Missing/corrupt content and capacity failures
+abort marking before any deletion; queries/GC never fetch missing blocks or
+trust warmed reader caches. Cancellation/storage failures throw; an interrupted
+sweep may already have deleted blocks and can be retried. Unpinned reads/puts do
+not establish a GC hold. Concurrent uncoordinated writes do not provide
+transactionally exact usage snapshots; publications after initial inventory are
+outside the sweep. No automatic GC, quotas, direct-pin mode or MFS.
+
+## Public configuration and migration
+
+`@ipab/ipfs-store/node` reads `%LOCALAPPDATA%\TaskContent\config.json` on
+Windows or `~/.config/task-content/config.json` elsewhere. `TASK_CONTENT_CONFIG`
+selects another file:
+
+```json
+{
+  "backend": "local",
+  "dataDir": "./content",
+  "gateway": "http://lan-storage.example:8080"
+}
 ```
 
-Kubo is a direct raw-block backend, not a local cache backed by a Gateway. No
-application `blocks` directory or temporary CAR is written. Original bytes and
-SHA-256 raw, DAG-PB and DAG-CBOR block CIDs are preserved; strong closure
-traversal supports all three while file/directory access remains raw/UnixFS
-only. RPC responses, including errors, are bounded while streaming. The same
-read/unique-block/depth limits apply. `limits.bytes` and `retainedBytes` measure
-in-process retention, **not disk quotas**.
+Optional `limits` and `coordinationDir` are supported; gateway may be an ordered
+URL list. Unknown fields, malformed URLs and invalid limits fail. Paths resolve
+relative to the file. Legacy local configurations without `backend` still work.
+Default dataDir is `~/.silvermoon.work/content`. Overrides cannot hide malformed
+lower layers. `createConfiguredContent()` is an explicit host helper; library
+imports never read configuration or start clients.
 
-Explicit trusted remote HTTP(S) RPC endpoints are supported. The host owns
-authentication, transport and access policy; URL user information is sent as
-Basic authorization and is not included in RPC error messages. The library does
-not discover, expose, start, stop, reconfigure or globally GC a daemon. Daemon
-networking is entirely its startup policy. Product code never issues `config`,
-swarm, bootstrap or gateway RPCs. Isolated tests may GC only a dedicated offline
-fixture, never a shared daemon. The default local backend is not a public
-distribution endpoint; optional `gateway` is host-configured. A network-offline
-daemon can serve existing blocks; a missing block or unreachable RPC fails the
-dependent operation. There is no local or Gateway fallback, including Gateway
-hints.
+`backend:kubo`, `apiUrl` and Store `timeoutMs` are rejected. Replace old RPC
+configuration explicitly with a local dataDir and HTTP gateway, not port 5001
+RPC. Old Kubo blocks/pins/owner metadata are not moved, released or treated as
+local retention. Existing CLI pin/history records keep their old configuration
+and unsupported cleanup fails explicitly; independently manage old daemon pins
+and create new local pins before relying on offline availability.
 
-`pin(root)` verifies the complete DAG with fresh backing reads and requests a
-recursive retention hint; `unpin(root)` releases an unreferenced known hint.
-Neither `put` nor `prepare` pins. Local pins are durable SQLite metadata, not
-no-ops; releasing one does not delete blocks or add automatic disk GC. Kubo
-hints use `@silvermoon-work/task-engine/<coordinator-id>` names. Kubo's
-`indirect through <CID>` pin status is validated and normalized to `indirect`
-before retention coordination; malformed statuses still fail. Existing
-differently named or unnamed recursive pins are left unchanged; an external
-direct pin that cannot be upgraded without renaming causes an explicit
-unfinished error. Names are **best-effort provenance labels**, not ownership,
-authentication, independent leases or permanent availability. External
-deletion/renaming between checks is not prevented. Reads still verify real
-bytes; missing content is fetched only from the explicitly configured
-backend/source or fails. Closing stores/scopes never unpins.
-
-### Participating Engines and recovery
-
-All cooperating Engines must use the **same durable coordination directory** and
-preserve it across restarts. It contains only identity, reference and operation
-metadata, never blocks or CARs. Defaults are `<local-dataDir>/retention` or a
-user-level directory keyed by the exact Kubo API URL. For endpoint aliases,
-remote hosts or distinct configurations, explicitly inject the same directory on
-storage that provides SQLite locking/durability; separate registries are not a
-distributed ownership service. Different registry names are treated as external
-and are never claimed or automatically removed by this registry.
-
-Engine automatically registers its persistent Store identity and publishes
-Task/Run bundle roots and optional output CIDs, including historical Runs.
-Protection is arranged before publishing new content references. Durable
-write-ahead intents bridge the RPC/database commit gap; after database commit,
-confirmation publishes the root again before clearing the intent. Recovery uses
-the persisted Store's actual full root set. Hosts sharing one business identity
-supply `retentionOwner` and `retentionRoots` and recover that owner once, while
-its executions are stopped.
-
-For custom hosts the primitives are `registerOwner`, `retain`,
-`confirmRetained`, `recoverOwner`, and `reconcile`. `retain` publishes an intent
-and confirms the pin request; call `confirmRetained` only after committing the
-business reference. Use `reconcile(owner, () => readPersistedRoots())` so the
-snapshot is read **inside** the participant mutex, not before waiting for it.
-`recoverOwner` discards abandoned intents/import sessions only when that owner's
-old executions are known to have stopped. Never recover an active shared owner.
-Its optional `isIdle` predicate and root callback are evaluated inside the
-mutex; Engine uses this for collection without racing a newly preparing request.
-
-Mark-and-sweep first verifies every participating owner's retained graph and
-pending publication/import references. Only then can it remove this
-coordinator's currently named, unreferenced hints. Other visible names remain.
-Missing/corrupt references, inaccessible coordination, cancellation or RPC
-failure prevent a successful cleanup result. An interrupted or uncertain
-pin/unpin remains journaled for retry; no successful pin/unpin is inferred from
-a timeout. Unpin counts are hints removed, not disk bytes reclaimed.
-
-Staging also persists an absent/indirect/already-own before-state before the
-atomic raw put. If naming fails after that put created an unnamed pin, recovery
-retries its name assignment, checks the visible result, then permits ordinary
-named cleanup. Another failure remains an explicit unfinished responsibility,
-not a discarded journal row. A genuinely preexisting external unnamed pin has no
-such claim and is never renamed or removed. This is best-effort recovery of a
-recorded system operation, not protection from outsiders racing the request.
-
-For block-by-block imports, `stageBlock(session, cid, bytes)` atomically pins a
-raw alias of each Kubo block before later DAG publication; the alias uses the
-same multihash/bytes and does not create an application block copy. This also
-handles CAR parents arriving before their children.
-`finishImport(session, root, owner?)` verifies and recursively pins the finished
-DAG before releasing the session's staging responsibility. A later coordinated
-sweep removes unreferenced staging hints. Interrupted imports retain durable
-retry/recovery metadata and never claim a complete root.
-
-## Public configuration
-
-CLI hosts use `@ipab/ipfs-store/node`. The default file is
-`%LOCALAPPDATA%\TaskContent\config.json` on Windows and
-`~/.config/task-content/config.json` elsewhere; `TASK_CONTENT_CONFIG` selects
-another file. The canonical configuration is a strict union:
-
-- `{ "backend": "local", "dataDir": "...", "gateway": "https://..." }`
-- `{ "backend": "kubo", "apiUrl": "http://127.0.0.1:5001" }`
-
-Both branches accept `limits` and optional `coordinationDir`; only Kubo accepts
-`timeoutMs`. Local `gateway` can also be an ordered URL list. Unknown fields,
-cross-branch fields, malformed URLs and non-positive/non-integral limits fail.
-Local paths are relative to the config file. Legacy local JSON without
-`backend`, and legacy `{ dataDir, gateway?, limits? }` constructors, still work.
-Default dataDir is `~/.silvermoon.work/content`, independent of Engine
-databases. No gateway is guessed when unset; local misses fail.
-
-Builder's `--content-gateway` / `--content-data-dir` and Engine server's
-`--ipfs-gateway` / `--content-data-dir` override the common defaults separately.
-Existing `server.dataDir` remains the Engine database path, not content storage.
-Engine startup rejects using that same directory as content storage. Local CLI
-overrides conflict explicitly with a selected Kubo configuration; they never
-silently change its backend. Selecting a different backend in an existing file
-requires replacing that file's branch, not merging its fields. Migrate old
-private cache settings explicitly; no blocks/databases are moved. Libraries
-accept injected stores and do not read user configuration themselves.
-`createConfiguredContent()` is an explicit host helper returning an `IpfsStore`
-with its resolved `configuration`; it is never invoked by library imports.
-
-The backing storage verifies disk reads and writes a uniquely named complete
-file before atomic hard-link publication. Concurrent processes cannot publish
-partial blocks; an interrupted pending file is not a cache hit. Existing
-published bytes are validated, never overwritten with unverified data. Close
-aborts owned work but never removes blocks or closes an injected source. Stores
-own and close only the gateways they create. Disk retention has no automatic GC.
-In-flight acquisition is deduplicated within each instance, not across
-processes. Canceling one reader detaches only that reader; shared acquisition
-belongs to the client's lifetime and remains available to other readers. CID
-storage accounting and logical file/path/execution budgets remain independent.
+Local files are verified on read and published by atomic hard-link after
+writing/syncing a unique complete temporary file. Existing publications are
+validated, not overwritten. Close aborts owned work but never deletes blocks or
+closes borrowed sources. Stores close only gateways they create. Acquisition is
+deduplicated per instance; canceling a reader detaches it without canceling
+another reader's shared acquisition. Non-Error cancellation reasons are reported
+as Errors preserving the original reason in `cause`.

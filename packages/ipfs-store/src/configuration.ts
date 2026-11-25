@@ -4,17 +4,11 @@ interface CommonConfiguration {
   limits?: Partial<ContentLimits>;
   coordinationDir?: string;
 }
-export type StoreConfiguration =
-  | (CommonConfiguration & {
-      backend: "local";
-      dataDir: string;
-      gateway?: string | readonly string[];
-    })
-  | (CommonConfiguration & {
-      backend: "kubo";
-      apiUrl: string;
-      timeoutMs?: number;
-    });
+export interface StoreConfiguration extends CommonConfiguration {
+  backend: "local";
+  dataDir: string;
+  gateway?: string | readonly string[];
+}
 export type LegacyStoreOptions = Omit<
   Extract<StoreConfiguration, { backend: "local" }>,
   "backend"
@@ -26,12 +20,14 @@ export function validateConfiguration(value: unknown): StoreConfiguration {
     throw new Error("Invalid IPFS store configuration.");
   const record = value as Record<string, unknown>;
   const backend = Object.hasOwn(record, "backend") ? record.backend : "local";
+  if (backend === "kubo")
+    throw new Error(
+      "Kubo Store RPC is no longer supported. Configure a local dataDir and an HTTP gateway; existing Kubo pins are not migrated or released.",
+    );
   const fields =
     backend === "local"
       ? ["backend", "dataDir", "gateway", "limits", "coordinationDir"]
-      : backend === "kubo"
-        ? ["backend", "apiUrl", "timeoutMs", "limits", "coordinationDir"]
-        : [];
+      : [];
   if (
     !fields.length ||
     Object.keys(record).some((key) => !fields.includes(key))
@@ -56,7 +52,6 @@ export function validateConfiguration(value: unknown): StoreConfiguration {
     if (!["http:", "https:"].includes(parsed.protocol) || parsed.hash)
       throw new Error("IPFS URL must use HTTP(S) without a fragment.");
   };
-  if (backend === "kubo") url(record.apiUrl);
   if (record.gateway !== undefined) {
     const gateways = Array.isArray(record.gateway)
       ? record.gateway
@@ -65,15 +60,6 @@ export function validateConfiguration(value: unknown): StoreConfiguration {
       throw new Error("Content gateway list must not be empty.");
     for (const gateway of gateways) url(gateway);
   }
-  if (record.timeoutMs !== undefined)
-    if (
-      !Number.isSafeInteger(record.timeoutMs) ||
-      Number(record.timeoutMs) <= 0 ||
-      Number(record.timeoutMs) > 2_147_483_647
-    )
-      throw new Error(
-        "IPFS timeoutMs must be an integer between 1 and 2147483647.",
-      );
   if (record.limits !== undefined) {
     if (
       !record.limits ||

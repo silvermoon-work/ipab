@@ -45,13 +45,18 @@ test("configured stores resolve the selected file and reject malformed lower lay
   );
   const local = await readContentConfiguration();
   assert.equal(local.coordinationDir, join(directory, "owners"));
+  await writeFile(
+    config,
+    JSON.stringify({ backend: "kubo", apiUrl: "http://localhost:5001" }),
+  );
+  await assert.rejects(
+    readContentConfiguration({ gateway: "http://localhost:8080" }),
+    /not migrated or released/,
+  );
   for (const value of ["{", "null", "[]", '{"backend":"local","dataDir":""}']) {
     await writeFile(config, value);
     await assert.rejects(
-      readContentConfiguration({
-        backend: "kubo",
-        apiUrl: "http://localhost:5001",
-      }),
+      readContentConfiguration({ gateway: "http://localhost:8080" }),
     );
   }
   vi.stubEnv("TASK_CONTENT_CONFIG", undefined);
@@ -76,6 +81,8 @@ test("configuration validation rejects invalid paths, URLs, limits and conflicti
     { dataDir: "local", limits: [] },
     { dataDir: "local", limits: { bytes: -1 } },
     { backend: "kubo", apiUrl: "http://localhost", timeoutMs: 2_147_483_648 },
+    { dataDir: "local", apiUrl: "http://localhost" },
+    { dataDir: "local", timeoutMs: 100 },
   ])
     assert.throws(() => validateConfiguration(value));
 });
@@ -130,22 +137,18 @@ test("public defaults and independent overrides use content-only storage", async
     );
     const builder = await readContentConfiguration({}, config);
     const engine = await readContentConfiguration({}, config);
-    assert.ok(builder.backend === "local");
-    assert.ok(engine.backend === "local");
     assert.deepEqual(engine, builder);
     assert.equal(builder.dataDir, join(directory, "shared"));
     const independent = await readContentConfiguration(
       { dataDir: join(directory, "other") },
       config,
     );
-    assert.ok(independent.backend === "local");
     assert.equal(independent.gateway, builder.gateway);
     assert.notEqual(independent.dataDir, builder.dataDir);
     const overridden = await readContentConfiguration(
       { gateway: "http://127.0.0.1:23456" },
       config,
     );
-    assert.ok(overridden.backend === "local");
     assert.equal(overridden.dataDir, builder.dataDir);
     await writeFile(config, '{"server.dataDir":"not-content"}');
     await assert.rejects(

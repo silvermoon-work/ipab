@@ -18,7 +18,6 @@ import { CID } from "multiformats/cid";
 import { sha256, sha512 } from "multiformats/hashes/sha2";
 import { ContentBlocks, contentLinks } from "../src/dag.js";
 import { IpfsStore } from "../src/index.js";
-import { kuboFixture } from "./kubo-fixture.js";
 
 async function structured(graph: ContentBlocks, value: unknown): Promise<CID> {
   const bytes = encodeDagCbor(value);
@@ -75,104 +74,86 @@ async function car(root: CID, blocks: ContentBlocks): Promise<Uint8Array> {
   return collecting;
 }
 
-for (const backend of ["local", "kubo"] as const) {
-  test(`${backend}: mixed-codec CAR staging, strong retention and fresh closure validation`, async () => {
-    const directory = resolve(".cache", `structured-${randomUUID()}`);
-    const fixture = backend === "kubo" ? await kuboFixture() : undefined;
-    const store = new IpfsStore(
-      fixture
-        ? {
-            backend: "kubo",
-            apiUrl: fixture.apiUrl,
-            coordinationDir: directory,
-          }
-        : { dataDir: directory },
+test("local: mixed-codec CAR staging, strong retention and fresh closure validation", async () => {
+  const directory = resolve(".cache", `structured-${randomUUID()}`);
+  const store = new IpfsStore({ dataDir: directory });
+  const { graph, root, raw } = await mixedGraph();
+  const reachable = new ContentBlocks(graph);
+  await reachable.prepare(root);
+  assert.deepEqual(
+    new Set(reachable.blocks.keys()),
+    new Set(graph.blocks.keys()),
+  );
+  const reader = await CarReader.fromBytes(await car(root, reachable));
+  assert.ok((await reader.getRoots())[0]!.equals(root));
+  try {
+    store.registerOwner("owner", []);
+    const rootBlock = await reader.get(root);
+    assert.ok(rootBlock);
+    await store.stageBlock("owner/import", root, rootBlock.bytes);
+    await assert.rejects(
+      store.finishImport("owner/import", root),
+      /unfinished/,
     );
-    const { graph, root, raw } = await mixedGraph();
-    const reachable = new ContentBlocks(graph);
-    await reachable.prepare(root);
+    assert.equal(
+      store.pins().includes(root.toString()),
+      false,
+      "A root alone is not a complete import.",
+    );
+    for await (const block of reader.blocks())
+      if (!block.cid.equals(root))
+        await store.stageBlock("owner/import", block.cid, block.bytes);
+    await store.finishImport("owner/import", root, "owner");
+    await store.confirmRetained("owner", [root.toString()]);
+    await store.prepare(root);
+    assert.ok(store.pins().includes(root.toString()));
+    const exported = new ContentBlocks(store);
+    await exported.prepare(root);
+    const restored = new ContentBlocks();
+    const exportedCar = await CarReader.fromBytes(await car(root, exported));
+    for await (const block of exportedCar.blocks())
+      await restored.put(block.cid, block.bytes);
+    await restored.prepare(root);
     assert.deepEqual(
-      new Set(reachable.blocks.keys()),
+      new Set(restored.blocks.keys()),
       new Set(graph.blocks.keys()),
     );
-    const reader = await CarReader.fromBytes(await car(root, reachable));
-    assert.ok((await reader.getRoots())[0]!.equals(root));
-    try {
-      store.registerOwner("owner", []);
-      const rootBlock = await reader.get(root);
-      assert.ok(rootBlock);
-      await store.stageBlock("owner/import", root, rootBlock.bytes);
-      await assert.rejects(
-        store.finishImport("owner/import", root),
-        /unfinished/,
-      );
-      assert.equal(
-        store.pins().includes(root.toString()),
-        false,
-        "A root alone is not a complete import.",
-      );
-      for await (const block of reader.blocks())
-        if (!block.cid.equals(root))
-          await store.stageBlock("owner/import", block.cid, block.bytes);
-      await store.finishImport("owner/import", root, "owner");
-      await store.confirmRetained("owner", [root.toString()]);
-      await store.prepare(root);
-      assert.ok(store.pins().includes(root.toString()));
-      const exported = new ContentBlocks(store);
-      await exported.prepare(root);
-      const restored = new ContentBlocks();
-      const exportedCar = await CarReader.fromBytes(await car(root, exported));
-      for await (const block of exportedCar.blocks())
-        await restored.put(block.cid, block.bytes);
-      await restored.prepare(root);
-      assert.deepEqual(
-        new Set(restored.blocks.keys()),
-        new Set(graph.blocks.keys()),
-      );
 
-      await store.retain("other", [root.toString()]);
-      await store.confirmRetained("other", [root.toString()]);
-      await store.reconcile("owner", []);
-      assert.ok(
-        store.pins().includes(root.toString()),
-        "Another owner preserves the strong graph.",
-      );
-      const stale = Buffer.from("now missing or corrupt");
-      const rawPath = join(directory, "blocks", raw.toString());
-      const original = fixture
-        ? fixture.blocks.get(raw.toString())!
-        : await readFile(rawPath);
-      if (fixture) fixture.blocks.delete(raw.toString());
-      else await rm(rawPath);
-      await assert.rejects(store.pin(root), /unfinished/);
-      await assert.rejects(
-        store.retain("owner", [root.toString()]),
-        /unfinished/,
-      );
-      await assert.rejects(store.reconcile("owner", []), /unfinished/);
-      if (fixture) fixture.blocks.set(raw.toString(), stale);
-      else await writeFile(rawPath, stale);
-      await assert.rejects(store.pin(root), /unfinished/);
-      if (fixture) fixture.blocks.set(raw.toString(), original);
-      else await writeFile(rawPath, original);
-      await store.recoverOwner("owner", []);
-      await store.reconcile("owner", []);
-      assert.ok(store.pins().includes(root.toString()));
-      await store.reconcile("other", []);
-      assert.equal(store.pins().includes(root.toString()), false);
-      assert.deepEqual(
-        await store.block.get(root.toString()),
-        Uint8Array.from(rootBlock.bytes),
-        "Unpin is not physical deletion.",
-      );
-      if (fixture) assert.equal(fixture.calls.includes("repo/gc"), false);
-    } finally {
-      await store.close();
-      await fixture?.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-}
+    await store.retain("other", [root.toString()]);
+    await store.confirmRetained("other", [root.toString()]);
+    await store.reconcile("owner", []);
+    assert.ok(
+      store.pins().includes(root.toString()),
+      "Another owner preserves the strong graph.",
+    );
+    const stale = Buffer.from("now missing or corrupt");
+    const rawPath = join(directory, "blocks", raw.toString());
+    const original = await readFile(rawPath);
+    await rm(rawPath);
+    await assert.rejects(store.pin(root), /unfinished/);
+    await assert.rejects(
+      store.retain("owner", [root.toString()]),
+      /unfinished/,
+    );
+    await assert.rejects(store.reconcile("owner", []), /unfinished/);
+    await writeFile(rawPath, stale);
+    await assert.rejects(store.pin(root), /unfinished/);
+    await writeFile(rawPath, original);
+    await store.recoverOwner("owner", []);
+    await store.reconcile("owner", []);
+    assert.ok(store.pins().includes(root.toString()));
+    await store.reconcile("other", []);
+    assert.equal(store.pins().includes(root.toString()), false);
+    assert.deepEqual(
+      await store.block.get(root.toString()),
+      Uint8Array.from(rootBlock.bytes),
+      "Unpin is not physical deletion.",
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("mixed graphs reject unsupported codecs/hashes, missing/corrupt blocks and exceeded budgets", async () => {
   const { graph, root, raw } = await mixedGraph();

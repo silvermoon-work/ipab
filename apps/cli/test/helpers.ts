@@ -209,6 +209,7 @@ export async function subprocess(
   };
   for (const key of [
     "IPAB_STATE_DIR",
+    "IPAB_STORE_GATEWAY",
     "IPAB_STORE_RPC",
     "IPAB_HISTORY_ENABLED",
     "IPAB_HISTORY_LIMIT",

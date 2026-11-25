@@ -229,7 +229,7 @@ describe("history and durable retention", () => {
       expect(state.runs()).toHaveLength(1);
     }
     const shown = await cli(work.stateDir, [
-      "--store-rpc",
+      "--store-gateway",
       "http://localhost:1",
       "--json",
       "history",
@@ -274,7 +274,7 @@ describe("history and durable retention", () => {
     expect(
       (
         await cli(work.stateDir, [
-          "--store-rpc",
+          "--store-gateway",
           "http://localhost:1",
           "--json",
           "history",

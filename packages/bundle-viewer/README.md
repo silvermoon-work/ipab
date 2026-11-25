@@ -1,5 +1,12 @@
 # @ipab/bundle-viewer (private)
 
+An optional `prepareData(data, { readFile, signal })` runs once in Node after
+entry/type validation and before the server starts. It may resolve explicit
+resources in the selected Content Bundle; errors reject startup. Its returned
+JSON is checked by the existing canonical-state budget, rendered in SSR and sent
+unchanged for hydration. This is not a browser file proxy or a second renderer
+callback. [Check Spec](../check-spec) uses it for Markdown instructions.
+
 React Content Bundle viewers layered on `@ipab/web-app`. One **isomorphic React
 component callback** is compiled into the Node App and browser entry. The
 adapter loads the selected immutable Content Bundle, checks its exact type CID

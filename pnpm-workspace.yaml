@@ -29,6 +29,8 @@ catalog:
   "@silvermoon-work/ipfs-access": 0.1.0
   "@silvermoon-work/ipfs-payload": 0.1.0
   ajv: 8.20.0
+  react-markdown: 10.1.0
+  remark-gfm: 4.0.1
   blockstore-core: 7.0.1
   ipfs-unixfs-exporter: 16.2.3
   yaml: 2.9.1

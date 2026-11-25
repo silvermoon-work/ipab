@@ -84,6 +84,38 @@ async function start(overrides: Partial<RunBundleViewerOptions> = {}) {
 }
 
 describe("React Content Bundle server", () => {
+  it("prepares resource-backed data once before SSR and uses the same resolved state", async () => {
+    const prepareData = vi.fn(
+      async (
+        _data: unknown,
+        context: {
+          signal: AbortSignal;
+          readFile(path: string): Promise<ReadableStream<Uint8Array>>;
+        },
+      ) => {
+        context.signal.throwIfAborted();
+        await context.readFile("message.json");
+        return { message: "Resolved Markdown" };
+      },
+    );
+    const app = await start({ prepareData });
+    for (let index = 0; index < 2; index++) {
+      const html = await fetch(new URL("frame/index.html", app.url)).then(
+        (response) => response.text(),
+      );
+      expect(html).toContain("Resolved Markdown");
+      expect(html).not.toContain("Real content");
+    }
+    expect(prepareData).toHaveBeenCalledTimes(1);
+  });
+  it("fails resource preparation explicitly before starting the server", async () => {
+    await expect(
+      runBundleViewer({
+        ...options(),
+        prepareData: () => Promise.reject(new Error("Missing instructions")),
+      }),
+    ).rejects.toThrow("Missing instructions");
+  });
   it("renders actual content in HTTP HTML before any browser connection", async () => {
     const app = await start();
     const response = await fetch(new URL("frame/index.html", app.url));

@@ -21,6 +21,14 @@ templates/bundle-viewer，当前通过目录／CAR／CID 选择，不新增内�
 的同一实例，Vite 保持 resolve.dedupe；相同版本不等于同一 hooks runtime。
 真实 pnpm 安装验证须实际运行构建 App，检查内容 SSR 与连接关闭，不只检查 CAR。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
+private `@ipab/check-spec` 迁入 okr-agent 的 MIT React 定义查看器；
+`apps/check-viewer` 由 bundle-viewer 模板初始化，为独立 private App。
+Check 类型入口 check.yaml，instructions 为正文或显式 {path} Markdown 引用；
+其他文档保持内联。Node prepareData 完成参数 Schema／唯一性检查与有界资源加载，
+SSR／hydration 共用展开数据；浏览器使用构建期生成的静态 AJV 形状校验器，
+不启用 unsafe-eval。examples/check-spec 是显式转换示例，不自动迁移旧文档。
+根 build 只生成 App/source
+CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。
 
 ## Engineering

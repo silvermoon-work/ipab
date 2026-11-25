@@ -50,6 +50,13 @@ export interface RunBundleViewerOptions extends Omit<
   contentCid: string;
   schema: unknown;
   viewer: BundleViewer;
+  prepareData?: (
+    data: unknown,
+    context: {
+      signal: AbortSignal;
+      readFile(path: string): Promise<ReadableStream<Uint8Array>>;
+    },
+  ) => Promise<unknown>;
 }
 
 export async function runBundleViewer(
@@ -80,7 +87,15 @@ export async function runBundleViewer(
         throw new Error("Viewer validation budget exceeded");
     },
   });
-  const stateBytes = canonicalJson(data);
+  const prepared = options.prepareData
+    ? await options.prepareData(data, {
+        signal,
+        readFile: (path) =>
+          options.context.readFile(options.contentCid, path, { signal }),
+      })
+    : data;
+  signal.throwIfAborted();
+  const stateBytes = canonicalJson(prepared);
   if (stateBytes.byteLength > 1024 * 1024)
     throw new Error("Viewer state exceeds 1 MiB");
   const state = new TextDecoder()
@@ -106,9 +121,12 @@ export async function runBundleViewer(
         throw new Error(
           "Frontend requires exactly one viewer and state marker",
         );
-      const html = renderToString(createElement(options.viewer, { data }), {
-        identifierPrefix,
-      });
+      const html = renderToString(
+        createElement(options.viewer, { data: prepared }),
+        {
+          identifierPrefix,
+        },
+      );
       requestSignal.throwIfAborted();
       return page
         .replace(

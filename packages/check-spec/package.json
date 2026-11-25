@@ -1,0 +1,55 @@
+{
+  "name": "@ipab/check-spec",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Check definition views and bounded Markdown resource loading.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "imports": {
+    "#check-shape": {
+      "types": "./src/shape-validator.d.ts",
+      "default": "./dist/shape-validator.js"
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bundle": {
+      "types": "./dist/bundle.d.ts",
+      "import": "./dist/bundle.js"
+    },
+    "./style.css": "./src/style.css"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node scripts/test.mjs",
+    "test-ci": "node scripts/test-ci.mjs",
+    "test-coverage": "node scripts/test-coverage.mjs"
+  },
+  "dependencies": {
+    "ajv": "catalog:",
+    "react-markdown": "catalog:",
+    "remark-gfm": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@types/node": "catalog:",
+    "jsdom": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

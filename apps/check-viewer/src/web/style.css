@@ -1,0 +1,12 @@
+html,
+body,
+#ipab-viewer {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: #fff;
+}
+#ipab-viewer > .cbv-fill {
+  height: 100%;
+}

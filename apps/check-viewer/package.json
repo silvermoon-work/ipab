@@ -1,0 +1,37 @@
+{
+  "name": "@ipab/check-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node scripts/test.mjs",
+    "test-ci": "node scripts/test-ci.mjs",
+    "test-coverage": "node scripts/test-coverage.mjs"
+  },
+  "dependencies": {
+    "@ipab/bundle-viewer": "workspace:*",
+    "@ipab/check-spec": "workspace:*",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@ipab/cli": "workspace:*",
+    "@ipab/bundle": "workspace:*",
+    "@ipab/bundle-builder": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "vitest": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

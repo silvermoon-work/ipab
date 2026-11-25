@@ -1,0 +1,135 @@
+{
+  "name": "IPAB Check Spec",
+  "description":
+    "Ordered Check definition with optional Bundle-local Markdown instructions.",
+  "entry":
+    {
+      "path": "check.yaml",
+      "contentType": "application/yaml",
+      "schema":
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required":
+            ["specVersion", "name", "description", "parameter", "checkpoints"],
+          "properties":
+            {
+              "$schema": { "enum": ["urn:ipfsaw:check-bundle:1"] },
+              "specVersion": { "enum": ["1.0"] },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "parameter":
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["schema"],
+                  "properties": { "schema": { "type": "object" } },
+                },
+              "checkpoints":
+                {
+                  "type": "array",
+                  "items":
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required":
+                        [
+                          "id",
+                          "title",
+                          "description",
+                          "instructions",
+                          "output",
+                          "rules",
+                        ],
+                      "properties":
+                        {
+                          "id": { "type": "string" },
+                          "title": { "type": "string" },
+                          "description": { "type": "string" },
+                          "instructions":
+                            {
+                              "anyOf":
+                                [
+                                  { "type": "string" },
+                                  {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["path"],
+                                    "properties":
+                                      { "path": { "type": "string" } },
+                                  },
+                                ],
+                            },
+                          "output":
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": ["description"],
+                              "properties":
+                                {
+                                  "description": { "type": "string" },
+                                  "fields":
+                                    {
+                                      "type": "array",
+                                      "items":
+                                        {
+                                          "type": "object",
+                                          "additionalProperties": false,
+                                          "required": ["name", "description"],
+                                          "properties":
+                                            {
+                                              "name": { "type": "string" },
+                                              "description":
+                                                { "type": "string" },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                          "rules":
+                            {
+                              "type": "array",
+                              "items":
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["code", "description"],
+                                  "properties":
+                                    {
+                                      "code": { "type": "string" },
+                                      "description": { "type": "string" },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+      "defaultValue":
+        {
+          "specVersion": "1.0",
+          "name": "Untitled Check",
+          "description": "Describe the scope of the check.",
+          "parameter": { "schema": { "type": "object" } },
+          "checkpoints":
+            [
+              {
+                "id": "review",
+                "title": "Review",
+                "description": "Review the supplied target.",
+                "instructions": "Read the target and report evidence.",
+                "output": { "description": "Successful output is undefined." },
+                "rules":
+                  [
+                    {
+                      "code": "target-valid",
+                      "description":
+                        "The target meets the documented requirements.",
+                    },
+                  ],
+              },
+            ],
+        },
+    },
+}

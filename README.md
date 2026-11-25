@@ -96,6 +96,8 @@ ipab --help
   App 模板与构建。
 - [React Bundle Viewer](templates/bundle-viewer)：用一个同构组件封装内容查看器，
   提供真实内容 SSR 与浏览器 hydration。
+- [Check Spec 查看器](apps/check-viewer)：查看有序检查定义，长 Instructions
+  拆成 Bundle 内的 Markdown 文件；[示例](examples/check-spec)。
 - [Bundle 工具](docs/reference.md#bundle-开发底层)：初始化、构建、检查与导入。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)

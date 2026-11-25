@@ -1,5 +1,13 @@
 # React Bundle Viewer template
 
+The generated App accepts one source: folder, named pin or CID, in that order.
+`--folder PATH` remains available to select folder mode explicitly. It provides
+automatic in-page updates and error recovery through the same viewer callback.
+The path is a local Bundle directory containing its exact `.bundle.yaml` and
+entry/resources; it is not an arbitrary document directory. Rebuild/import the
+App once after upgrading the framework/template. Content edits need no build,
+import or pin. See the [folder contract](../../packages/bundle-viewer).
+
 This is a standard **data-only Project Template Bundle**, selectable through the
 existing explicit directory/CAR/CID template interface. It is not yet an
 installed `builtin:template.*` shortcut. Init runs no code and installs nothing.

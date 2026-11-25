@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runBundleViewer } from "@ipab/bundle-viewer";
 
 vi.mock("@ipab/bundle-viewer", () => ({ runBundleViewer: vi.fn() }));
+vi.mock("../src/shared/viewer.js", () => ({ viewer: vi.fn() }));
+vi.mock("@ipab/check-spec/bundle", () => ({
+  resolveCheckInstructions: vi.fn(),
+}));
 const argv = process.argv;
 const exitCode = process.exitCode;
 afterEach(() => {
@@ -12,6 +16,28 @@ afterEach(() => {
   vi.mocked(runBundleViewer).mockReset();
 });
 describe("Check App startup", () => {
+  it("accepts explicit folder watch mode without treating the path as a CID", async () => {
+    vi.resetModules();
+    process.argv = [
+      process.execPath,
+      "app.cjs",
+      "--folder",
+      ".\\check",
+      "--no-open",
+    ];
+    vi.stubGlobal("ipab", { appCid: "app" });
+    vi.mocked(runBundleViewer).mockResolvedValue();
+    await import("../src/server/main.js");
+    await vi.waitFor(() => {
+      expect(runBundleViewer).toHaveBeenCalledTimes(1);
+    });
+    expect(runBundleViewer).toHaveBeenCalledWith(
+      expect.objectContaining({ folder: ".\\check" }),
+    );
+    expect(vi.mocked(runBundleViewer).mock.calls[0]![0]).not.toHaveProperty(
+      "contentCid",
+    );
+  });
   it("passes the content CID and bounded Markdown loader to the standard template runtime", async () => {
     vi.resetModules();
     process.argv = [process.execPath, "app.cjs", "content-cid", "--no-open"];
@@ -27,7 +53,7 @@ describe("Check App startup", () => {
     expect(runBundleViewer).toHaveBeenCalledWith(
       expect.objectContaining({
         context,
-        contentCid: "content-cid",
+        source: "content-cid",
         frontendRoot: "resources/web",
         prepareData: resolveCheckInstructions,
       }),
@@ -46,7 +72,9 @@ describe("Check App startup", () => {
         expect(process.exitCode).toBe(1);
       });
       expect(diagnostic).toHaveBeenCalledWith(
-        expect.objectContaining({ message: "Expected one Content Bundle CID" }),
+        expect.objectContaining({
+          message: "Expected one folder, pin or CID, or --folder PATH",
+        }),
       );
       expect(runBundleViewer).not.toHaveBeenCalled();
     },

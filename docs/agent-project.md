@@ -27,6 +27,16 @@ Check 类型入口 check.yaml，instructions 为正文或显式 {path} Markdown 
 其他文档保持内联。Node prepareData 完成参数 Schema／唯一性检查与有界资源加载，
 SSR／hydration 共用展开数据；浏览器使用构建期生成的静态 AJV 形状校验器，
 不启用 unsafe-eval。examples/check-spec 是显式转换示例，不自动迁移旧文档。
+Bundle Viewer 新增显式 folder 与 contentCid 互斥本地输入；
+模板／Check App 接受 --folder PATH，页面约每秒请求受限 revision/chunk 方法，
+有界重读并复核 .bundle.yaml／entry／被引用资源，不导入 Store、不全目录扫描。
+更新复用 React，错误隐藏旧视图并自动恢复；Check App 保留有效 checkpoint ID，
+删除 ID 回总览。CID 模式一次加载不变；关闭停止连接／计时／读取。
+Viewer 单参数 source 按现有目录／具名 pin／CID 顺序解析，--folder 保留消歧。
+App context.resolvePin 为有界只读 IPC 查询，复用 State 用户／builtin ready
+pins；
+不存在返回 undefined，非 ready／坏状态抛错，不使用 legacy aliases、不改 argv，
+不 fetch／pin／retain。源名称只解析一次；只有目录模式更新。
 根 build 只生成 App/source
 CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 该 Node runtime 不是沙箱，不宣称隔离不可信程序。

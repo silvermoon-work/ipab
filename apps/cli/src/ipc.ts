@@ -75,6 +75,9 @@ export class ContextServer {
     readonly output: OutputSpace,
     readonly fatal: (error: Error) => void,
     readonly appCid: string,
+    readonly resolvePin: (name: string) => string | undefined = () => {
+      throw new HostError("Pin lookup is unavailable in this context.");
+    },
   ) {
     child.on("message", this.receive);
   }
@@ -153,6 +156,11 @@ export class ContextServer {
   ): Promise<unknown> {
     signal.throwIfAborted();
     if (operation === "identity") return this.appCid;
+    if (operation === "resolvePin") {
+      if (typeof args !== "string" || !args || args.length > 256)
+        throw new HostError("Pin name must contain 1..256 characters.");
+      return this.resolvePin(args) ?? null;
+    }
     if (operation === "read") {
       if (this.reads.size + this.writes.size + this.openingReads >= 32)
         throw new HostError("Context stream capacity exceeded.");

@@ -27,6 +27,7 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
+    "multiformats": "catalog:",
     "@ipab/bundle": "workspace:*",
     "@ipab/web-app": "workspace:*"
   },

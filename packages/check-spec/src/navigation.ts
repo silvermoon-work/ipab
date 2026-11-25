@@ -9,6 +9,13 @@ export function useCheckpointNavigation(
 ) {
   const [selected, setSelected] = useState<string | null>(null);
   const hash = useRef("");
+  useEffect(() => {
+    if (
+      selected !== null &&
+      !spec.checkpoints.some(({ id }) => id === selected)
+    )
+      setSelected(null);
+  }, [spec, selected]);
   const write = (checkpoint: string | null, replace: boolean) => {
     const parameters = new URLSearchParams(hash.current.slice(1));
     if (checkpoint === null) parameters.delete("checkpoint");

@@ -161,6 +161,7 @@ export async function execute(
         stop(error);
       },
       invocation.appCid,
+      (name) => state.resolvePin(name),
     );
     const result = await new Promise<{
       code: number | null;

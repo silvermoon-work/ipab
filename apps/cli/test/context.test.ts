@@ -13,6 +13,7 @@ import { Ownership } from "../src/history.js";
 import { appSchemaCid, bytes, CHUNK_BYTES, OutputSpace } from "../src/space.js";
 import { State } from "../src/state.js";
 import { fixture, importFiles } from "./helpers.js";
+import { builtinContent } from "../src/builtins.js";
 
 class Transport extends EventEmitter {
   connected = true;
@@ -57,7 +58,7 @@ describe("bounded IPC streams on real writable Store", () => {
   let fatal: ReturnType<typeof vi.fn<(error: Error) => void>>;
   beforeEach(async () => {
     work = await fixture();
-    state = new State(work.stateDir);
+    state = new State(work.stateDir, (await builtinContent()).pins);
     owner = await Ownership.create(state, work.store, "ipc", "ipc-stage");
     output = new OutputSpace(work.store, owner, "ipc-stage");
     transport = new Transport();
@@ -69,6 +70,7 @@ describe("bounded IPC streams on real writable Store", () => {
       output,
       fatal,
       appSchemaCid.toString(),
+      (name) => state.resolvePin(name),
     );
     client = createContext(transport.port());
   });
@@ -104,6 +106,36 @@ describe("bounded IPC streams on real writable Store", () => {
     });
   }
 
+  it("resolves ready named pins through IPC without changing Store retention or legacy aliases", async () => {
+    const cid = appSchemaCid.toString();
+    state.savePin({
+      name: "check",
+      cid,
+      owner: "test-pin",
+      status: "ready",
+      metadata: { kind: "schema", typeName: "App", schemaCid: cid },
+    });
+    expect(await client.context.resolvePin("check")).toBe(cid);
+    expect(await client.context.resolvePin("absent")).toBeUndefined();
+    state.db
+      .prepare("INSERT INTO aliases(name,cid) VALUES (?,?)")
+      .run("old", cid);
+    expect(await client.context.resolvePin("old")).toBeUndefined();
+    state.savePin({
+      name: "pending",
+      cid,
+      owner: "pending-pin",
+      status: "pending",
+      metadata: null,
+    });
+    await expect(client.context.resolvePin("pending")).rejects.toThrow(
+      "pending",
+    );
+    await expect(client.context.resolvePin("")).rejects.toThrow("1..256");
+    const invalid = await raw(transport, 900, "resolvePin", 42);
+    expect(invalid.error).toContain("1..256");
+    expect(await client.context.resolvePin("builtin:node-app.v1")).toBe(cid);
+  });
   it("supports read backpressure, streamed writes and UnixFS links without Bundle validation", async () => {
     expect(() => client.context.appCid).toThrow("not initialized");
     await client.initialize();

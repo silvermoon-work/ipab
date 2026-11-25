@@ -84,6 +84,18 @@ async function start(overrides: Partial<RunBundleViewerOptions> = {}) {
 }
 
 describe("React Content Bundle server", () => {
+  it("requires exactly one explicit content source", async () => {
+    const configured = options();
+    const withoutCid = { ...configured };
+    delete withoutCid.contentCid;
+    await expect(runBundleViewer(withoutCid)).rejects.toThrow("exactly one");
+    await expect(
+      runBundleViewer({ ...configured, folder: "." }),
+    ).rejects.toThrow("exactly one");
+    await expect(
+      runBundleViewer({ ...configured, source: "." }),
+    ).rejects.toThrow("cannot be combined");
+  });
   it("prepares resource-backed data once before SSR and uses the same resolved state", async () => {
     const prepareData = vi.fn(
       async (

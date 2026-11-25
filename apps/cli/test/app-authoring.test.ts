@@ -216,13 +216,23 @@ describe("App-first authoring", () => {
       JSON.parse(await readFile(join(project, "app.json"), "utf8")),
     ).toEqual(appSchema.entry.defaultValue);
     expect(
-      (await cli(work.stateDir, ["bundle", "build", project, "--schema-only"]))
-        .code,
+      (
+        await cli(work.stateDir, [
+          "bundle",
+          "build",
+          project,
+          "--schema-only",
+          "--no-import",
+        ])
+      ).code,
     ).toBe(0);
     expect(
       (await cli(work.stateDir, ["bundle", "inspect", "builtin:node-app.v1"]))
         .code,
     ).toBe(0);
+    expect(await readdir(project)).not.toContain("node_modules");
+  });
+  it("registers the exact builtin identity offline without treating it as an executable App", async () => {
     const registered = await cli(work.stateDir, [
       "--json",
       "--store-rpc",
@@ -246,7 +256,6 @@ describe("App-first authoring", () => {
     expect(appDescription(appSchema.entry.defaultValue)).toEqual(
       appSchema.entry.defaultValue,
     );
-    expect(await readdir(project)).not.toContain("node_modules");
   });
   it("runs real strict tsc and bundles a dependency into a self-contained CAR, selecting only explicit resources", async () => {
     await initApp("hello", project);
@@ -376,7 +385,12 @@ describe("App-first authoring", () => {
       "resources/assets/unselected.txt",
     ])
       await expect(bundle.readFile(path)).rejects.toThrow();
-    const firstCar = await readFile(join(project, "dist", "app.car"));
+  }, 60_000);
+  it("executes a built App before and after renaming its independent pin", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const response = await cli(work.stateDir, ["--json", "build", project]);
+    expect(response.code, response.err).toBe(0);
     const storeConfig = join(work.root, "store.json");
     expect(work.store.pins()).toEqual([]);
     const cid = String(result(response.out).cid);
@@ -387,7 +401,7 @@ describe("App-first authoring", () => {
       storeConfig,
     );
     expect(executed.code, executed.stderr).toBe(0);
-    expect(executed.stdout.toString().trim()).toBe("Bundled dependency hello");
+    expect(executed.stdout.toString().trim()).toBe("Hello from your IPAB App.");
     expect(
       (await cli(work.stateDir, ["pin", "rename", "reader", "my-reader"])).code,
     ).toBe(0);
@@ -396,13 +410,21 @@ describe("App-first authoring", () => {
       storeConfig,
     );
     expect(again.code, again.stderr).toBe(0);
-    expect(again.stdout.toString().trim()).toBe("Bundled dependency hello");
+    expect(again.stdout.toString().trim()).toBe("Hello from your IPAB App.");
     const state = new State(work.stateDir);
     expect(state.runs().every((run) => run.appCid === cid)).toBe(true);
     state.close();
     expect(
       (await cli(work.stateDir, ["pin", "delete", "my-reader"])).code,
     ).toBe(0);
+  }, 60_000);
+  it("rebuilds deterministic CARs from cwd and preserves outputs after typecheck failure", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const response = await cli(work.stateDir, ["--json", "build", project]);
+    expect(response.code, response.err).toBe(0);
+    const firstCar = await readFile(join(project, "dist", "app.car"));
+    const storeConfig = join(work.root, "store.json");
     expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
     const defaultBuild = await promisify(execFile)(
       process.execPath,
@@ -1406,7 +1428,6 @@ setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
       `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "unexpected"); process.exit(1);`,
     );
     const runner = process.env.npm_execpath!;
-    const pnpmRoot = resolve(dirname(await filesystem.realpath(runner)), "..");
     const workspace = object(
       JSON.parse(
         await readFile(resolve("..", "..", "package.json"), "utf8"),
@@ -1429,11 +1450,17 @@ setTimeout(() => process.stderr.write(Buffer.from([0xad])), 50);
       ).rejects.toThrow("Corepack shims are not executed");
     }
     await expect(readFile(marker)).rejects.toThrow();
-    await symlink(
-      pnpmRoot,
-      join(installed, "node_modules", "pnpm"),
-      process.platform === "win32" ? "junction" : "dir",
-    );
+    if (runner.endsWith(".exe"))
+      await symlink(
+        await filesystem.realpath(runner),
+        join(installed, "pnpm.exe"),
+      );
+    else
+      await symlink(
+        resolve(dirname(await filesystem.realpath(runner)), ".."),
+        join(installed, "node_modules", "pnpm"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
     if (process.platform !== "win32")
       await symlink("/bin/sh", join(installed, "sh"));
     vi.stubEnv("PATH", [installed, dirname(process.execPath)].join(delimiter));

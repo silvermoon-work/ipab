@@ -37,6 +37,10 @@ CI 默认环境和 Node 兼容矩阵均执行。
 - 测试用共享 `vitest.config.ts`，在成员目录显式指定
   `--root . --config ../../vitest.config.ts`。
 - `pnpm test` 为单轮非 coverage 测试，`pnpm test-coverage` 执行覆盖率。
+  同一个 worktree 的 `pnpm check`／`pnpm test-coverage` 必须顺序运行；
+  Vitest 对共享 coverage 目录加锁，另一轮运行未结束时不要删除锁或报告目录。
+  需要并行验证时使用独立 worktree，或直接调用 Vitest 并明确指定独立
+  `--coverage.reportsDirectory`；这不替代提交前的根 check。
 - 全部四项全局覆盖率门槛为 90%，包含未测试源码，不使用 `passWithNoTests`
   隐藏缺失测试。
 - 既有根工具脚本及其标准接口差异保留；新增成员命令遵循

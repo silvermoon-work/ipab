@@ -155,9 +155,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     );
     const decoded = await decode(archive);
     const bundle = await openBundle(encoded.cid, decoded);
-    expect(await consume(await bundle.readFile("resources/large.bin"))).toEqual(
-      attachment,
+    const restored = await consume(
+      await bundle.readFile("resources/large.bin"),
     );
+    expect(Buffer.from(restored).equals(Buffer.from(attachment))).toBe(true);
     const root = dagPb.decode(decoded.blocks.get(decoded.root.toString())!);
     const resources = root.Links.find(
       (link) => link.Name === "resources",
@@ -313,6 +314,31 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         { ...options, limits: { [name]: 1 } },
       ),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+  });
+  it("counts repeated input bytes independently of deduplicated storage", async () => {
+    const repeated = new Uint8Array(1024).fill(1);
+    await expect(
+      encodeBundleCar(
+        memoryTree(new Map([...controls, ["a", repeated], ["b", repeated]])),
+        { limits: { bytes: 1600 } },
+      ),
+    ).rejects.toMatchObject({
+      code: "LIMIT_EXCEEDED",
+      message: "Input byte budget exceeded.",
+      path: "b",
+    });
+  });
+  it("charges directory visits as well as entries to the tree work budget", async () => {
+    await expect(
+      encodeBundleCar(
+        memoryTree(new Map([...controls, ["nested/file", text("test")]])),
+        { limits: { nodes: 4 } },
+      ),
+    ).rejects.toMatchObject({
+      code: "LIMIT_EXCEEDED",
+      message: "File tree work budget exceeded.",
+      path: "nested",
+    });
   });
   it("constructs the schema block from the definition and rejects invalid inputs", async () => {
     const encoded = await encodeBundleCar(memoryTree(controls));

@@ -428,6 +428,51 @@ describe("management contract", () => {
     ).toContain("App exit: unavailable");
   });
 
+  it("keeps navigation example-free and leaf help focused on its own operation", () => {
+    const root = help();
+    expect(root).not.toContain("Examples:");
+    expect(root).toContain("--state-dir PATH");
+    expect(root).toContain("NOT sandboxed");
+    for (const command of ["init", "build", "exec", "open"])
+      expect(root).toMatch(new RegExp(`  ${command} +\\S`));
+    const leaves = ["init", "build", "exec", "open"];
+    for (const group of ["bundle", "pin", "register", "config", "history"]) {
+      const navigation = help(group);
+      expect(navigation).not.toContain("Examples:");
+      expect(navigation).toContain(`ipab ${group} COMMAND --help`);
+      for (const row of navigation
+        .split("Commands:\n")[1]!
+        .split("\n\n")[0]!
+        .split("\n")) {
+        const command = row.trim().split(/\s+/)[0]!;
+        expect(row.trim()).toMatch(/^\S+\s+\S/);
+        leaves.push(`${group} ${command}`);
+      }
+    }
+    for (const path of leaves) {
+      const text = help(path);
+      expect(text).toContain("Usage:");
+      expect(text.split("\n").length).toBeLessThanOrEqual(36);
+      const examples = text
+        .split("Examples:\n")[1]!
+        .split("\n\n")[0]!
+        .split("\n");
+      expect(examples.length).toBeGreaterThanOrEqual(1);
+      expect(examples.length).toBeLessThanOrEqual(3);
+      for (const example of examples) {
+        expect(example.trim()).toMatch(new RegExp(`^ipab ${path}(?: |$)`));
+      }
+    }
+    expect(help("init")).not.toContain("--without-source");
+    expect(help("build")).not.toContain("--template");
+    expect(help("pin delete")).not.toContain("--kind");
+    expect(help("config get")).not.toContain("--log");
+    expect(help("history remove")).toContain(
+      "required outside an interactive terminal",
+    );
+    expect(help("build")).toContain("review private files");
+  });
+
   it("help/version never read malformed config or create state", async () => {
     const paths = [
       "",

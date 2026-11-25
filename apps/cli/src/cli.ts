@@ -69,12 +69,10 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
-  init: "init NAME [DIR] [--template TEMPLATE] [--param KEY=VALUE]...",
-  build:
-    "build [DIR] [-o FILE | --output FILE] [--replace] [--no-import] [--with-source | --without-source]",
+  init: "init NAME [DIR] [OPTIONS]",
+  build: "build [DIR] [OPTIONS]",
   "bundle init": "bundle init TYPE DIR",
-  "bundle build":
-    "bundle build SOURCE [--schema-only] [-o FILE | --output FILE] [--replace] [--no-import]",
+  "bundle build": "bundle build SOURCE [OPTIONS]",
   "bundle inspect": "bundle inspect SOURCE",
   "bundle import": "bundle import FILE.car",
   exec: "exec [--log] APP [APP_ARGS...]",
@@ -90,123 +88,339 @@ const commands: Record<string, string> = {
   "config get": "config get [KEY]",
   "config set": "config set KEY VALUE",
   "config reset": "config reset KEY",
-  "history list":
-    "history list [--app APP] [--status STATUS] [--since TIME] [--until TIME] [--limit N] [--before RUN_ID]",
+  "history list": "history list [OPTIONS]",
   "history show": "history show RUN_ID",
   "history remove":
     "history remove RUN_ID... [--yes]\n       ipab history remove FILTERS [--yes]",
 };
-export function help(path = ""): string {
-  if (!path)
-    return `IPAB — execute Apps and open content with an explicit IPFS context.
-Usage: ipab [--state-dir PATH] [--store-rpc URL] [--json] COMMAND
-Commands: init, build, bundle, exec, open, pin, register, config, history
-Examples: ipab init hello
-          ipab build hello
-          ipab pin add reader CID
-          ipab exec APP --help
-          ipab register set SCHEMA APP
-          ipab --json history list
---json returns management/development metadata, never App stdio. --version prints the version.
-All nodes accept -h/--help. Global options precede COMMAND.
-See README.md and docs/design-overview.md. Node Apps are NOT sandboxed.`;
-  const usage = commands[path];
-  if (path === "init" || path === "build")
-    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
-Examples: ipab init hello
-          ipab init hello .\\projects\\hello
-          ipab init my-web-app --template web-app
-          ipab --json build hello --replace
-          ipab build hello --without-source
-init creates a private TypeScript npm package in NAME or explicit DIR (new/empty only).
---template selects node (offline default), a Template Bundle directory, single-root CAR, exact CID or named pin.
---param KEY=VALUE is repeatable: strings are literal; number, boolean and json parameters use JSON.
-NAME supplies the required name parameter; description defaults to ''. Includes and executable hooks are unsupported.
-web-app selects the bundled Liquid Web App template and defaults to the linked private framework.
-Legacy ipab-template.json directories remain temporarily supported.
-Local templates are data-only, explicitly selected, and never installed or executed by init.
-Install the generated package's dependencies explicitly; use a locally linked ipab.
-build defaults to the current project: strict local tsc, bundled Node CommonJS, App CAR.
-ipab.yaml can explicitly select ipab-prebuild: strict checks, project script, then artifact assembly.
-The hook receives IPAB_BUILD_DIR; it must not invoke ipab build recursively.
-Hook mode executes trusted project code, never installs dependencies, and skips extra script lifecycle hooks.
-ipab.yaml selects src/main.ts, explicit assets/ resources and schemas/ JSON definitions.
-The commented init template teaches icon placement, name/description i18n and metadata.
-Legacy ipab.json is accepted only when ipab.yaml is absent; keep exactly one config.
-supportedSchemas controls exact type support for open, not argv or direct exec.
-Default output is dist/app.car.
-Source snapshots default on; build.includeSource in ipab.yaml changes the project default.
---with-source / --without-source override it and are mutually exclusive.
-The separate <output-name>.source.car follows project-local nested .gitignore rules.
-Source may contain private files not ignored by the project; review ignore rules before distribution.
-App metadata records only source.cid: no embedded source CAR/blocks, fetching or retention.
-Only the App CAR is imported; import and pin the source independently if needed.
---output FILE selects a .car destination; --replace replaces only a regular artifact.
-build imports the result into the configured Store without pinning; --no-import emits only CAR.
-Store failures fail the command but preserve the CAR; retry with bundle import FILE.car.
-No App execution or pins. --json emits result metadata, including imported for builds.
-Global flags precede COMMAND. Use -h/--help for help.`;
-  if (usage && path.startsWith("bundle ")) {
-    if (path === "bundle import")
-      return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
-Example: ipab bundle import hello\\dist\\app.car
-Validates a self-contained single-root Bundle or type CAR before writing to the configured Store.
-Uses the default local Store or explicit Kubo RPC; no daemon is started.
-Writes original blocks without pinning or retaining; repeated imports are safe.
-Does not execute Apps or change named pins/register. Unpinned blocks may be garbage-collected externally.
---json emits kind, cid, schemaCid, source, blocks and bytes; progress goes to stderr.
-Global flags precede COMMAND. Use -h/--help for help.`;
-    const examples =
-      path === "bundle init"
-        ? "ipab bundle init types\\dist\\schema.car note"
-        : path === "bundle build"
-          ? "ipab bundle build note\n         ipab bundle build types\\.bundle.yaml --schema-only"
-          : "ipab bundle inspect note\\dist\\bundle.car";
-    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
-Example: ${examples}
-Global flags precede COMMAND: --state-dir PATH, --store-rpc URL, --json.
-TYPE is a complete definition file, type CAR, exact type CID or builtin:node-app.v1; local sources need no Store.
-build --schema-only validates defaults and emits dist/schema.car; full build emits dist/bundle.car.
-build imports the result into the configured Store without pinning; --no-import emits only CAR.
---output FILE overrides the destination; --replace authorizes replacing an artifact, never source.
-init writes .bundle.yaml, .bundle-ignore (/dist/) and the default entry into a new/empty directory.
-inspect reads a folder, definition, CAR or CID; no App execution, uploads, imports or pins.
-Use -h/--help for help.`;
+const groups: Record<string, string> = {
+  bundle: "Create, inspect and import content bundles",
+  pin: "Retain content and manage short names",
+  register: "Associate content types with Apps",
+  config: "Manage local configuration",
+  history: "View and remove execution history",
+};
+const commandHelp: Record<
+  string,
+  {
+    summary: string;
+    examples: string[];
+    arguments?: string[];
+    options?: string[];
+    notes?: string[];
   }
-  if (usage && path.startsWith("pin "))
-    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
-Examples: ipab pin add reader APP_CID
-          ipab pin list --kind bundle --type builtin:node-app.v1
-          ipab pin rename reader my-reader
-Global flags precede COMMAND: --state-dir PATH, --store-rpc URL, --json.
-add requires an unused short name and an exact CID; verifies the full DAG and retains it in the configured Store.
-Pinning does not execute or trust an App, install dependencies, or start a daemon.
-delete releases only this pin's ownership on its original backend; no block deletion or GC.
-rename changes only the name, not the CID, type metadata, registration, history or ownership.
-list/show read user registrations and packaged built-in pins, not live node status.
-Built-in Schema/template pins are read-only: they cannot be added, deleted or renamed.
-Their content comes from the IPAB installation, without a user Store retention claim.
-list reports unfinished user operations separately.
---kind accepts bundle or schema; ordinary content remains visible without a kind filter.
---type matches exact schema CID (or Schema pin name/builtin shortcut); filters combine with AND.
-User Alias commands are replaced; legacy metadata is preserved but requires explicit verified pin add.
-Use -h/--help for help.`;
-  if (usage)
-    return `Usage: ipab [GLOBAL_OPTIONS] ${usage}
-Example: ipab ${path === "exec" ? "exec APP --cid CID" : path === "open" ? "open CONTENT" : usage}
-Use -h/--help for help. Global flags: --state-dir PATH, --store-rpc URL, --json (metadata only).
-exec: everything after APP is verbatim argv; --log must precede APP.
-exec/open --log records raw stdout/stderr alongside terminal output; requires history.enabled=true.
-stdin is inherited and never logged. With --log stdout/stderr are pipes, not a TTY.
-history show links existing logs; history remove deletes the record's logs (no Store GC).
-history filters: AND, endedAt in [since,until), RFC3339 with timezone.
-register set/remove SCHEMA accepts builtin:node-app.v1 offline and stores its exact type CID.
-history remove: explicit IDs OR filters; non-TTY requires --yes; no GC guarantee.`;
+> = {
+  init: {
+    summary: "Create a private TypeScript App project",
+    arguments: ["NAME  Project name; DIR defaults to NAME (new/empty only)."],
+    options: [
+      "--template TEMPLATE  node (default), web-app, directory, CAR, CID or pin.",
+      "--param KEY=VALUE    Template parameter; repeatable. Strings are literal;",
+      "                     other parameter types use JSON.",
+    ],
+    examples: [
+      "ipab init hello",
+      "ipab init dashboard --template web-app",
+      "ipab init hello --param description=Demo",
+    ],
+    notes: ["Does not install dependencies or execute template code."],
+  },
+  build: {
+    summary: "Build an App CAR from a project",
+    arguments: ["DIR  Project directory (default: current directory)."],
+    options: [
+      "-o, --output FILE  Destination (default: dist/app.car).",
+      "--replace         Allow replacing existing regular artifacts.",
+      "--no-import       Write CAR files without importing the App into Store.",
+      "--with-source     Include a separate source CAR (default: enabled).",
+      "--without-source  Omit source CAR; conflicts with --with-source.",
+    ],
+    examples: ["ipab build", "ipab build hello --replace --without-source"],
+    notes: [
+      "Uses local tsc and bundles Node CommonJS; ipab.yaml configures the build.",
+      "Explicit ipab-prebuild strategy executes trusted project code.",
+      "Source follows project .gitignore rules; review private files before sharing.",
+      "Imports only the App, without pinning; source needs separate import/retention.",
+      "Store failures preserve the CAR; retry with ipab bundle import FILE.car.",
+    ],
+  },
+  "bundle init": {
+    summary: "Create content from a Bundle type",
+    arguments: [
+      "TYPE  Definition file, type CAR, exact type CID or Schema pin.",
+      "DIR   New or empty destination directory.",
+    ],
+    examples: ["ipab bundle init types\\dist\\schema.car note"],
+    notes: ["Writes .bundle.yaml, .bundle-ignore and the default entry."],
+  },
+  "bundle build": {
+    summary: "Build a content or type CAR without compiling code",
+    arguments: ["SOURCE  Bundle directory or definition file."],
+    options: [
+      "--schema-only     Emit only the type CAR (default: dist/schema.car).",
+      "-o, --output FILE  Destination (full build default: dist/bundle.car).",
+      "--replace         Allow replacing an existing regular artifact.",
+      "--no-import       Write the CAR without importing it into Store.",
+    ],
+    examples: [
+      "ipab bundle build note",
+      "ipab bundle build types\\.bundle.yaml --schema-only",
+    ],
+    notes: [
+      "Imports into the configured Store without pinning or executing Apps.",
+      "Store failures preserve the CAR; retry with ipab bundle import FILE.car.",
+    ],
+  },
+  "bundle inspect": {
+    summary: "Inspect a Bundle or type definition",
+    arguments: ["SOURCE  Directory, definition file, CAR, CID or named pin."],
+    examples: ["ipab bundle inspect note\\dist\\bundle.car"],
+    notes: ["Does not execute Apps, import content or create pins."],
+  },
+  "bundle import": {
+    summary: "Validate and import a CAR into the configured Store",
+    arguments: ["FILE.car  Self-contained single-root Bundle or type CAR."],
+    examples: ["ipab bundle import hello\\dist\\app.car"],
+    notes: [
+      "Repeated imports are safe; no App execution or daemon startup.",
+      "Does not pin or retain content. Use pin add for persistent retention.",
+    ],
+  },
+  exec: {
+    summary: "Run an App by CID or named pin",
+    arguments: [
+      "APP_ARGS  Everything after APP is passed verbatim, including --help.",
+    ],
+    options: [
+      "--log  Record stdout/stderr; must precede APP. Requires history enabled.",
+    ],
+    examples: [
+      "ipab exec reader",
+      "ipab exec reader --help",
+      "ipab exec --log reader",
+    ],
+    notes: [
+      "Apps are NOT sandboxed; run only Apps you trust.",
+      "History stores argv by default; do not put secrets in arguments.",
+      "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
+      "--json is not supported; App stdio is passed through.",
+    ],
+  },
+  open: {
+    summary: "Open content with its registered App",
+    arguments: ["CONTENT  Bundle CID or named pin."],
+    options: ["--log  Record stdout/stderr; requires history enabled."],
+    examples: ["ipab open CONTENT_CID", "ipab open --log my-note"],
+    notes: [
+      "Requires a saved registration and App support for the exact content type.",
+      "Apps are NOT sandboxed; run only Apps you trust.",
+      "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
+      "--json is not supported; App stdio is passed through.",
+    ],
+  },
+  "pin add": {
+    summary: "Verify, retain and name content",
+    arguments: [
+      "NAME  Unused short name.",
+      "CID   Exact content CID, not another pin name.",
+    ],
+    examples: ["ipab pin add reader APP_CID"],
+    notes: [
+      "Verifies the full DAG and retains it in the configured Store.",
+      "Does not execute or trust Apps, install dependencies or start a daemon.",
+      "The builtin namespace is read-only.",
+    ],
+  },
+  "pin delete": {
+    summary: "Remove a user pin and release its retention",
+    examples: ["ipab pin delete reader"],
+    notes: [
+      "Releases only this pin's ownership on its original backend; no block deletion or GC.",
+      "Does not change registrations or history. Built-in pins are read-only.",
+    ],
+  },
+  "pin list": {
+    summary: "List user and built-in pins",
+    options: [
+      "--kind bundle|schema  Filter by kind; omit to include ordinary content.",
+      "--type TYPE           Exact schema CID, Schema pin or builtin shortcut.",
+    ],
+    examples: [
+      "ipab pin list",
+      "ipab pin list --kind bundle --type builtin:node-app.v1",
+    ],
+    notes: [
+      "Filters combine with AND. Unfinished user operations are reported separately.",
+      "Reads local registrations and packaged built-ins, not live node status.",
+    ],
+  },
+  "pin show": {
+    summary: "Show a pin's CID and type metadata",
+    examples: ["ipab pin show reader", "ipab pin show builtin:template.node"],
+    notes: [
+      "Reads local metadata; built-in pins do not claim user Store retention.",
+    ],
+  },
+  "pin rename": {
+    summary: "Rename a user pin without changing its content",
+    examples: ["ipab pin rename reader my-reader"],
+    notes: [
+      "NEW_NAME must be unused. Built-in pins are read-only.",
+      "CID, ownership, registrations and history are unchanged.",
+    ],
+  },
+  "register list": {
+    summary: "List saved content-type associations",
+    examples: ["ipab register list"],
+  },
+  "register set": {
+    summary: "Associate a content type with an App",
+    arguments: [
+      "SCHEMA    Exact type CID or builtin:node-app.v1.",
+      "APP       App CID or named pin; the exact CID is saved.",
+      "TEMPLATE  App argv after --; must contain a whole argument % (default: %).",
+    ],
+    options: ["--replace  Allow changing an existing association."],
+    examples: [
+      "ipab register set SCHEMA_CID reader",
+      "ipab register set SCHEMA_CID reader '--' '--cid' '%'",
+    ],
+    notes: [
+      "Replaces only the whole % argument with the content CID; no shell expansion.",
+      "Does not verify App type support; open checks it before execution.",
+    ],
+  },
+  "register remove": {
+    summary: "Remove a saved content-type association",
+    arguments: ["SCHEMA  Exact type CID or builtin:node-app.v1."],
+    examples: ["ipab register remove SCHEMA_CID"],
+    notes: ["Does not remove Apps, pins or content."],
+  },
+  "config get": {
+    summary: "Show effective configuration",
+    arguments: ["KEY  Optional configuration key; omit to show all values."],
+    examples: ["ipab config get", "ipab config get store.rpc"],
+  },
+  "config set": {
+    summary: "Save a local configuration value",
+    examples: [
+      "ipab config set store.rpc http://127.0.0.1:5001",
+      "ipab config set history.enabled false",
+    ],
+    notes: [
+      "store.rpc is a Kubo RPC API URL, not a gateway; no daemon is started.",
+    ],
+  },
+  "config reset": {
+    summary: "Remove a saved configuration override",
+    examples: ["ipab config reset store.rpc"],
+  },
+  "history list": {
+    summary: "List execution history",
+    options: [
+      "--app APP       Filter by App CID or named pin.",
+      "--status STATUS succeeded, failed or cancelled.",
+      "--since TIME    Include runs ended at or after TIME.",
+      "--until TIME    Include runs ended before TIME.",
+      "--limit N       Maximum number of records.",
+      "--before RUN_ID Continue before a previous record.",
+    ],
+    examples: [
+      "ipab history list",
+      "ipab history list --status failed --limit 10",
+    ],
+    notes: [
+      "Filters combine with AND; times use RFC3339 with an explicit timezone.",
+    ],
+  },
+  "history show": {
+    summary: "Show an execution record and available log paths",
+    examples: ["ipab history show RUN_ID"],
+    notes: ["Only runs started with --log have recorded stdout/stderr."],
+  },
+  "history remove": {
+    summary: "Remove execution records and their logs",
+    options: [
+      "--app APP       Filter by App CID or named pin.",
+      "--status STATUS succeeded, failed or cancelled.",
+      "--since TIME    Include runs ended at or after TIME.",
+      "--until TIME    Include runs ended before TIME.",
+      "--yes           Skip confirmation; required outside an interactive terminal.",
+    ],
+    examples: [
+      "ipab history remove RUN_ID --yes",
+      "ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes",
+    ],
+    notes: [
+      "Use explicit IDs OR at least one filter, not both.",
+      "Filters combine with AND; times use RFC3339 with an explicit timezone.",
+      "Deletes associated logs and releases history retention; does not request Store GC.",
+    ],
+  },
+};
+
+export function help(path = ""): string {
+  const globalOptions = `Global options (before COMMAND):
+  --state-dir PATH  Set the local state directory
+  --store-rpc URL   Use a Kubo RPC endpoint
+  --json            Output management/development metadata, not App stdio`;
+  const footer =
+    "Full reference: https://github.com/silvermoon-work/ipab/blob/main/docs/reference.md";
+  if (!path)
+    return `IPAB — run Apps and open content by CID.
+
+Usage: ipab [GLOBAL_OPTIONS] COMMAND
+
+Run Apps:
+  exec      ${commandHelp.exec!.summary}
+  open      ${commandHelp.open!.summary}
+
+Create:
+  init      ${commandHelp.init!.summary}
+  build     ${commandHelp.build!.summary}
+  bundle    ${groups.bundle}
+
+Manage:
+  pin       ${groups.pin}
+  register  ${groups.register}
+  config    ${groups.config}
+  history   ${groups.history}
+
+${globalOptions}
+  -h, --help        Show help for the current command
+  --version         Show version
+
+Run 'ipab COMMAND --help' for command details.
+Apps are NOT sandboxed; run only Apps you trust.
+${footer}`;
+  const usage = commands[path];
+  if (usage) {
+    const topic = commandHelp[path]!;
+    const section = (title: string, lines: string[]) =>
+      `\n\n${title}:\n${lines.map((line) => `  ${line}`).join("\n")}`;
+    return [
+      `${topic.summary}.\n\nUsage: ipab [GLOBAL_OPTIONS] ${usage}`,
+      ...(topic.arguments ? [section("Arguments", topic.arguments)] : []),
+      ...(topic.options ? [section("Options", topic.options)] : []),
+      section("Examples", topic.examples),
+      ...(topic.notes ? [section("Notes", topic.notes)] : []),
+      `\n\n-h, --help shows this help. Global options: see 'ipab --help'.\n${footer}`,
+    ].join("");
+  }
   const leaves = Object.keys(commands).filter((key) =>
     key.startsWith(`${path} `),
   );
   if (!leaves.length) syntax(`Unknown command "${path}".`);
-  return `Usage: ipab [GLOBAL_OPTIONS] ${path} COMMAND\nCommands: ${leaves.map((key) => key.slice(path.length + 1)).join(", ")}\nRun ipab ${leaves[0]} --help.`;
+  return `${groups[path]}.
+
+Usage: ipab [GLOBAL_OPTIONS] ${path} COMMAND
+
+Commands:
+${leaves.map((key) => `  ${key.slice(path.length + 1).padEnd(8)}${commandHelp[key]!.summary}`).join("\n")}
+
+Run 'ipab ${path} COMMAND --help' for command details.
+Global options: see 'ipab --help'.
+${footer}`;
 }
 function printable(text: string): string {
   return [...text]

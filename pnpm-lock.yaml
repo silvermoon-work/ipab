@@ -146,6 +146,9 @@ importers:
       '@ipab/web-app':
         specifier: workspace:*
         version: link:packages/web-app
+      '@silvermoon-work/devtool.publish-gate':
+        specifier: 0.2.0-rc.0
+        version: 0.2.0-rc.0
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6
@@ -1096,6 +1099,11 @@ packages:
   '@rolldown/pluginutils@1.1.1':
     resolution: {integrity: sha512-glFIJDvLNDtJhT9qrMFWLPbvS+skxgt4L0K8Ei2YtnhPysAJnsI7nyxSJxKj4ADeKX0OLjC4ntRkwpLOoS3rwA==}
 
+  '@silvermoon-work/devtool.publish-gate@0.2.0-rc.0':
+    resolution: {integrity: sha512-EEbRLWPvcIAsgkBphX7Vy0t+WIyVvLSQYPas3J3mOjmc7BH/LMCxv6nV+Ct4SAQ1BGvUeaeYZ72TReibD59XRA==}
+    engines: {node: '>=22.15.0'}
+    hasBin: true
+
   '@silvermoon-work/ipfs-access@0.1.0':
     resolution: {integrity: sha512-Wrwo2z7Fr2rAql238VHBtQDyxlZ4GZjKQKGZSw11V+W5QkUylbaltg8PpnyjE2CM6ZmNyJ2bUANj99l8tfcIOw==}
     engines: {node: '>=22.13.0'}
@@ -1408,6 +1416,10 @@ packages:
   commander@10.0.1:
     resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
     engines: {node: '>=14'}
+
+  commander@15.1.0:
+    resolution: {integrity: sha512-cgnQ88TRrWcC7pVq46RzJVRMktu3W2RcbnoidnfBsl1bmDCBwJS/udcIZpKoCrbAYYaCqsz1yZCVIgbIaU3ddQ==}
+    engines: {node: '>=22.12.0'}
 
   convert-hrtime@5.0.0:
     resolution: {integrity: sha512-lOETlkIeYSJWcbbcvjRKGxVMXJR+8+OQb/mTPbA4ObPMytYIsUbuOE0Jzy60hjARYszq1id0j8KgVhC+WGZVTg==}
@@ -3463,6 +3475,12 @@ snapshots:
 
   '@rolldown/pluginutils@1.1.1': {}
 
+  '@silvermoon-work/devtool.publish-gate@0.2.0-rc.0':
+    dependencies:
+      commander: 15.1.0
+      semver: 7.8.6
+      yaml: 2.9.1
+
   '@silvermoon-work/ipfs-access@0.1.0':
     dependencies:
       multiformats: 14.0.5
@@ -3805,6 +3823,8 @@ snapshots:
   comma-separated-tokens@2.0.3: {}
 
   commander@10.0.1: {}
+
+  commander@15.1.0: {}
 
   convert-hrtime@5.0.0: {}
 

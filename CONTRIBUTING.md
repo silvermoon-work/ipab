@@ -166,8 +166,9 @@ Trusted Publisher 的约定为 `silvermoon-work/ipab`、
 在 GitHub 配置 `npm` environment 的保护规则和所需审批，不放 npm token。
 只使用 GitHub-hosted runner 和 npm >=11.5.1 的 OIDC Trusted Publishing。
 
-发布 tag 为 `@ipab/<包名>@<准确版本>`，与每个 `deliverable.yaml` 的
-`tagPrefix` 一一对应。一个 tag 只发布一个包；创建并推送 tag 是对准确包、
+每个实际发布包的 `deliverable.yaml` 仅声明 `type: npm`，包名和版本由同目录
+`package.json` 读取。发布 tag 为 `@ipab/<包名>@<准确版本>`，
+由准确包名派生，不另配 tagPrefix。一个 tag 只发布一个包；创建并推送 tag 是对准确包、
 版本和提交的显式授权。不得自动创建、移动或批量推送 release tag。
 手动 dispatch 只能从 main 选择自身准确 SHA、包名和版本，始终 `--dry-run`；
 它仍须满足相同的远程证据与依赖可用性门禁。
@@ -181,13 +182,53 @@ Trusted Publisher 的约定为 `silvermoon-work/ipab`、
 不会用 release-local 重跑全量 CI 替代已有证据。
 冻结安装后只构建并 lint 所选包及其构建依赖，使用 pnpm pack 解析
 workspace/catalog，再核对 tarball 中的准确 public 包身份及 runtime/peer 依赖。
+最终发布使用 native pnpm 在选中包目录执行 `publish --no-git-checks`，
+不是发布 tarball：tarball 只用于检查，目录发布确保 `prepublishOnly` 实际执行。
+关闭 pnpm 的通用分支检查不关闭本仓库及共享门禁的准确 SHA/main ancestry 校验。
 目标版本已存在、RC 不从 rc.0 连续增长、依赖不存在或 registry/API 失败均阻止发布。
 Registry 包不存在或 HTTP 错误不是版本缺失的证明。
 稳定 `x.y.z` 用 `latest`，`x.y.z-rc.n` 用 `rc`，不支持其他 prerelease；
 不会递归发布依赖、上传远端制品或修改已有 dist-tag。
 
-发布 workflow 不覆盖 registry；GitHub-hosted runner 使用自己的 npm 默认配置，
-本机检查尊重本机 NRM registry。源码与 declaration/source maps 一起交付，
+发布包的 `publishConfig.registry` 明确为官方 npm，以满足共享门禁的发布契约；
+GitHub-hosted runner 的有效 registry 也必须与之相符，不通过 `--registry`
+临时覆盖。
+该字段只约束发布，不改变本机 NRM registry、安装或元数据查询的 Tencent 配置。
+源码与 declaration/source maps 一起交付，
 测试、开发脚本、coverage、配置和依赖目录不进入包。
+
+### 共享发布门禁试用
+
+根开发依赖固定已发布的
+`@silvermoon-work/devtool.publish-gate@0.2.0-rc.0`，不用 `rc` alias 或同仓候选。
+所有实际发布包准确声明：
+
+```json
+{
+  "scripts": {
+    "prepublishOnly": "publish-gate check --workflow ci.yaml --workflow release-validation.yaml"
+  }
+}
+```
+
+发布编排只接受这个完整命令，不做任意前缀放行。重复 `--workflow` 是 AND：
+共享门禁检查同仓库、同完整 SHA 的最新 workflow run/当前 attempt 整体
+`completed/success`，按文件路径和 API workflow ID 确认身份，并拒绝验证期间
+新增 run/rerun/重建及 API/分页失败。显式模式不限制 event/branch，
+不检查内部 job/矩阵/step；本仓库仍保留额外的 main-push、main dispatch、
+全部 required jobs/矩阵/汇总检查，不以共享整体检查替代这些约束。
+
+标准 `PNPM_CONFIG_REGISTRY/ACCESS/TAG/PROVENANCE/DRY_RUN` 环境配置传入生命周期，
+registry 值来自当前有效配置，且须与发布专用官方 npm 声明一致，provenance 固定 true，
+手动 dispatch 的 dry-run 固定 true，只有显式 tag 授权才是 false。
+`PACKAGE_INPUT` 传准确包名，Actions token 以 `GITHUB_TOKEN` 提供；
+不保存 npm token，不使用 `--ignore-scripts`，也不自动运行/重跑证据 workflow。
+本地测试以 native pnpm 临时目录 dry-run 验证安装后的门禁拒绝非 Actions 上下文，
+不假装本地通过了完整远端发布授权。
+
+安装该明确选定的新 RC 时，pnpm 为准确
+`@silvermoon-work/devtool.publish-gate@0.2.0-rc.0` 添加了 release-age 例外；
+它只允许试用此已发布版本，不关闭全局 supply-chain 策略。
+IPAB 发布仍须另行授权，不因接入或门禁检查成功自动发布。
 
 代理先读 [AGENTS.md](AGENTS.md) 和 [项目指导](docs/agent-project.md)。

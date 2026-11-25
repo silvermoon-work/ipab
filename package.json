@@ -38,6 +38,7 @@
     "verify-ci": "node scripts/verify-ci.mjs"
   },
   "devDependencies": {
+    "@silvermoon-work/devtool.publish-gate": "0.2.0-rc.0",
     "@ipab/bundle-viewer": "workspace:*",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

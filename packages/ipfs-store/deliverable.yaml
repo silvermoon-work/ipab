@@ -1,3 +1,1 @@
-package: "@ipab/ipfs-store"
-tagPrefix: "@ipab/ipfs-store@"
-access: public
+type: npm

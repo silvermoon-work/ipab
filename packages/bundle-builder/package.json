@@ -19,6 +19,7 @@
     "url": "https://github.com/silvermoon-work/ipab/issues"
   },
   "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
   "engines": {
@@ -36,6 +37,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
+    "prepublishOnly": "publish-gate check --workflow ci.yaml --workflow release-validation.yaml",
     "build": "node scripts/build.mjs",
     "lint-package": "node scripts/lint-package.mjs",
     "typecheck": "node scripts/typecheck.mjs",

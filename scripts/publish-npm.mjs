@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   deliverables,
+  nativePublication,
   registryPackage,
   releaseVersion,
   repository,
@@ -119,12 +120,12 @@ const distTag = releaseVersion(
 const pnpm = process.env.npm_execpath;
 if (!pnpm || !/[/\\]pnpm(?:\.[cm]?js|\.exe)?$/.test(pnpm))
   throw new Error("Run this gate with pnpm publish-npm.");
-function runPnpm(args, cwd = root) {
+function runPnpm(args, cwd = root, env = process.env) {
   const native = pnpm.endsWith(".exe");
   command(
     native ? pnpm : process.execPath,
     [...(native ? [] : [pnpm]), ...args],
-    { cwd, stdio: "inherit" },
+    { cwd, env, stdio: "inherit" },
   );
 }
 runPnpm([
@@ -158,19 +159,15 @@ try {
   console.log(
     `${target.dryRun ? "Dry run" : "Publishing"}: ${packed.name}@${packed.version} (${sha}, dist-tag ${distTag})`,
   );
-  command(
-    "npm",
-    [
-      "publish",
-      archive,
-      "--access",
-      "public",
-      "--tag",
-      distTag,
-      ...(target.dryRun ? ["--dry-run"] : ["--provenance"]),
-    ],
-    { stdio: "inherit" },
-  );
+  const publication = nativePublication(target.pkg, {
+    channel: distTag,
+    dryRun: target.dryRun,
+    registry,
+  });
+  runPnpm(publication.args, target.directory, {
+    ...process.env,
+    ...publication.env,
+  });
 } finally {
   await rm(work, { recursive: true, force: true });
 }

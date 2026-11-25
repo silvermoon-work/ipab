@@ -57,6 +57,7 @@ jobs:
       - name: Verify exact release evidence and publish selected package
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           TARGET_PACKAGE: ${{ inputs.package }}
           TARGET_VERSION: ${{ inputs.version }}
           TARGET_SHA: ${{ inputs.sha || github.sha }}

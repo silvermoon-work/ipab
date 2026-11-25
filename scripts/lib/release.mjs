@@ -4,6 +4,8 @@ import { parseDocument } from "yaml";
 import semver from "semver";
 
 export const repository = "silvermoon-work/ipab";
+export const publishLifecycle =
+  "publish-gate check --workflow ci.yaml --workflow release-validation.yaml";
 export const fullJobs = [
   "Exact-SHA daily CI evidence",
   "Full release / default",
@@ -32,19 +34,53 @@ export async function deliverables(root) {
       const delivery = doc.toJS();
       if (
         !delivery ||
-        Object.keys(delivery).sort().join(",") !== "access,package,tagPrefix" ||
-        delivery.package !== pkg.name ||
-        delivery.tagPrefix !== `${pkg.name}@` ||
-        delivery.access !== "public" ||
+        Object.keys(delivery).join(",") !== "type" ||
+        delivery.type !== "npm" ||
+        pkg.publishConfig?.registry !== "https://registry.npmjs.org/" ||
         pkg.publishConfig?.access !== "public"
       )
         throw new Error(`Invalid delivery declaration: ${directory}`);
       if (result.some((item) => item.pkg.name === pkg.name))
         throw new Error(`Duplicate package/tag mapping: ${pkg.name}`);
-      result.push({ directory, pkg, delivery });
+      requirePublishLifecycle(pkg);
+      result.push({
+        directory,
+        pkg,
+        delivery: { type: "npm", tagPrefix: `${pkg.name}@` },
+      });
     }
   }
   return result;
+}
+
+export function requirePublishLifecycle(pkg) {
+  if (pkg.scripts?.prepublishOnly !== publishLifecycle)
+    throw new Error(
+      `Package ${pkg.name} must use the exact dual-workflow prepublishOnly gate.`,
+    );
+}
+
+export function nativePublication(pkg, { channel, dryRun, registry }) {
+  requirePublishLifecycle(pkg);
+  if (
+    !["rc", "latest"].includes(channel) ||
+    typeof dryRun !== "boolean" ||
+    registry !== "https://registry.npmjs.org/" ||
+    pkg.publishConfig?.registry !== registry ||
+    pkg.publishConfig?.access !== "public"
+  )
+    throw new Error("Invalid native pnpm publication options.");
+  return {
+    args: ["publish", "--no-git-checks"],
+    env: {
+      PACKAGE_INPUT: pkg.name,
+      PNPM_CONFIG_REGISTRY: registry,
+      PNPM_CONFIG_ACCESS: "public",
+      PNPM_CONFIG_TAG: channel,
+      PNPM_CONFIG_PROVENANCE: "true",
+      PNPM_CONFIG_DRY_RUN: String(dryRun),
+    },
+  };
 }
 
 export function releaseVersion(version, versions = {}) {

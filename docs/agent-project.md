@@ -222,8 +222,17 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 日常 CI verification (v2) 与旧 Release verification (v1) 不是完整发布证据。
 Trusted Publisher 使用 publish-npm.yaml 和 environment npm，允许直接 npm
 publish。
-每包 tagPrefix 为准确 @ipab/<包名>@，tag 后缀必须等于该包准确版本；
+每包 deliverable.yaml 只声明 type:npm，tag 为准确 @ipab/<包名>@<版本>，
+从同目录 package.json 派生，tag 后缀必须等于该包准确版本；
 main dispatch 只 dry-run，准确 SHA 日常及完整远程证据缺失时阻止。
 RC 从 rc.0 连续增长，用 rc dist-tag；稳定版用 latest。发布前核对目标版本缺失、
 全部 runtime/peer 依赖已存在，registry 失败不代表缺失。
 不复制原仓库的版本／SHA 授权，不自动发布、推 tag、修改已有 dist-tag 或上传远端产物。
+根固定已发布 devtool.publish-gate 0.2.0-rc.0，五个实际发布包的 prepublishOnly
+准确为 publish-gate check --workflow ci.yaml --workflow
+release-validation.yaml。
+重复 workflow 的整体成功检查由共享门禁提供；IPAB 仍保留更严格的
+main-push/main dispatch、完整矩阵与汇总检查。使用 native pnpm 目录发布执行
+真实生命周期，tarball 仅用于预检，不能用 tarball publish 绕过钩子。
+PNPM_CONFIG_* 传递 public/channel/provenance/dry-run 及当前有效 registry，
+main dispatch 始终 dry-run，不自动运行证据 workflow，不授权 IPAB 发版。

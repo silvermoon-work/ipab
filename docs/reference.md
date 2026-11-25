@@ -724,16 +724,21 @@ RFC3339，最多三位小数秒，按 endedAt 的 `[since,until)` 匹配；更�
 下一游标是本页最后 ID。`show RUN_ID` 成功读取失败记录也退出 0。
 这些查询不要求在线 Store。
 
-`history list` 的 RUN ID 显示至少 8 字符的唯一前缀；有冲突时自动加长，
-唯一性检查覆盖全部历史，不仅是当前页。`history show/remove` 和 `--before`
+`history list` 显示完整 RUN ID；翻页提示使用至少 8 字符的唯一前缀，
+有冲突时自动加长，唯一性检查覆盖全部历史，不仅是当前页。`history show/remove` 和
+`--before`
 接受完整 ID 或至少 8 字符的唯一前缀，精确 ID 优先，歧义明确报错；
 删除在确认前解析并固定完整目标 ID。持久 ID、JSON 和详情中的 ID 不变。
-ENDED 在不足一小时显示分钟（如 `10m`，不足一分钟为 `0m`），
+Ended 标签显示完整结束时间，并附加相对时间提示：不足一小时显示分钟（如
+`10m`，不足一分钟为 `0m`），
 不足一天显示小时（如 `5h`），满一天显示 UTC 日期（`YYYY-MM-DD`）；
 未来时间也显示日期。完整时间继续保存在 JSON 和详情中，筛选和排序不变。
 
-人类可读的 list 使用类似 git log 的逐条记录布局：首行显示 Run ID、状态、
-结束时间，后续行显示完整 App CID、Output CID 和 argv，不截断。
+人类可读的 list 使用类似 git log 的逐条记录布局：首行显示完整 Run ID，
+后续行以 Status、Started、Ended、Duration 标签显示状态、完整起止时间与耗时，
+再显示完整 App CID、Output CID 和 argv，不截断。
+Duration 为 endedAt - startedAt 的经过秒数，保留毫秒精度，不表示 CPU 占用时间；
+非法时间或结束早于开始时明确报错。JSON 字段保持不变。
 匹配的可用 pin 短名只附加在 CID 后；多个 pin 时取按名称排序的第一个。
 无输出显示 `none`；argv 使用 `join(' ')`，无参数显示为空，控制字符转义。
 窄终端自然换行，不为保持一行压缩信息。

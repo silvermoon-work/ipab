@@ -515,7 +515,19 @@ export async function buildApp(
       if (++resourceCount > 4096)
         throw new HostError("App resource file count exceeds 4096.");
       relativePath(path);
-      if (path.split("/").some((part) => part.startsWith(".")))
+      if (
+        path
+          .split("/")
+          .some(
+            (part, index, parts) =>
+              part.startsWith(".") &&
+              !(
+                part === ".bundle.yaml" &&
+                index === parts.length - 1 &&
+                index > 0
+              ),
+          )
+      )
         throw new HostError("Hidden prebuilt resources are not supported.");
       const bytes = await readBytes(inputTree, path, 16 * 1024 * 1024, options);
       const target = join(bundleStage, "resources", ...path.split("/"));

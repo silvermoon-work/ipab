@@ -1,6 +1,8 @@
 import type { CheckBundleSpec } from "./spec.js";
 import { validateCheckBundleSpec } from "./node-spec.js";
 export { validateCheckBundleSpec } from "./node-spec.js";
+export { checkSpecDefinition } from "./definition.js";
+export type { CheckBundleSpec } from "./spec.js";
 
 export interface MarkdownReference {
   path: string;

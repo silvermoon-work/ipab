@@ -10,9 +10,11 @@ import { encodeSchema, parseBundleManifest } from "@ipab/bundle";
 import { describe, expect, it, vi } from "vitest";
 import { viewer } from "../src/shared/viewer.js";
 import definition from "../schemas/check.json" with { type: "json" };
+import { checkSpecDefinition } from "@ipab/check-spec/bundle";
 
 describe("built Check viewer App", () => {
   it("renders the shared Check component using real definition data", () => {
+    expect(definition).toEqual(checkSpecDefinition);
     const html = renderToString(
       createElement(viewer, { data: definition.entry.defaultValue }),
     );

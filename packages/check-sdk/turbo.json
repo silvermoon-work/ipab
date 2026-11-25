@@ -1,0 +1,17 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "dependsOn": ["build", "@ipab/cli#build"],
+      "inputs": ["$TURBO_DEFAULT$", "../../templates/check/**"]
+    },
+    "test-ci": {
+      "dependsOn": ["build", "@ipab/cli#build"],
+      "inputs": ["$TURBO_DEFAULT$", "../../templates/check/**"]
+    },
+    "test-coverage": {
+      "dependsOn": ["build", "@ipab/cli#build"],
+      "inputs": ["$TURBO_DEFAULT$", "../../templates/check/**"]
+    }
+  }
+}

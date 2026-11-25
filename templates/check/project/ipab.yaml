@@ -1,0 +1,12 @@
+entry: app.cjs
+resources:
+  - check
+  - check-model.json
+supportedSchemas: []
+build:
+  includeSource: true
+  strategy: ipab-prebuild
+  typecheck:
+    - config: tsconfig.json
+      entry: src/main.ts
+app: {}

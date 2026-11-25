@@ -1,0 +1,43 @@
+{
+  "name": "@ipab/check-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed sequential Checks and linked IPAB result bundles.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "import": "./dist/build.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node scripts/test.mjs",
+    "test-ci": "node scripts/test-ci.mjs",
+    "test-coverage": "node scripts/test-coverage.mjs"
+  },
+  "dependencies": {
+    "@ipab/bundle": "workspace:*",
+    "@ipab/bundle-builder": "workspace:*",
+    "@ipab/check-spec": "workspace:*",
+    "ajv": "catalog:",
+    "esbuild": "catalog:",
+    "multiformats": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "@ipld/car": "catalog:"
+  }
+}

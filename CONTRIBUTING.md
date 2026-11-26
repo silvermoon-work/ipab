@@ -14,6 +14,8 @@ pnpm check
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
+Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告
+提交，以及原始 Check model 根 CID 在 App／Result 中的准确复用。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，
 以及真实 App CAR 读取示例 Content Bundle 后的内容 SSR 与关闭行为。
 Bundle／Builder 测试覆盖 Markdown frontmatter、入口字节保留和 Agent Skill

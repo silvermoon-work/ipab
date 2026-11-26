@@ -33,6 +33,15 @@ Bundle Viewer 新增显式 folder 与 contentCid 互斥本地输入；
 更新复用 React，错误隐藏旧视图并自动恢复；Check App 保留有效 checkpoint ID，
 删除 ID 回总览。CID 模式一次加载不变；关闭停止连接／计时／读取。
 Viewer 单参数 source 按现有目录／具名 pin／CID 顺序解析，--folder 保留消歧。
+private `@ipab/check-sdk` 与显式 `templates/check` 提供新 IPAB Check 作者接口；
+全局 JSON Schema/typed parse、单步或有序数组、同次前序 outputOf，不迁入旧
+Task Protocol。STDIN 单 JSON 值最多 1 MiB；结果固定 result.json，当前步骤、
+pass 与非空 problems:{code,context}，不自动发布成功 output 或输入。
+可信 prebuild 从同一份定义生成现有 Check Spec 类型的 model，作为实际
+resources/check/ UnixFS 子 Bundle 内嵌，resources/check-model.json 保存准确
+CID；运行先复核 model 再检查，结果 check/ 直接链接原 DAG，不计算 Markdown
+闭包。业务失败正常提交，异常／取消／无效输入不提交。仅嵌套资源文件末段
+.bundle.yaml 可突破隐藏资源限制；其他隐藏文件／目录仍拒绝。
 App context.resolvePin 为有界只读 IPC 查询，复用 State 用户／builtin ready
 pins；
 不存在返回 undefined，非 ready／坏状态抛错，不使用 legacy aliases、不改 argv，

@@ -508,7 +508,9 @@ App 身份。不加载 JS 配置、不执行 hooks。
 - resources 默认为空，只接受 `assets/` 下明确列出的非隐藏普通文件，
   无 glob、目录扫描或符号链接。资源在 App Bundle 内为
   `resources/assets/message.txt`。App 本体不打包源码、node_modules、配置、
-  `.env` 或未选中的资源；应用通过自己的 App CID 和 Space context 读取资源，
+  `.env` 或未选中的资源；可信 prebuild 的目录资源允许嵌套 Bundle 的
+  `.bundle.yaml` 文件，其他隐藏文件与目录仍拒绝。应用通过自己的 App CID 和 Space
+  context 读取资源，
   不依赖 materialized 程序旁的本地文件。
 - supportedSchemas 默认为 `[]`，旧源配置省略也按空处理。只接受 `schemas/`
   下显式、唯一、非隐藏 `.json` 普通文件，无 glob、扫描、目录或符号链接。

@@ -1,0 +1,7 @@
+import { runCheck } from "@ipab/check-sdk";
+import check from "./check.js";
+
+runCheck(check).catch((error: unknown) => {
+  console.error(error);
+  process.exitCode ??= 1;
+});

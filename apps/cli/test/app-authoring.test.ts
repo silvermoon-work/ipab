@@ -28,6 +28,12 @@ import { buildChain, projectBuild, runPrebuild } from "../src/app-prebuild.js";
 import { readCar } from "../src/authoring.js";
 
 const require = createRequire(import.meta.url);
+const appData = {
+  name: "Untitled App",
+  version: "0.0.0",
+  description: "",
+  entry: "resources/app.cjs",
+};
 vi.mock("node:fs/promises", async () => {
   const original = await vi.importActual<typeof filesystem>("node:fs/promises");
   return { ...original, lstat: vi.fn(original.lstat) };
@@ -50,6 +56,81 @@ async function projectTools(root: string) {
       process.platform === "win32" ? "junction" : "dir",
     );
 }
+async function dualEntryProject(root: string, signal: AbortSignal) {
+  await initApp("hello", root, { signal });
+  await projectTools(root);
+  const serverConfigPath = join(root, "tsconfig.json");
+  const serverConfig = object(
+    JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
+    "tsconfig",
+  );
+  await writeFile(
+    serverConfigPath,
+    JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
+  );
+  await writeFile(join(root, "src", "other.ts"), "export {};\n");
+  await writeFile(
+    join(root, "src", "browser.ts"),
+    "document.body.textContent = 'browser';\n",
+  );
+  const browserConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      lib: ["ES2022", "DOM"],
+      types: [],
+      strict: false,
+      noCheck: true,
+    },
+    files: ["src/browser.ts"],
+  };
+  await writeFile(
+    join(root, "tsconfig.browser.json"),
+    JSON.stringify(browserConfig),
+  );
+  await writeFile(
+    join(root, "ipab.yaml"),
+    stringify({
+      entry: "server/app.cjs",
+      resources: ["web"],
+      build: {
+        strategy: "ipab-prebuild",
+        typecheck: [
+          { config: "tsconfig.json", entry: "src/main.ts" },
+          { config: "tsconfig.browser.json", entry: "src/browser.ts" },
+        ],
+      },
+    }),
+  );
+  const pkgPath = join(root, "package.json");
+  const pkg = object(
+    JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
+    "package",
+  );
+  await writeFile(
+    pkgPath,
+    JSON.stringify({
+      ...pkg,
+      scripts: {
+        build: "node forbidden-build.cjs",
+        "ipab-prebuild": "node compile.cjs",
+      },
+    }),
+  );
+  await writeFile(
+    join(root, "compile.cjs"),
+    `
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const out = process.env.IPAB_BUILD_DIR;
+writeFileSync("dist/hook-ran", "yes");
+mkdirSync(join(out, "server"));
+mkdirSync(join(out, "web"));
+writeFileSync(join(out, "server/app.cjs"), '#!/usr/bin/env node\\nconsole.log("backend");');
+writeFileSync(join(out, "web/index.html"), "browser output");
+`,
+  );
+  return browserConfig;
+}
 async function loadCar(path: string) {
   const iterator = await CarBlockIterator.fromIterable(
     ReadableStream.from([await readFile(path)]),
@@ -66,7 +147,22 @@ async function loadCar(path: string) {
 describe("App-first authoring", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let project: string;
-  beforeEach(async () => {
+  let buildSignal: AbortSignal;
+  let buildLifetime: AbortController;
+  let pendingBuild: ReturnType<typeof buildApp> | undefined;
+  async function buildProject(options: Parameters<typeof buildApp>[1] = {}) {
+    const pending = buildApp(project, { ...options, signal: buildSignal });
+    pendingBuild = pending;
+    try {
+      return await pending;
+    } finally {
+      pendingBuild = undefined;
+    }
+  }
+  beforeEach(async ({ signal }) => {
+    buildLifetime = new AbortController();
+    buildSignal = AbortSignal.any([signal, buildLifetime.signal]);
+    pendingBuild = undefined;
     work = await fixture();
     const config = join(work.root, "store.json");
     await writeFile(config, JSON.stringify(work.store.configuration));
@@ -74,6 +170,8 @@ describe("App-first authoring", () => {
     project = join(work.root, "hello");
   });
   afterEach(async () => {
+    buildLifetime.abort();
+    if (pendingBuild) await Promise.allSettled([pendingBuild]);
     vi.mocked(filesystem.lstat).mockReset();
     vi.mocked(processes.spawn).mockReset();
     vi.restoreAllMocks();
@@ -100,7 +198,7 @@ describe("App-first authoring", () => {
     });
     expect(() =>
       appDescription({
-        ...appSchema.entry.defaultValue,
+        ...appData,
         i18n: { en: { name: "Translated App" } },
       }),
     ).toThrow(expect.objectContaining({ cause }));
@@ -132,10 +230,10 @@ describe("App-first authoring", () => {
     ]);
     expect(response.code, response.err).toBe(0);
     expect(result(response.out)).toMatchObject({
-      kind: "app-init",
+      kind: "project-init",
       directory: project,
-      schemaCid: appSchemaCid.toString(),
     });
+    expect(result(response.out)).not.toHaveProperty("schemaCid");
     const pkg = object(
       JSON.parse(
         await readFile(join(project, "package.json"), "utf8"),
@@ -203,9 +301,8 @@ describe("App-first authoring", () => {
       "--store-gateway",
       "http://127.0.0.1:1",
       "bundle",
-      "init",
+      "inspect",
       "builtin:node-app.v1",
-      project,
     ]);
     expect(response.code, response.err).toBe(0);
     expect(result(response.out).schemaCid).toBe(appSchemaCid.toString());
@@ -213,24 +310,10 @@ describe("App-first authoring", () => {
       appSchemaCid.toString(),
     );
     expect(
-      JSON.parse(await readFile(join(project, "app.json"), "utf8")),
-    ).toEqual(appSchema.entry.defaultValue);
-    expect(
-      (
-        await cli(work.stateDir, [
-          "bundle",
-          "build",
-          project,
-          "--schema-only",
-          "--no-import",
-        ])
-      ).code,
-    ).toBe(0);
-    expect(
       (await cli(work.stateDir, ["bundle", "inspect", "builtin:node-app.v1"]))
         .code,
     ).toBe(0);
-    expect(await readdir(project)).not.toContain("node_modules");
+    expect(await readdir(work.root)).not.toContain("hello");
   });
   it("registers the exact builtin identity offline without treating it as an executable App", async () => {
     const registered = await cli(work.stateDir, [
@@ -253,9 +336,7 @@ describe("App-first authoring", () => {
     expect(
       (await cli(work.stateDir, ["exec", "builtin:node-app.v1"])).code,
     ).toBe(1);
-    expect(appDescription(appSchema.entry.defaultValue)).toEqual(
-      appSchema.entry.defaultValue,
-    );
+    expect(appDescription(appData)).toEqual(appData);
   });
   it("runs real strict tsc and bundles a dependency into a self-contained CAR, selecting only explicit resources", async () => {
     await initApp("hello", project);
@@ -580,7 +661,6 @@ describe("App-first authoring", () => {
           path: "note.json",
           schema: { type: "string" },
           contentType: "application/json",
-          defaultValue: "",
         },
       };
       const second = {
@@ -1230,81 +1310,12 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
     "strictly checks both backend and browser entries before running project compilation",
     { tags: ["release-e2e"], timeout: 60_000 },
     async () => {
-      await initApp("hello", project);
-      await projectTools(project);
-      const serverConfigPath = join(project, "tsconfig.json");
-      const serverConfig = object(
-        JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
-        "tsconfig",
-      );
-      await writeFile(
-        serverConfigPath,
-        JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
-      );
-      await writeFile(join(project, "src", "other.ts"), "export {};\n");
+      const browserConfig = await dualEntryProject(project, buildSignal);
       await writeFile(
         join(project, "src", "browser.ts"),
         "document.body.textContent = 'browser';\nconst unchecked = (value) => value;\n",
       );
-      const browserConfig = {
-        compilerOptions: {
-          target: "ES2022",
-          lib: ["ES2022", "DOM"],
-          types: [],
-          strict: false,
-          noCheck: true,
-        },
-        files: ["src/browser.ts"],
-      };
-      await writeFile(
-        join(project, "tsconfig.browser.json"),
-        JSON.stringify(browserConfig),
-      );
-      await writeFile(
-        join(project, "ipab.yaml"),
-        stringify({
-          entry: "server/app.cjs",
-          resources: ["web"],
-          build: {
-            strategy: "ipab-prebuild",
-            typecheck: [
-              { config: "tsconfig.json", entry: "src/main.ts" },
-              { config: "tsconfig.browser.json", entry: "src/browser.ts" },
-            ],
-          },
-        }),
-      );
-      const pkgPath = join(project, "package.json");
-      const pkg = object(
-        JSON.parse(await readFile(pkgPath, "utf8")) as unknown,
-        "package",
-      );
-      await writeFile(
-        pkgPath,
-        JSON.stringify({
-          ...pkg,
-          scripts: {
-            build: "node forbidden-build.cjs",
-            "ipab-prebuild": "node compile.cjs",
-          },
-        }),
-      );
-      await writeFile(
-        join(project, "compile.cjs"),
-        `
-const { mkdirSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
-const out = process.env.IPAB_BUILD_DIR;
-writeFileSync("dist/hook-ran", "yes");
-mkdirSync(join(out, "server"));
-mkdirSync(join(out, "web"));
-writeFileSync(join(out, "server/app.cjs"), '#!/usr/bin/env node\\nconsole.log("backend");');
-writeFileSync(join(out, "web/index.html"), "browser output");
-`,
-      );
-      await expect(buildApp(project)).rejects.toThrow(
-        "implicitly has an 'any'",
-      );
+      await expect(buildProject()).rejects.toThrow("implicitly has an 'any'");
       await expect(
         readFile(join(project, "dist", "hook-ran")),
       ).rejects.toThrow();
@@ -1316,7 +1327,7 @@ writeFileSync(join(out, "web/index.html"), "browser output");
         join(project, "tsconfig.browser.json"),
         JSON.stringify({ ...browserConfig, files: ["src/other.ts"] }),
       );
-      await expect(buildApp(project)).rejects.toThrow("not included");
+      await expect(buildProject()).rejects.toThrow("not included");
       await expect(
         readFile(join(project, "dist", "hook-ran")),
       ).rejects.toThrow();
@@ -1325,7 +1336,7 @@ writeFileSync(join(out, "web/index.html"), "browser output");
         JSON.stringify(browserConfig),
       );
       await mkdir(join(project, "dist"));
-      await buildApp(project);
+      await buildProject();
       const bundle = await loadCar(join(project, "dist", "app.car"));
       expect(
         await new Response(await bundle.readFile("resources/app.cjs")).text(),
@@ -1338,6 +1349,15 @@ writeFileSync(join(out, "web/index.html"), "browser output");
       await expect(
         bundle.readFile("resources/server/app.cjs"),
       ).rejects.toThrow();
+    },
+  );
+  it(
+    "preserves both CARs when a dual-entry prebuild changes source",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await dualEntryProject(project, buildSignal);
+      await mkdir(join(project, "dist"));
+      await buildProject();
       const appBytes = await readFile(join(project, "dist", "app.car"));
       const sourceBytes = await readFile(
         join(project, "dist", "app.source.car"),
@@ -1346,7 +1366,7 @@ writeFileSync(join(out, "web/index.html"), "browser output");
         join(project, "compile.cjs"),
         `${await readFile(join(project, "compile.cjs"), "utf8")}\nwriteFileSync("src/main.ts", "console.log('changed during hook');");`,
       );
-      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+      await expect(buildProject({ replace: true })).rejects.toThrow(
         "source changed",
       );
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(
@@ -1408,6 +1428,31 @@ writeFileSync(join(out, "web/index.html"), "browser output");
       return child;
     });
     await expect(buildApp(project)).rejects.toBe(failure);
+    expect(
+      (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
+    ).toEqual([]);
+  }, 30_000);
+  it("waits for an aborted compiler to close before removing its project", async () => {
+    await initApp("hello", project);
+    await projectTools(project);
+    const original =
+      await vi.importActual<typeof processes>("node:child_process");
+    const failure = new Error("Stop compiler.");
+    let owned: ReturnType<typeof processes.spawn> | undefined;
+    vi.mocked(processes.spawn).mockImplementation((...args) => {
+      const child = original.spawn(...args);
+      owned = child;
+      child.stdout!.once("data", () => {
+        buildLifetime.abort(failure);
+      });
+      return child;
+    });
+    await expect(buildProject()).rejects.toMatchObject({
+      name: "AbortError",
+      cause: failure,
+    });
+    expect(owned).toBeDefined();
+    expect(owned!.exitCode !== null || owned!.signalCode !== null).toBe(true);
     expect(
       (await readdir(project)).filter((name) => name.startsWith(".ipab-app-")),
     ).toEqual([]);

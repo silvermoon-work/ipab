@@ -41,28 +41,18 @@ export async function initApp(
     parameters?: readonly string[];
   } = {},
 ) {
-  if (
-    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
-    name.length > 214 ||
-    ["node_modules", "favicon.ico"].includes(name)
-  )
-    throw new HostError(
-      "App NAME must be an unscoped lowercase npm package name.",
-    );
   const { files, cid: templateCid } = await appTemplate(
     options.template ?? "node",
     name,
     options,
   );
-  const schemaCid = (await builtinAppSchema()).cid.toString();
   const root = await scaffoldFiles(directory, files, options);
   return {
-    kind: "app-init" as const,
+    kind: "project-init" as const,
     directory: root,
     name,
     template: options.template ?? "node",
     templateCid,
-    schemaCid,
     files: [...files.keys()],
   };
 }
@@ -341,7 +331,7 @@ export async function buildApp(
   const description = appDescription({
     ...defaults,
     ...overrides,
-    entry: appSchema.entry.defaultValue.entry,
+    entry: "resources/app.cjs",
     ...(supportedSchemas ? { supportedSchemas: supportedSchemasPath } : {}),
   });
   if (description.icon !== undefined) {

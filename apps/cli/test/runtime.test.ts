@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFile, readFile, access, unlink } from "node:fs/promises";
+import { writeFile, readFile, access, unlink, watch } from "node:fs/promises";
 import { join } from "node:path";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { encodeSchema } from "@ipab/bundle";
@@ -64,7 +64,7 @@ describe("real UnixFS and Node subprocess runtime", () => {
     const encoded = await encodeSchema(appSchema);
     expect(encoded.cid.equals(appSchemaCid)).toBe(true);
     expect(encoded.cid.toString()).toBe(
-      "bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq",
+      "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
     );
     const legacy = {
       ...appSchema,
@@ -81,11 +81,16 @@ describe("real UnixFS and Node subprocess runtime", () => {
       },
     };
     expect((await encodeSchema(legacy)).cid.toString()).toBe(
-      "bafyreig52cmqw6q55oebwmhhjn6oetx4kgxtqoxlgnvom4wbsrgifyqb4a",
+      "bafyreigtn57hsga6hczap6qddxzjotdwju4c2navp7a3lopqgclomhropu",
     );
     const root = await importFiles(work.store, {
       ".bundle.yaml": JSON.stringify(legacy),
-      "app.json": JSON.stringify(appSchema.entry.defaultValue),
+      "app.json": JSON.stringify({
+        name: "Untitled App",
+        version: "0.0.0",
+        description: "",
+        entry: "resources/app.cjs",
+      }),
       "resources/app.cjs": "throw new Error('must not execute');",
     });
     const owner = await Ownership.create(state, work.store, "legacy-app", null);
@@ -510,12 +515,12 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       await expect(
         work.store.block.get(other.cid.toString()),
       ).rejects.toThrow();
-      const invalidDefault = Uint8Array.from(schema.bytes);
-      const offset = Buffer.from(invalidDefault).lastIndexOf("world");
-      invalidDefault.set(Buffer.from("wrong"), offset);
+      const invalidDefinition = Uint8Array.from(schema.bytes);
+      const offset = Buffer.from(invalidDefinition).lastIndexOf("object");
+      invalidDefinition.set(Buffer.from("broken"), offset);
       const invalidCid = CID.createV1(
         0x71,
-        await sha256.digest(invalidDefault),
+        await sha256.digest(invalidDefinition),
       );
       const bare = Uint8Array.of(0xa0);
       const bareCid = CID.createV1(0x71, await sha256.digest(bare));
@@ -528,7 +533,10 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         schemaCar([schema.cid], [schema, other]),
         schemaCar([schema.cid], [{ cid: schema.cid, bytes: Uint8Array.of(1) }]),
         schemaCar([bareCid], [{ cid: bareCid, bytes: bare }]),
-        schemaCar([invalidCid], [{ cid: invalidCid, bytes: invalidDefault }]),
+        schemaCar(
+          [invalidCid],
+          [{ cid: invalidCid, bytes: invalidDefinition }],
+        ),
         schemaCar(
           [CID.createV1(0x55, schema.cid.multihash)],
           [
@@ -574,7 +582,10 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         const root = await importFiles(work.store, {
           ...files,
           "app.json": JSON.stringify({
-            ...appSchema.entry.defaultValue,
+            name: "Untitled App",
+            version: "0.0.0",
+            description: "",
+            entry: "resources/app.cjs",
             supportedSchemas,
           }),
         });
@@ -945,10 +956,26 @@ try {await ipab.output.writeFile("broken", new ReadableStream({start(c){c.error(
     const marker = join(work.root, "ready");
     const root = await app(
       work.store,
-      `require("node:fs").writeFileSync(process.argv[2],"ready");
-process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);`,
+      `process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{});
+require("node:fs").writeFileSync(process.argv[2],"ready"); setInterval(()=>{},1000);`,
     );
     const controller = new AbortController();
+    const ready = (async () => {
+      for await (const event of watch(work.root, {
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(10000),
+        ]),
+      })) {
+        if (
+          event.filename === "ready" &&
+          (await readFile(marker, "utf8")) === "ready"
+        ) {
+          return;
+        }
+      }
+      throw new Error("App did not create its readiness marker.");
+    })();
     const stopping = execute(
       state,
       work.store,
@@ -960,19 +987,18 @@ process.on("SIGINT",()=>{}); process.on("SIGTERM",()=>{}); setInterval(()=>{},10
         diagnostic: () => {},
       },
     );
-    let ready = false;
-    for (let attempt = 0; attempt < 200; attempt++) {
-      try {
-        await access(marker);
-        ready = true;
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+    try {
+      await Promise.race([
+        ready,
+        stopping.then(() => {
+          throw new Error("App stopped before becoming ready.");
+        }),
+      ]);
+    } finally {
+      controller.abort();
+      await stopping;
     }
-    controller.abort();
     const result = await stopping;
-    expect(ready).toBe(true);
     expect(result.exitCode).toBe(130);
     expect(result.record.status).toBe("cancelled");
     expect(result.record.outputCid).toBeNull();

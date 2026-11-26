@@ -3,7 +3,7 @@
 ## 当前实现与规范优先级
 
 当前 `apps/cli` 实现已确认 CLI：exec/open、pin、register、config、
-history、上层 App init/build，以及 Node 子进程运行时。Content
+history、通用 Template init／上层 App build，以及 Node 子进程运行时。Content
 Bundle 与 Store 已迁入 private
 成员
 `@ipab/bundle`、`@ipab/ipfs-store`。当前 Store 统一为本地存储与只读 Gateway，
@@ -23,7 +23,7 @@ private `@ipab/web-app` 在 App 子进程内提供本机 HTTP、宿主页／opaq
 **Space 是 UnixFS 目录及其原始字节文件树；Bundle 是通过对应描述／profile
 验证的 Space。** 普通 Space 不需要 `.bundle.yaml` 或 Schema。
 Content Bundle 校验存储完整性、路径、`.bundle.yaml`
-完整类型定义、默认值和入口内容。
+完整类型定义和实际入口内容。
 其他资源及子 Bundle 的业务语义、
 引用格式与依赖校验完全交给 App，不通过 `x-content-ref` 递归验证。当前协议详见
 [Bundle runtime](../packages/bundle/README.md)。旧 Schema Bundle 目录及 builtin
@@ -32,21 +32,25 @@ Content Bundle 校验存储完整性、路径、`.bundle.yaml`
 但注册状态永远保存准确 CID，builtin 字符串不成为协议身份。
 
 .bundle.yaml 本身是类型定义：必填 name、缺省为空字符串的 description，
-以及必填 entry: { path, schema, contentType, defaultValue }。路径、Schema、格式
-是固定契约；默认数据用于初始化且须通过校验。完整定义归一化后直接编码为
+以及必填 entry: { path, contentType, schema? }。path 与合法 MIME 为必填，
+schema 可选，采用标准 JSON Schema Draft 2020-12。
+entry.defaultValue 已移除且被拒绝，不从 Schema 生成或补全数据。
+完整定义归一化后直接编码为
 CIDv1/DAG-CBOR/SHA-256 block，准确 CID 是 register 键，编码后最多 1 MiB。
-缺省描述与显式空串归一化为相同类型 CID；名称、描述、默认数据等变化影响该 CID，
+缺省描述与显式空串归一化为相同类型 CID；名称、描述、MIME、Schema 等变化影响该 CID，
 实际入口数据变化不影响它。原始 YAML 排版仍参与内容根 CID。
-$defs 与本地 JSON Pointer $ref 只复用 entry.schema 内的类型定义。
+$schema 缺省表示 Draft 2020-12，不注入声明或改写 Schema 字面值；
+省略 schema 与显式 true 的身份不同。Schema 引用在 entry.schema 文档内封闭。
 构建和打开内容根无需读取外部 Schema；保留内容根即可从文件再生类型 block。
 
-当前最小结构方言及 anyOf 结构匹配、入口校验、
-共享预算、确定性 Builder 规则以上述 runtime 文档为准。`x-content-ref` 不再支持，
-含此关键字的 Schema 必须更新并按新 CID 重新注册。统一 runtime 提供 encodeSchema，
+标准 Draft 2020-12 关键字、无数据变换的入口校验、
+共享预算、确定性 Builder 规则以上述 runtime 文档为准。未知扩展仅作 annotation，
+`x-content-ref` 不会触发资源读取或验证。统一 runtime 提供 encodeSchema，
 private Bundle Builder 支持 repeatable VFS、独立 Node 本地适配器和固定
 UnixFS/CAR；不上传或 pin，已移除 Schema Bundle Builder。
-CLI 的 bundle
-init/build/inspect/import 覆盖初始化、两种 CAR 构建、检查和显式导入；
+CLI 的 bundle build/inspect/import 覆盖两种 CAR 构建、检查和显式导入；bundle
+init 已移除，
+初始化只通过根 init 的通用 Template Bundle；
 build
 --schema-only 复用同一命令，输出 dist/schema.car，完整构建输出 dist/bundle.car。
 根 .bundle-ignore 默认 /dist/，不按 CAR 扩展名一概排除；源码不被覆盖，产物替换
@@ -58,8 +62,9 @@ build
 导入失败命令非零但保留 CAR，可显式重试。导入不执行 App、不自动启动 daemon，
 不切换后端或 GC，不删除共享 block／已有保留；未 pin 内容可能被外部 GC 回收。
 
-根 `ipab init NAME [DIR]` 和 `ipab build [DIR]` 是 App-first 上层，不改变
-上述通用工具的编译自由。init 创建普通 private TypeScript npm 项目，
+根 `ipab init NAME [DIR]` 使用通用 Template Bundle，根 `ipab build [DIR]`
+仍是 App-first 上层，不改变上述通用工具的编译自由。默认 Node 模板创建普通 private
+TypeScript npm 项目，
 默认 src/main.ts、严格 tsconfig 与注释式数据文件 ipab.yaml，无隐式安装。
 模板展示 icon 的 assets/ 源路径和 resources/assets/ Bundle 路径、元数据覆盖、
 name/description i18n、完整 Bundle 定义的 supportedSchemas；未启用功能不生成
@@ -172,11 +177,6 @@ entry:
               type: string
             description:
               type: string
-  defaultValue:
-    name: Untitled App
-    version: 0.0.0
-    description: ""
-    entry: resources/app.cjs
 ```
 
 `app.json` 的最小形状（不允许其他字段）：
@@ -191,7 +191,7 @@ entry:
 ```
 
 上述完整定义通过 encodeSchema 生成单个 DAG-CBOR block；
-准确 CID 为 `bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq`。
+准确 CID 为 `bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq`。
 CLI 的 app-definition.ts 集中保存完整定义与固定 CID，authoring 重新编码核对身份；
 runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 离线映射到此完整定义／CID，
@@ -201,7 +201,7 @@ runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 不得碰撞 entry／控制文件。声明时在所有执行前校验单个嵌套 CAR，省略意味着
 没有 open 支持类型。CAR 非空，roots 恰好定义支持的完整 Bundle Schema CIDs：
 每 root 为 CIDv1/DAG-CBOR/SHA-256 的完整归一化定义，单 block 最多 1 MiB，
-校验所有 hash、canonical 编码、Schema 与默认值。拒绝缺 root、重复 root／record、
+校验所有 hash、canonical 编码和 Schema。拒绝缺 root、重复 root／record、
 额外 block；复用现有 64 MiB 字节、2048 文件数及 100000 聚合 work／深度预算。
 上层 build 从显式 schemas/ 非隐藏 .json 文件构建，按实际 CID 去重与排序，
 生成 resources/supported-schemas.car 和 app.json 路径；空源列表（含旧配置省略）
@@ -240,7 +240,7 @@ license 只声明，不控制读／复制／执行，不实现 DRM；CAS 不消�
 不自动迁移，也不将项目元数据写入共享类型定义。
 
 完整类型定义必须可读且派生 CID 准确。宿主 runtime 另行强制 app.json 的 entry
-为安全 `resources/` 下的 `.cjs` 相对路径，不使用方言不支持的 pattern。entry 是
+为安全 `resources/` 下的 `.cjs` 相对路径；文件存在性仍须专用校验。entry 是
 普通 JS 文件，最大 8 MiB；程序是自包含 CommonJS bundle，可使用普通 Node
 builtins，不自动安装外部依赖。作者可用上层 ipab build，或在外部构建程序；
 底层 Bundle Builder 和 bundle build 不编译 JS。
@@ -469,7 +469,8 @@ entry:
 
 Markdown 的 Schema 只约束 frontmatter 对象，正文保留原始字节并由 App
 解释。无 frontmatter 或空块对应 `{}`；未闭合块及非对象元数据明确失败。
-初始化将对象默认值写为 frontmatter，正文为空；完整约定见
+实际 frontmatter 与正文由作者或通用 Template
+Bundle 提供，不从 Schema 生成；完整约定见
 [Bundle runtime](../packages/bundle/README.md)。
 
 JSONL 保留记录顺序和重复值，不添加 `{records: [...]}` 包装。

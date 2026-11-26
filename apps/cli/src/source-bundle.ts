@@ -16,7 +16,6 @@ export const sourceSchema = {
     path: "package.json",
     contentType: "application/json",
     schema: { type: "object" },
-    defaultValue: {},
   },
 } as const;
 

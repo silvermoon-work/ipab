@@ -46,26 +46,5 @@ export const checkSpecDefinition = {
       },
       ["specVersion", "name", "description", "parameter", "checkpoints"],
     ),
-    defaultValue: {
-      specVersion: "1.0",
-      name: "Untitled Check",
-      description: "Describe the scope of the check.",
-      parameter: { schema: { type: "object" } },
-      checkpoints: [
-        {
-          id: "review",
-          title: "Review",
-          description: "Review the supplied target.",
-          instructions: "Read the target and report evidence.",
-          output: { description: "Successful output is undefined." },
-          rules: [
-            {
-              code: "target-valid",
-              description: "The target meets the documented requirements.",
-            },
-          ],
-        },
-      ],
-    },
   },
 };

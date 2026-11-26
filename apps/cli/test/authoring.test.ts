@@ -10,10 +10,10 @@ import {
   blockLength,
 } from "@ipld/car/buffer-writer";
 import type { CID } from "multiformats/cid";
-import { encodeSchema, openBundle, openSchema, parseData } from "@ipab/bundle";
+import { encodeSchema, openBundle, openSchema } from "@ipab/bundle";
 import { encodeSchemaCar } from "@ipab/bundle-builder";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { importBundle, initBundle, writeCar } from "../src/authoring.js";
+import { importBundle, scaffoldFiles, writeCar } from "../src/authoring.js";
 import { State } from "../src/state.js";
 import { object } from "../src/errors.js";
 import { cli, fixture } from "./helpers.js";
@@ -28,7 +28,6 @@ const definition = {
       properties: { title: { type: "string" } },
     },
     contentType: "application/json",
-    defaultValue: { title: "Untitled" },
   },
 };
 async function car(path: string) {
@@ -73,7 +72,6 @@ describe("bundle development CLI", () => {
     for (const path of [
       [],
       ["bundle"],
-      ["bundle", "init"],
       ["bundle", "build"],
       ["bundle", "inspect"],
       ["bundle", "import"],
@@ -126,74 +124,186 @@ describe("bundle development CLI", () => {
     );
     expect(existsSync(join(source, "data.json"))).toBe(false);
   });
+  it("removes bundle init from help and rejects it before creating files", async () => {
+    const help = await cli(work.stateDir, ["bundle", "--help"]);
+    expect(help.out).not.toContain("bundle init");
+    const target = join(work.root, "obsolete-init");
+    for (const args of [
+      ["bundle", "init", join(source, ".bundle.yaml"), target],
+      ["bundle", "init", "--help"],
+    ]) {
+      const response = await cli(work.stateDir, args);
+      expect(response.code).toBe(2);
+      expect(response.out).toBe("");
+    }
+    expect(existsSync(target)).toBe(false);
+  });
   it.each([
-    "application/json",
-    "application/yaml",
-    "application/jsonl",
-    "text/markdown",
-  ] as const)(
-    "initializes %s from a local type CAR and validates the generated entry",
+    "text/plain",
+    "image/png",
+    "application/cbor",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ])(
+    "builds and inspects an opaque %s entry without a schema",
     async (contentType) => {
-      const value =
-        contentType === "application/jsonl"
-          ? [{ title: "First" }, { title: "Second" }]
-          : { title: "Untitled" };
-      const schema =
-        contentType === "application/jsonl"
-          ? { type: "array", items: definition.entry.schema }
-          : definition.entry.schema;
-      const path =
-        contentType === "application/jsonl"
-          ? "nested/events.jsonl"
-          : contentType === "text/markdown"
-            ? "nested/SKILL.md"
-            : "nested/data";
-      const input = {
-        ...definition,
-        entry: { path, schema, contentType, defaultValue: value },
-      };
-      await writeFile(join(source, ".bundle.yaml"), stringify(input));
-      expect(
-        (await cli(work.stateDir, ["bundle", "build", source, "--schema-only"]))
-          .code,
-      ).toBe(0);
-      const directory = join(work.root, "initialized");
-      await mkdir(directory);
-      const response = await cli(work.stateDir, [
+      const entry = { path: "payload", contentType };
+      await writeFile(
+        join(source, ".bundle.yaml"),
+        stringify({ name: "Opaque", entry }),
+      );
+      const bytes = Buffer.from([0, 255, 128, 10]);
+      await writeFile(join(source, "payload"), bytes);
+      const built = await cli(work.stateDir, [
         "--json",
         "bundle",
-        "init",
-        join(source, "dist", "schema.car"),
-        directory,
+        "build",
+        source,
+        "--no-import",
       ]);
-      expect(response.code, response.err).toBe(0);
-      expect(result(response.out)).toMatchObject({
-        kind: "bundle-init",
-        directory,
-        entry: { path, contentType },
+      expect(built.code, built.err).toBe(0);
+      expect(result(built.out).validation).toEqual({
+        status: "unsupported",
+        contentType,
       });
-      expect(await readFile(join(directory, ".bundle-ignore"), "utf8")).toBe(
-        "/dist/\n",
-      );
+      const encoded = await car(String(result(built.out).output));
+      const loaded = await openBundle(encoded.root, encoded);
+      expect(loaded.manifest.entry).toEqual(entry);
       expect(
-        parseData(
-          await readFile(join(directory, ...path.split("/"))),
-          contentType,
+        Buffer.from(
+          await new Response(await loaded.readFile("payload")).arrayBuffer(),
         ),
-      ).toEqual(value);
-      if (contentType === "text/markdown")
-        expect(
-          await readFile(join(directory, ...path.split("/")), "utf8"),
-        ).toBe("---\ntitle: Untitled\n---\n");
-      expect(
-        (await cli(work.stateDir, ["bundle", "build", directory])).code,
-      ).toBe(0);
-      const built = await car(join(directory, "dist", "bundle.car"));
-      expect((await openBundle(built.root, built)).schemaKey).toBe(
-        result(response.out).schemaCid,
+      ).toEqual(bytes);
+      const inspected = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "inspect",
+        source,
+      ]);
+      expect(inspected.code, inspected.err).toBe(0);
+      expect(result(inspected.out).entry).toEqual(entry);
+      expect(result(inspected.out).validation).toEqual({
+        definition: "valid",
+        storage: "verified",
+        entry: {
+          status: "unsupported",
+          contentType,
+        },
+      });
+      const fromCar = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "inspect",
+        String(result(built.out).output),
+      ]);
+      expect(fromCar.code, fromCar.err).toBe(0);
+      expect(result(fromCar.out).validation).toEqual(
+        result(inspected.out).validation,
+      );
+      const human = await cli(work.stateDir, ["bundle", "inspect", source]);
+      expect(human.code, human.err).toBe(0);
+      expect(human.out).toContain("Entry validation: unsupported");
+      const imported = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "import",
+        String(result(built.out).output),
+      ]);
+      expect(imported.code, imported.err).toBe(0);
+      expect(result(imported.out).validation).toEqual(
+        result(built.out).validation,
       );
     },
   );
+  it("validates a Draft 2020-12 entry schema and rejects malformed MIME strings", async () => {
+    const entry = {
+      path: "data.json",
+      contentType: "application/json",
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "array",
+        prefixItems: [{ type: "string" }],
+        items: false,
+        minItems: 1,
+      },
+    };
+    await writeFile(
+      join(source, ".bundle.yaml"),
+      stringify({ name: "Tuple", entry }),
+    );
+    await writeFile(join(source, "data.json"), '["valid"]');
+    const valid = await cli(work.stateDir, [
+      "bundle",
+      "build",
+      source,
+      "--no-import",
+    ]);
+    expect(valid.code, valid.err).toBe(0);
+    const inspected = await cli(work.stateDir, [
+      "--json",
+      "bundle",
+      "inspect",
+      source,
+    ]);
+    expect(result(inspected.out).validation).toMatchObject({
+      entry: { status: "validated", contentType: "application/json" },
+    });
+    await writeFile(join(source, "data.json"), '["valid", "extra"]');
+    const invalid = await cli(work.stateDir, [
+      "bundle",
+      "build",
+      source,
+      "--no-import",
+      "--replace",
+    ]);
+    expect(invalid.code).toBe(1);
+    expect(invalid.out).toBe("");
+    await writeFile(
+      join(source, ".bundle.yaml"),
+      stringify({
+        name: "Invalid MIME",
+        entry: { path: "data.json", contentType: "not a MIME type" },
+      }),
+    );
+    const malformed = await cli(work.stateDir, [
+      "bundle",
+      "build",
+      source,
+      "--schema-only",
+      "--no-import",
+    ]);
+    expect(malformed.code).toBe(1);
+    expect(malformed.out).toBe("");
+  });
+  it("keeps an absent schema distinct from explicit true without claiming entry validation for definitions", async () => {
+    const ids: string[] = [];
+    for (const schema of [undefined, true]) {
+      await writeFile(
+        join(source, ".bundle.yaml"),
+        stringify({
+          name: "Optional schema",
+          entry: {
+            path: "payload",
+            contentType: "image/png",
+            ...(schema === undefined ? {} : { schema }),
+          },
+        }),
+      );
+      const inspected = await cli(work.stateDir, [
+        "--json",
+        "bundle",
+        "inspect",
+        join(source, ".bundle.yaml"),
+      ]);
+      expect(inspected.code, inspected.err).toBe(0);
+      ids.push(String(result(inspected.out).schemaCid));
+      expect(result(inspected.out).validation).toEqual({
+        definition: "valid",
+        storage: "not-applicable",
+        entry: null,
+      });
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+  });
   it("filters ignored dependencies, preserves intentional CAR resources and produces stable repeated roots", async () => {
     await writeFile(
       join(source, "data.json"),
@@ -249,7 +359,7 @@ describe("bundle development CLI", () => {
   it("excludes the active default output directory even without an ignore file", async () => {
     await writeFile(
       join(source, "data.json"),
-      JSON.stringify(definition.entry.defaultValue),
+      JSON.stringify({ title: "Untitled" }),
     );
     const first = await cli(work.stateDir, [
       "--json",
@@ -282,16 +392,13 @@ describe("bundle development CLI", () => {
       description: "",
     });
     const target = join(work.root, "new");
-    expect(
-      (
-        await cli(work.stateDir, [
-          "bundle",
-          "init",
-          join(source, ".bundle.yaml"),
-          target,
-        ])
-      ).code,
-    ).toBe(0);
+    await scaffoldFiles(
+      target,
+      new Map([
+        [".bundle.yaml", stringify(definition)],
+        ["data.json", '{"title":"Untitled"}\n'],
+      ]),
+    );
     const directory = await cli(work.stateDir, [
       "--json",
       "bundle",
@@ -301,7 +408,7 @@ describe("bundle development CLI", () => {
     expect(result(directory.out)).toMatchObject({
       sourceKind: "directory",
       cid: null,
-      validation: { status: "valid" },
+      validation: { definition: "valid" },
     });
     expect(existsSync(join(target, "dist"))).toBe(false);
     expect((await cli(work.stateDir, ["bundle", "build", target])).code).toBe(
@@ -321,7 +428,7 @@ describe("bundle development CLI", () => {
       expect(inspected.code, inspected.err).toBe(0);
       expect(result(inspected.out)).toMatchObject({
         sourceKind: "car",
-        validation: { status: "valid" },
+        validation: { definition: "valid" },
       });
     }
     const state = new State(work.stateDir);
@@ -381,7 +488,7 @@ describe("bundle development CLI", () => {
         .code,
     ).toBe(2);
   });
-  it("rejects ignored/invalid/missing entries, nonempty init directories and unsafe output replacement", async () => {
+  it("rejects ignored/invalid/missing entries and unsafe output replacement", async () => {
     await writeFile(join(source, "data.json"), '{"title":1}');
     const invalid = await cli(work.stateDir, [
       "--json",
@@ -432,16 +539,6 @@ describe("bundle development CLI", () => {
       (
         await cli(work.stateDir, [
           "bundle",
-          "init",
-          join(source, ".bundle.yaml"),
-          source,
-        ])
-      ).code,
-    ).toBe(1);
-    expect(
-      (
-        await cli(work.stateDir, [
-          "bundle",
           "build",
           join(source, ".bundle.yaml"),
         ])
@@ -474,16 +571,6 @@ describe("bundle development CLI", () => {
       sourceKind: "cid",
       schemaCid: schema.cid.toString(),
     });
-    const directory = join(work.root, "cid-init");
-    expect(
-      (
-        await cli(
-          work.stateDir,
-          ["bundle", "init", schema.cid.toString(), directory],
-          { env },
-        )
-      ).code,
-    ).toBe(0);
     const original = Object.getOwnPropertyDescriptor(
       IpfsStore.prototype,
       "close",
@@ -587,7 +674,7 @@ describe("bundle development CLI", () => {
     async (schemaOnly) => {
       await writeFile(
         join(source, "data.json"),
-        JSON.stringify(definition.entry.defaultValue),
+        JSON.stringify({ title: "Untitled" }),
       );
       const built = await cli(work.stateDir, [
         "--json",
@@ -622,6 +709,9 @@ describe("bundle development CLI", () => {
         source: path,
         blocks: encoded.blocks.size,
         bytes: original.length,
+        validation: schemaOnly
+          ? null
+          : { status: "validated", contentType: "application/json" },
       });
       expect(imported.err).toContain("importing CAR");
       const repeated = await cli(work.stateDir, ["bundle", "import", path]);
@@ -862,9 +952,16 @@ describe("bundle development CLI", () => {
         original();
       });
       await expect(
-        initBundle(join(source, ".bundle.yaml"), target, {
-          signal: controller.signal,
-        }),
+        scaffoldFiles(
+          target,
+          new Map([
+            [".bundle.yaml", stringify(definition)],
+            ["data.json", '{"title":"Untitled"}\n'],
+          ]),
+          {
+            signal: controller.signal,
+          },
+        ),
       ).rejects.toThrow();
       expect(existsSync(target)).toBe(existing);
       if (existing) expect(await readdir(target)).toEqual([]);
@@ -894,9 +991,8 @@ describe("bundle development CLI", () => {
       );
       const response = await cli(work.stateDir, [
         "--json",
-        "bundle",
         "init",
-        join(source, ".bundle.yaml"),
+        "cancelled",
         target,
       ]);
       expect(response.code, response.err).toBe(exitCode);
@@ -905,11 +1001,7 @@ describe("bundle development CLI", () => {
       expect(process.listenerCount(signal)).toBe(listeners);
     },
   );
-  it("refuses symlink sources, non-file outputs, invalid defaults and content CAR initialization", async () => {
-    const type = await encodeSchema(definition);
-    await expect(
-      initBundle(type.cid.toString(), join(work.root, "missing-store")),
-    ).rejects.toThrow("configured Store");
+  it("refuses symlink sources, non-file outputs and removed defaultValue", async () => {
     const linked = join(work.root, "linked");
     await symlink(source, linked, "junction");
     expect((await cli(work.stateDir, ["bundle", "build", linked])).code).toBe(
@@ -917,7 +1009,7 @@ describe("bundle development CLI", () => {
     );
     await writeFile(
       join(source, "data.json"),
-      JSON.stringify(definition.entry.defaultValue),
+      JSON.stringify({ title: "Untitled" }),
     );
     const directory = await cli(work.stateDir, [
       "bundle",
@@ -932,39 +1024,13 @@ describe("bundle development CLI", () => {
     expect((await cli(work.stateDir, ["bundle", "build", source])).code).toBe(
       0,
     );
-    const content = await cli(work.stateDir, [
-      "bundle",
-      "init",
-      join(source, "dist", "bundle.car"),
-      join(work.root, "not-type"),
-    ]);
-    expect(content.code).toBe(1);
-    expect(content.err).toContain("not a content bundle");
     await writeFile(
       join(source, ".bundle.yaml"),
       stringify({
         ...definition,
         entry: {
           ...definition.entry,
-          path: "dist/data.json",
-        },
-      }),
-    );
-    const ignored = await cli(work.stateDir, [
-      "bundle",
-      "init",
-      join(source, ".bundle.yaml"),
-      join(work.root, "ignored-default"),
-    ]);
-    expect(ignored.code).toBe(1);
-    expect(ignored.err).toContain("ignore rule");
-    await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({
-        ...definition,
-        entry: {
-          ...definition.entry,
-          defaultValue: { title: 1 },
+          defaultValue: { title: "Untitled" },
         },
       }),
     );
@@ -978,6 +1044,6 @@ describe("bundle development CLI", () => {
     ]);
     expect(invalid.code).toBe(1);
     expect(invalid.out).toBe("");
-    expect(invalid.err).toContain("defaultValue");
+    expect(invalid.err).toContain("Invalid .bundle.yaml");
   });
 });

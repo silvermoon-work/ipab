@@ -25,7 +25,6 @@ it.each(["valid", "invalid"])(
         path: "entry.json",
         contentType: "application/json",
         schema: { type: "object" },
-        defaultValue: {},
       },
     };
     await writeFile(join(folder, ".bundle.yaml"), JSON.stringify(schema));

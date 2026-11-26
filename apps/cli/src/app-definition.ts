@@ -14,12 +14,6 @@ export const appSchema = {
   entry: {
     path: "app.json",
     contentType: "application/json",
-    defaultValue: {
-      name: "Untitled App",
-      version: "0.0.0",
-      description: "",
-      entry: "resources/app.cjs",
-    },
     schema: {
       $id: "urn:ipab:node-app.v1",
       type: "object",
@@ -63,7 +57,7 @@ export const appSchema = {
 
 // This is the canonical full definition, not a separate identity for the alias.
 export const appSchemaCid = CID.parse(
-  "bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq",
+  "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
 );
 export const builtinTypes: ReadonlyMap<string, string> = new Map([
   [appBuiltinAlias, appSchemaCid.toString()],

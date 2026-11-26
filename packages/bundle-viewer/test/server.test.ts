@@ -13,7 +13,6 @@ const definition = {
       required: ["message"],
       properties: { message: { type: "string" } },
     },
-    defaultValue: { message: "" },
   },
 };
 const page =
@@ -168,7 +167,7 @@ describe("React Content Bundle server", () => {
       JSON.stringify({ ...definition, name: "Other" }),
       "does not match",
     ],
-    ["message.json", '{"message":12}', "does not satisfy"],
+    ["message.json", '{"message":12}', "must be string"],
     ["message.json", new Uint8Array([255]), "Invalid"],
     ["message.json", "x".repeat(1024 * 1024 + 1), "exceeds 1 MiB"],
   ])("rejects invalid %s before starting HTTP", async (path, value, error) => {
@@ -230,7 +229,6 @@ describe("React Content Bundle server", () => {
           type: "array",
           items: { anyOf: [{ type: "number" }, { type: "string" }] },
         },
-        defaultValue: [],
       },
     };
     const array = options(
@@ -243,9 +241,9 @@ describe("React Content Bundle server", () => {
       ]),
     );
     array.schema = arrayDefinition;
-    await expect(runBundleViewer(array)).rejects.toThrow(
-      "Viewer validation budget exceeded",
-    );
+    await expect(runBundleViewer(array)).rejects.toMatchObject({
+      cause: { message: "Viewer validation budget exceeded" },
+    });
   });
   it.each(["missing markers", "duplicate markers", "render failure"])(
     "reports %s as HTTP failure, not a successful shell",

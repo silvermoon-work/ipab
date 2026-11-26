@@ -19,15 +19,6 @@ export const templateSchema = {
   entry: {
     path: "template.yaml",
     contentType: "application/yaml",
-    defaultValue: {
-      version: 1,
-      root: "project",
-      render: { suffix: ".liquid" },
-      parameters: {
-        name: { type: "string", required: true },
-        description: { type: "string", default: "" },
-      },
-    },
     schema: {
       $id: "urn:ipab:project-template.v1",
       type: "object",
@@ -74,7 +65,7 @@ export const templateSchema = {
 
 export const templateBuiltinAlias = "builtin:project-template.v1";
 export const templateSchemaCid = CID.parse(
-  "bafyreifrpcmpq6d4yw7vgusylt4cabij6orf5fioiwcfr5t2znykay4y5u",
+  "bafyreihydmyx5qvemxlidzyc7yflwxnidllorpaq7xoxlh264ozjnalqra",
 );
 export async function builtinTemplateSchema() {
   const block = await encodeSchema(templateSchema);

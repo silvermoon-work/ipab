@@ -37,9 +37,19 @@ it("bounds source counts, individual bytes and aggregate Schema work", async () 
     name: "Collection",
     entry: {
       path: "data.json",
-      schema: { type: "array", items: { type: "string" } },
+      schema: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: Object.fromEntries(
+            Array.from({ length: 3000 }, (_, index) => [
+              `value-${index}`,
+              { type: "string" },
+            ]),
+          ),
+        },
+      },
       contentType: "application/json",
-      defaultValue: Array<string>(12_000).fill("value"),
     },
   };
   const source = Buffer.from(JSON.stringify(definition));

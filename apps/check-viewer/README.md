@@ -83,7 +83,9 @@ The authoritative App-supported definition is
 [schemas/check.json](schemas/check.json). The example's `.bundle.yaml` carries
 the same complete definition; a real CAR/SSR regression checks their normalized
 type identity. Copy that definition for other Check bundles; do not substitute
-the old Check JSON Schema (which is broader than the IPAB structural dialect).
+the old Check JSON Schema (which describes a different data contract). Entry
+schemas use standard JSON Schema Draft 2020-12; the Bundle definition carries no
+entry default data.
 
 Use [check.yaml](../../examples/check-spec/check.yaml) for short structural
 data, with explicit [instructions](../../examples/check-spec/instructions)

@@ -29,6 +29,7 @@ catalog:
   "@silvermoon-work/ipfs-access": 0.1.0
   "@silvermoon-work/ipfs-payload": 0.1.0
   ajv: 8.20.0
+  typebox: 1.4.7
   react-markdown: 10.1.0
   remark-gfm: 4.0.1
   blockstore-core: 7.0.1

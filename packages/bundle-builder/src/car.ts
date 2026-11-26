@@ -14,7 +14,7 @@ import {
   openBundle,
   resolveBundleLimits,
 } from "@ipab/bundle";
-import type { BundleLimits, SchemaBlock } from "@ipab/bundle";
+import type { BundleLimits, SchemaBlock, EntryValidation } from "@ipab/bundle";
 import { listTree, streamChunks } from "./tree.js";
 import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 
@@ -24,6 +24,7 @@ export interface BundleCarOptions extends ReadOptions {
 export interface EncodedBundleCar {
   readonly cid: CID;
   readonly schema: SchemaBlock;
+  readonly validation: EntryValidation | null;
   readonly stream: ReadableStream<Uint8Array>;
   readonly retainedBytes: number;
   close(): Promise<void>;
@@ -254,6 +255,7 @@ export async function encodeBundleCar(
       },
       stream,
       schema: bundle.schema,
+      validation: bundle.validation,
       get retainedBytes() {
         return retained;
       },
@@ -333,6 +335,7 @@ export async function encodeSchemaCar(
       return schema.cid;
     },
     schema,
+    validation: null,
     stream,
     get retainedBytes() {
       return bytes.length;

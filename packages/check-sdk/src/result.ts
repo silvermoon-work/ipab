@@ -10,7 +10,6 @@ export const resultDefinition: BundleManifest = {
   entry: {
     path: "result.json",
     contentType: "application/json",
-    defaultValue: { check: "check", checkpoint: "review", pass: true },
     schema: {
       anyOf: [
         {

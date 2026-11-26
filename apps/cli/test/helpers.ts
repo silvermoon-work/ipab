@@ -86,7 +86,6 @@ export async function content(
       path: "data.json",
       schema,
       contentType: "application/json",
-      defaultValue: value,
     },
   };
   const encoded = await encodeSchema(definition);

@@ -37,7 +37,6 @@ const definition = {
     path: "data.json",
     schema: { type: "object" },
     contentType: "application/json",
-    defaultValue: {},
   },
 };
 const schema = await encodeSchema(definition);
@@ -95,6 +94,39 @@ async function directory() {
   return path;
 }
 describe("deterministic bounded UnixFS CAR construction", () => {
+  it("round-trips a single binary entry and reports unsupported semantic validation", async () => {
+    const manifest = {
+      name: "Image",
+      entry: { path: "image.png", contentType: "image/png" },
+    };
+    const image = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10, 255);
+    const encoded = await encodeBundleCar(
+      memoryTree(
+        new Map([
+          [".bundle.yaml", canonicalJson(manifest)],
+          ["image.png", image],
+        ]),
+      ),
+    );
+    try {
+      expect(encoded.validation).toEqual({
+        status: "unsupported",
+        contentType: "image/png",
+      });
+      const decoded = await decode(await consume(encoded.stream));
+      const bundle = await openBundle(decoded.root, decoded);
+      expect(bundle.manifest.entry).not.toHaveProperty("schema");
+      expect(await consume(await bundle.readFile("image.png"))).toEqual(image);
+    } finally {
+      await encoded.close();
+    }
+    const type = await encodeSchemaCar(manifest);
+    try {
+      expect(type.validation).toBeNull();
+    } finally {
+      await type.close();
+    }
+  });
   it("builds the Agent Skill example with its complete type and unchanged Markdown resources", async () => {
     const directory = resolve("../../examples/agent-skill");
     const manifest = parseBundleManifest(
@@ -201,10 +233,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         .Links.every((link) => link.Hash.code !== 0x71),
     ).toBe(true);
     expect(root.toString()).toBe(
-      "bafybeifyrqxyanduvnsl7zthvpqdm7lbfb236wc2p4blopvejhi4ud7rom",
+      "bafybeia6aweeyn7qf367g37z2zrpbix6qgzywgmg7zsw64nur2rbsxv2oa",
     );
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(
-      "95bd6412a18df5bd3d6fc9ac18a0e0c3657a33be4b39a2c2d8fdd593affc4757",
+      "ef044475d040e690345b5a578072bc1f4e6067a26945102dc5f912c45747eb4e",
     );
   });
   it("fixes 256KiB raw leaves and 174-child balanced layout", async () => {
@@ -221,10 +253,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     const encoded = await encodeBundleCar(input, options);
     const archive = await consume(encoded.stream);
     expect(encoded.cid.toString()).toBe(
-      "bafybeic4icjgtqe2oww5rfeqteiy47nju37hzm7nribtyatuhwehbxvffe",
+      "bafybeidtimybgyrdccovrtcrewp5iy5lzgilvugpwebtw5fdz7fvqsmeye",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "6f5d62e9215676417c8cd1e999e4b65281194ac7bfb3f1818103dcad2e5c49ee",
+      "ef7dc310bf005529fc21ad464d037c839d4f17f04b590e00e68d1cda4b4fce97",
     );
     const decoded = await decode(archive);
     const bundle = await openBundle(encoded.cid, decoded);
@@ -281,15 +313,15 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     );
     const archive = await consume(output.stream);
     expect(output.cid.toString()).toBe(
-      "bafybeigjmnh6eglsojqexzo2fc7ljetqjv4ec3xnfyxtrnyislnbbetrtm",
+      "bafybeicwzfzvlw7x4m52ijrsapx6iqarogwggsodzv4upjxumjpyskpwty",
     );
     expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      "ec8907af5c5ceeba9403880f03c3cde1b60d3b439831cee14a26cb08a5e1e222",
+      "72466b6d60ac1ad4d46158559986cb088da33423e24fc6caa7b0b4088923abd4",
     );
   });
   it("does not normalize manifest or attachment bytes", async () => {
     const manifest = text(
-      "name: Builder\r\nentry:\r\n  path: data.json\r\n  schema:\r\n    type: object\r\n  contentType: application/json\r\n  defaultValue: {}\r\n",
+      "name: Builder\r\nentry:\r\n  path: data.json\r\n  schema:\r\n    type: object\r\n  contentType: application/json\r\n",
     );
     const encoded = await encodeBundleCar(
       memoryTree(

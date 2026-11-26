@@ -113,7 +113,8 @@ ipab --help
   拆成 Bundle 内的 Markdown 文件；[示例](examples/check-spec)。
 - [Check SDK](packages/check-sdk) 与 [Check App 模板](templates/check)：从 STDIN
   校验 JSON、顺序组合 Checkpoints，输出链接原始 Check model 的 Result Bundle。
-- [Bundle 工具](docs/reference.md#bundle-开发底层)：初始化、构建、检查与导入。
+- [Bundle 工具](docs/reference.md#bundle-开发底层)：构建、检查与导入；
+  根 `ipab init` 通过通用 Template Bundle 创建项目或内容。
 - [Agent Skill Bundle](docs/reference.md#agent-skill-bundle)：以 Markdown 为入口，
   校验 frontmatter 元数据；[可构建示例](examples/agent-skill)。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·

@@ -49,9 +49,11 @@
     "test-coverage": "node scripts/test-coverage.mjs"
   },
   "dependencies": {
+    "ajv": "catalog:",
     "@ipld/dag-cbor": "catalog:",
     "@ipab/ipfs-store": "workspace:*",
     "multiformats": "catalog:",
+    "typebox": "catalog:",
     "yaml": "catalog:"
   },
   "devDependencies": {

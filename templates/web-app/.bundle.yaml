@@ -3,18 +3,6 @@ description: Data-only Liquid project content bundle.
 entry:
   path: template.yaml
   contentType: application/yaml
-  defaultValue:
-    version: 1
-    root: project
-    render:
-      suffix: .liquid
-    parameters:
-      name:
-        type: string
-        required: true
-      description:
-        type: string
-        default: ""
   schema:
     $id: urn:ipab:project-template.v1
     type: object

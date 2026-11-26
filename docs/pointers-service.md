@@ -71,7 +71,8 @@ Swarm Bundle 就把本机 key 转发给描述中的服务；跨 origin 重定向
 
 `id` 由服务端安全随机生成，不是用户选择的名称，也不是密码。
 正常响应不包含 owner 私钥、成员证书或 API key。
-所有响应使用 `Cache-Control: no-store`。
+状态响应使用 `Cache-Control: no-store, no-transform`，
+禁止边缘压缩转换把用于 CAS 的强 ETag 降为弱 ETag。
 可保留不含 pointer 状态的服务存活检查，但不提供公开 root 读取。
 
 ### POST：创建

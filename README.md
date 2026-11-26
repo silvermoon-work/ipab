@@ -126,6 +126,8 @@ ipab --help
   对应的签名指针服务见 [pointer-worker](packages/pointer-worker)。
 - [签名指针服务](packages/pointer-worker)：每个 swarm 一个可变 HEAD，
   Ed25519 签名请求与成员证书，`If-Match` 版本乐观锁。
+- [Cloudflare 自安装 Apps](apps/cf-tools)：将 Pointer Worker 构建为内容 Bundle，
+  用两个普通 App 本地运行／部署；首次安装锁定的 npm 依赖，支持 `--reinstall`。
 - [Pointers service API](docs/pointers-service.md)：服务端分配 pointer ID，
   API key 创建、owner/member 签名读写与 nonce 防重放。
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。

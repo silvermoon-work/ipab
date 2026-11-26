@@ -9,6 +9,7 @@
     "node": ">=22.15.0"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit --project tsconfig.json",
@@ -24,6 +25,8 @@
   "devDependencies": {
     "@ipab/cli": "workspace:*",
     "@ipld/car": "catalog:",
+    "@ipab/bundle-builder": "workspace:*",
+    "esbuild": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

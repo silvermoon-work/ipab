@@ -82,6 +82,25 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 
 ## Engineering
 
+- private `apps/cf-tools` builds two ordinary Node App CARs, cf-local/cf-deploy.
+  Their shared bootstrap installs the embedded locked pnpm payload per App CID,
+  platform/architecture/exact Node version; ready caches are trusted without
+  content revalidation. `--reinstall` uses fresh staging and preserves
+  application state. Installation holds an exclusive SQLite rollback-journal
+  transaction; running instances hold shared read transactions, allowing
+  concurrent normal runs but rejecting reinstall while in use. Process
+  termination releases locks automatically. Exact locally installed payload
+  packageManager is required; no automatic pnpm download/version switching or
+  global policy edits. Payload enables pnpm's global virtual store to share
+  dependencies and avoid Windows native-executable path-length failures. Worker
+  CARs are built by pointer-worker from wrangler.toml's portable contract,
+  excluding instance configuration and secrets. cf-deploy defaults to dry-run;
+  only the App's explicit `--deploy` flag enables remote writes. Builds never
+  touch the device Store. Real startup/install smoke is release-e2e, not CI
+  mock. cf-tools reuses the workspace CLI's built App definition/context
+  declarations and Pointer operator's protected-file helper; no new
+  runtime/profile is added.
+
 - 使用根 `.node-version` 的准确开发 Node 和 `packageManager` 的准确 pnpm。
 - workspace 为 `apps/*` 与 `packages/*`；共享依赖使用 catalog，内部依赖使用
   `workspace:*`。

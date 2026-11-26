@@ -22,7 +22,7 @@ function json(
   return Response.json(body, {
     status,
     headers: {
-      "cache-control": "no-store",
+      "cache-control": "no-store, no-transform",
       "x-content-type-options": "nosniff",
       ...headers,
     },

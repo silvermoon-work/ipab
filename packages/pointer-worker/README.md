@@ -179,6 +179,18 @@ pnpm cli read --config-file .keys\config.json --key .keys\certified-member.json 
 Save the returned pointer ID before building any higher-level descriptor. API
 keys only authorize creation; they never authorize GET/PUT or certificates.
 
+## IPAB Worker Bundle
+
+`pnpm exec turbo run build --filter=@ipab/pointer-worker` builds
+`dist/worker.car` and writes its CID to `dist/worker.cid`, without importing or
+pinning content. The Bundle contains prebuilt ESM and the portable
+compatibility/DO/migration/observability contract read from `wrangler.toml`; it
+excludes account names, routes, instance vars, credentials and secrets. The
+Worker source and existing direct `pnpm dev` / `pnpm deploy` remain unchanged.
+
+Two [self-installing Apps](../../apps/cf-tools/README.md) consume the same
+Worker Bundle for local simulation or explicitly authorized deployment.
+
 ## Validation
 
 ```powershell

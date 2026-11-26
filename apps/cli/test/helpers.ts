@@ -175,6 +175,7 @@ export async function cli(
     tty?: boolean;
     columns?: number;
     confirm?: IO["confirm"];
+    readSecret?: IO["readSecret"];
     diagnostic?: (text: string) => void;
   } = {},
 ): Promise<{ code: number; out: string; err: string }> {
@@ -195,6 +196,7 @@ export async function cli(
         return options.columns;
       },
       confirm: options.confirm ?? (() => Promise.resolve(false)),
+      ...(options.readSecret ? { readSecret: options.readSecret } : {}),
     },
     options.env ?? {},
   );
@@ -214,6 +216,8 @@ export async function subprocess(
     "IPAB_STATE_DIR",
     "IPAB_STORE_GATEWAY",
     "IPAB_STORE_RPC",
+    "IPAB_POINTERS_SERVICE",
+    "IPAB_POINTERS_API_KEY",
     "IPAB_HISTORY_ENABLED",
     "IPAB_HISTORY_LIMIT",
     "IPAB_OUTPUT_RETENTION",

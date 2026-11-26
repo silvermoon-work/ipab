@@ -2,7 +2,7 @@
   "name": "@ipab/pointer-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Signed pointer Worker: one optimistic-locked HEAD value per swarm, Ed25519 requests and delegation certificates.",
+  "description": "Signed publication pointers with owner-issued member certificates and atomic revision CAS.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -16,6 +16,9 @@
     "test-ci": "vitest run --root . --config ../../vitest.config.ts --tags-filter \"(unit or mock) and !release-e2e\"",
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage",
     "cli": "tsx scripts/cli.ts"
+  },
+  "dependencies": {
+    "multiformats": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",

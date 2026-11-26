@@ -1,361 +1,458 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  AdminClient,
-  PointerApiError,
   PointerClient,
+  PointerApiError,
   rawPublicKeyBytes,
   utf8Bytes,
 } from "../src/client.ts";
-import { fromBase64Url, generateKeyPair, toBase64Url } from "../src/crypto.ts";
-import { NOW, createService, world } from "./helpers.ts";
+import { runOperator } from "../src/operator.ts";
+import { fromBase64Url, publicKeyToPem, sha256Hex } from "../src/crypto.ts";
+import {
+  API_KEY,
+  NOW,
+  ROOT,
+  ROOT2,
+  SERVICE,
+  createPointer,
+  createService,
+  generateKeyPair,
+  makeCert,
+} from "./helpers.ts";
 
-const BASE = "https://pointer.example";
-
-async function signer(subject = "alice") {
-  const keys = await generateKeyPair();
-  return { keys, signer: { privateKey: keys.privatePkcs8, subject } };
-}
-
-async function pointerWorld(name = "demo") {
-  const adminKeys = await generateKeyPair();
-  const service = createService({ adminPublicKey: adminKeys.publicRaw });
-  const admin = new AdminClient({
-    baseUrl: BASE,
-    signer: { privateKey: adminKeys.privatePkcs8, subject: "admin" },
-    fetch: service.fetch,
-  });
-  const w = await world();
-  await admin.create(name, w.root.publicRaw);
-  return { service, admin, w };
-}
-
-describe("PointerClient", () => {
-  it("validates its options", { tags: ["unit"] }, async () => {
-    const { signer: s } = await signer();
-    expect(
-      () => new PointerClient({ baseUrl: "", signer: s, now: () => NOW }),
-    ).toThrow("baseUrl is required");
-    expect(
-      () =>
-        new PointerClient({
-          baseUrl: `${BASE}/demo`,
-          signer: { privateKey: "" },
-          now: () => NOW,
-        }),
-    ).toThrow("signer.privateKey is required");
-    expect(
-      () =>
-        new PointerClient({
-          baseUrl: `${BASE}/demo`,
-          signer: { privateKey: s.privateKey },
-          now: () => NOW,
-        }),
-    ).toThrow("signer.subject is required");
-  });
-
-  it("reads capabilities without signing", { tags: ["mock"] }, async () => {
-    const { service, w } = await pointerWorld();
+describe("new client shapes", { tags: ["mock"] }, () => {
+  it("creates, reads, writes and returns authorized 412 current state", async () => {
+    const service = await createService(),
+      owner = await generateKeyPair();
     const client = new PointerClient({
-      baseUrl: `${BASE}/demo`,
-      signer: {
-        privateKey: w.agent1.keys.privatePkcs8,
-        certificates: w.agent1.chain,
-      },
+      service: SERVICE,
+      apiKey: API_KEY,
+      signer: { privateKey: owner.privatePkcs8, publicKey: owner.publicRaw },
       fetch: service.fetch,
       now: () => NOW,
     });
-    const capabilities = await client.capabilities();
-    expect(capabilities).toMatchObject({ pointer: "demo", protocol: 1 });
-  });
-
-  it(
-    "reads, writes and creates through the in-process Worker",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo/`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-
-      const empty = await client.read();
-      expect(empty).toMatchObject({ value: "", version: 0, etag: '"0"' });
-
-      const created = await client.create("first");
-      expect(created).toMatchObject({
-        value: "first",
-        version: 1,
-        etag: '"1"',
-      });
-
-      const updated = await client.write("second", { ifVersion: 1 });
-      expect(updated).toMatchObject({ value: "second", version: 2 });
-
-      const idempotent = await client.write("second", {
-        ifVersion: 2,
-      });
-      expect(idempotent.version).toBe(3);
-    },
-  );
-
-  it(
-    "signs with a certificate chain and narrows scope per request",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: {
-          privateKey: w.reader.keys.privatePkcs8,
-          certificates: w.reader.chain,
-          scope: { read: true, write: false },
-        },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-      const read = await client.read();
-      expect(read.signer).toMatchObject({
-        subject: "alice/reader",
-        direct: false,
-      });
-    },
-  );
-
-  it(
-    "retries a conflicting update a bounded number of times",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-      const other = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-
-      let calls = 0;
-      const result = await client.update(async () => {
-        calls += 1;
-        if (calls === 1) {
-          // Another writer wins the race between read and write.
-          await other.create("winner");
-        }
-        return `value-${calls}`;
-      });
-      expect(calls).toBe(2);
-      expect(result).toMatchObject({ value: "value-2", version: 2 });
-    },
-  );
-
-  it(
-    "stops retrying after the attempt limit and surfaces the conflict",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-      await client.create("baseline");
-
-      const error = await client
-        .update(
-          async () => {
-            await client.write("racing", { ifVersion: 1 });
-            return "never";
-          },
-          { maxAttempts: 1 },
-        )
-        .catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(PointerApiError);
-      expect((error as PointerApiError).status).toBe(412);
-    },
-  );
-
-  it("wraps non-JSON error responses", { tags: ["unit"] }, async () => {
-    const { signer: s } = await signer();
-    const client = new PointerClient({
-      baseUrl: `${BASE}/demo`,
-      signer: s,
-      now: () => NOW,
-      fetch: () => Promise.resolve(new Response("boom", { status: 500 })),
+    const { id } = await client.create(ROOT, { idempotencyKey: "create" });
+    expect(await client.create(ROOT, { idempotencyKey: "create" })).toEqual({
+      id,
     });
-    const error = await client.read().catch((err: unknown) => err);
-    expect(error).toBeInstanceOf(PointerApiError);
-    expect((error as PointerApiError).code).toBe("http_error");
-    expect((error as PointerApiError).current).toBeUndefined();
+    expect(await client.read(id)).toEqual({
+      root: ROOT,
+      revision: "1",
+      etag: '"1"',
+    });
+    const written = await client.write(id, ROOT2, {
+      ifRevision: "1",
+      idempotencyKey: "edit",
+    });
+    expect(written).toEqual({ root: ROOT2, revision: "2", etag: '"2"' });
+    expect(await client.create(ROOT, { idempotencyKey: "create" })).toEqual({
+      id,
+    });
+    expect(await client.read(id)).toEqual(written);
+    expect(
+      await client.write(id, ROOT2, {
+        ifRevision: "1",
+        idempotencyKey: "edit",
+      }),
+    ).toEqual(written);
+    try {
+      await client.write(id, ROOT, { ifRevision: "1" });
+      throw new Error("expected conflict");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PointerApiError);
+      expect(err).toMatchObject({
+        status: 412,
+        code: "precondition_failed",
+        current: { root: ROOT2, revision: "2" },
+      });
+    }
   });
-
-  it(
-    "exposes the current state on precondition failures",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-      await client.create("first");
-      const error = await client
-        .write("second", { ifVersion: 0 })
-        .catch((err: unknown) => err);
-      expect((error as PointerApiError).current).toEqual({
-        value: "first",
-        version: 1,
-      });
-    },
-  );
-
-  it("honours an injected clock and nonce", { tags: ["unit"] }, async () => {
-    const { signer: s } = await signer();
-    const seen: string[] = [];
+  it("only sends the API key on creation, rejects redirects and lets members read/write", async () => {
+    const service = await createService(),
+      owner = await generateKeyPair(),
+      member = await generateKeyPair();
+    const seen: RequestInit[] = [];
+    const transport: typeof fetch = (url, init) => {
+      seen.push(init!);
+      return service.fetch(url, init);
+    };
     const client = new PointerClient({
-      baseUrl: `${BASE}/demo`,
-      signer: s,
-      now: () => 1_700_000_000,
-      nonce: () => "fixed-nonce-01234567",
-      fetch: (input, init) => {
-        const request =
-          input instanceof Request ? input : new Request(input, init);
-        seen.push(request.headers.get("x-pointer-timestamp") ?? "");
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              value: "",
-              version: 0,
-              updatedAt: null,
-              updatedBy: null,
-            }),
-            { status: 200, headers: { etag: '"0"' } },
-          ),
-        );
+      service: SERVICE,
+      apiKey: API_KEY,
+      signer: { privateKey: owner.privatePkcs8, publicKey: owner.publicRaw },
+      fetch: transport,
+    });
+    const { id } = await client.create(ROOT);
+    await client.read(id);
+    await client.write(id, ROOT2, { ifRevision: "1" });
+    expect(new Headers(seen[0]!.headers).get("x-api-key")).toBe(API_KEY);
+    for (const request of seen.slice(1)) {
+      expect(new Headers(request.headers).get("x-api-key")).toBeNull();
+      expect(request.redirect).toBe("error");
+    }
+    const certificate = await makeCert(owner, member, id);
+    const memberClient = new PointerClient({
+      service: SERVICE,
+      apiKey: API_KEY,
+      signer: {
+        privateKey: member.privatePkcs8,
+        publicKey: member.publicRaw,
+        certificate,
       },
+      fetch: service.fetch,
     });
-    const result = await client.read();
-    expect(result.version).toBe(0);
-    expect(seen).toEqual(["1700000000"]);
+    expect((await memberClient.read(id)).revision).toBe("2");
+    expect(
+      (await memberClient.write(id, ROOT, { ifRevision: "2" })).revision,
+    ).toBe("3");
+    await expect(memberClient.create(ROOT)).rejects.toThrow("direct owner");
   });
-
-  it(
-    "sends an idempotency key when one is given",
-    { tags: ["mock"] },
-    async () => {
-      const { service, w } = await pointerWorld();
-      const client = new PointerClient({
-        baseUrl: `${BASE}/demo`,
-        signer: { privateKey: w.root.privatePkcs8, subject: "alice" },
-        fetch: service.fetch,
-        now: () => NOW,
-      });
-      const result = await client.create("first", { idempotencyKey: "idem-1" });
-      expect(result.version).toBe(1);
-    },
-  );
-});
-
-describe("AdminClient", () => {
-  it("requires direct signing", { tags: ["unit"] }, async () => {
-    const w = await world();
+  it("validates options and safe client preconditions", async () => {
+    const owner = await generateKeyPair(),
+      signer = { privateKey: owner.privatePkcs8, publicKey: owner.publicRaw };
+    expect(
+      () => new PointerClient({ service: "http://public.example", signer }),
+    ).toThrow();
     expect(
       () =>
-        new AdminClient({
-          baseUrl: `${BASE}/demo`,
-          signer: {
-            privateKey: w.agent1.keys.privatePkcs8,
-            certificates: w.agent1.chain,
-          },
-          now: () => NOW,
+        new PointerClient({
+          service: SERVICE,
+          signer: { ...signer, publicKey: "AAAA" },
         }),
-    ).toThrow(/direct/);
+    ).toThrow("full canonical");
+    expect(
+      () =>
+        new PointerClient({
+          service: SERVICE,
+          signer: { ...signer, privateKey: "" },
+        }),
+    ).toThrow("private key");
+    expect(
+      () =>
+        new PointerClient({
+          service: SERVICE,
+          signer,
+          apiKey: "private\nmalformed-key",
+        }),
+    ).toThrow("canonical base64url");
+    const client = new PointerClient({
+      service: SERVICE,
+      signer,
+      nonce: () => "a".repeat(32),
+    });
+    await expect(client.create(ROOT)).rejects.toThrow("API key");
+    await expect(client.read("named-pointer")).rejects.toThrow(
+      "invalid pointer ID",
+    );
+    await expect(client.write("id", ROOT, { ifRevision: "0" })).rejects.toThrow(
+      "positive canonical",
+    );
+    expect([...rawPublicKeyBytes(owner.publicRaw)]).toEqual([
+      ...fromBase64Url(owner.publicRaw),
+    ]);
+    expect([...rawPublicKeyBytes(publicKeyToPem(owner.publicRaw))]).toEqual([
+      ...fromBase64Url(owner.publicRaw),
+    ]);
+    expect(new TextDecoder().decode(utf8Bytes("héllo"))).toBe("héllo");
   });
-
-  it(
-    "mints admin requests that verify against the admin key",
-    { tags: ["unit"] },
-    async () => {
-      const keys = await generateKeyPair();
-      const captured: Request[] = [];
-      const client = new AdminClient({
-        baseUrl: "https://pointers.example",
-        signer: { privateKey: keys.privatePkcs8, subject: "admin" },
-        now: () => NOW,
-        nonce: () => "admin-nonce-0123456789",
-        fetch: (input, init) => {
-          captured.push(
-            input instanceof Request ? input : new Request(input, init),
-          );
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                name: "demo",
-                pubkey: keys.publicRaw,
-                createdAt: NOW,
-              }),
-              { status: 201, headers: { "content-type": "application/json" } },
-            ),
-          );
-        },
-      });
-      const created = await client.create("demo", keys.publicRaw);
-      expect(created.name).toBe("demo");
-      expect(captured).toHaveLength(1);
-      expect(captured[0]!.headers.get("x-pointer-subject")).toBe("admin");
-      expect(captured[0]!.headers.get("authorization")).toMatch(/^Ed25519 /);
-    },
-  );
-
-  it(
-    "lists, reads, rotates and removes pointers",
-    { tags: ["mock"] },
-    async () => {
-      const adminKeys = await generateKeyPair();
-      const service = createService({ adminPublicKey: adminKeys.publicRaw });
-      const admin = new AdminClient({
-        baseUrl: BASE,
-        signer: { privateKey: adminKeys.privatePkcs8, subject: "admin" },
-        fetch: service.fetch,
-      });
-      const target = await generateKeyPair();
-      const replacement = await generateKeyPair();
-
-      await admin.create("demo", target.publicRaw);
-      expect((await admin.list()).variables).toHaveLength(1);
-      expect((await admin.get("demo")).pubkey).toBe(target.publicRaw);
-      expect((await admin.rotate("demo", replacement.publicRaw)).pubkey).toBe(
-        replacement.publicRaw,
-      );
-      expect(await admin.remove("demo")).toEqual({ deleted: "demo" });
-
-      const error = await admin.get("demo").catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(PointerApiError);
-      expect((error as PointerApiError).status).toBe(404);
-      expect((error as PointerApiError).body).toMatchObject({
-        error: { code: "unknown_pointer" },
-      });
-    },
-  );
+  it("surfaces HTTP errors without fabricating current state", async () => {
+    const owner = await generateKeyPair();
+    const client = new PointerClient({
+      service: SERVICE,
+      signer: { privateKey: owner.privatePkcs8, publicKey: owner.publicRaw },
+      fetch: () => Promise.resolve(Response.json({}, { status: 503 })),
+      nonce: () => "a".repeat(32),
+      now: () => NOW,
+    });
+    await expect(client.read("A".repeat(43))).rejects.toMatchObject({
+      status: 503,
+      code: "http_error",
+      current: undefined,
+      message: "HTTP 503",
+    });
+  });
 });
 
-describe("key helpers", () => {
-  it("loads raw keys from base64url and PEM", { tags: ["unit"] }, async () => {
-    const keys = await generateKeyPair();
-    const raw = rawPublicKeyBytes(keys.publicRaw);
-    expect([...raw]).toEqual([...fromBase64Url(keys.publicRaw)]);
-
-    const pem = `-----BEGIN PUBLIC KEY-----\n${toBase64Url(new Uint8Array([48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33, 0, ...raw]))}\n-----END PUBLIC KEY-----`;
-    expect([...rawPublicKeyBytes(pem)]).toEqual([...raw]);
-    expect([...utf8Bytes("abc")]).toEqual([97, 98, 99]);
+describe("operator commands", { tags: ["mock"] }, () => {
+  it("consumes flat protected JSON config or aligned environment without exposing the API key", async () => {
+    const service = await createService(),
+      owner = await generateKeyPair();
+    const key = JSON.stringify({
+      publicKey: owner.publicRaw,
+      privateKey: owner.privatePkcs8,
+    });
+    const output: string[] = [];
+    const io = {
+      env: {},
+      print: (line: string) => output.push(line),
+      fetch: service.fetch,
+      read: (path: string) =>
+        Promise.resolve(
+          path === "config.json"
+            ? JSON.stringify({
+                "pointers.service": SERVICE,
+                "pointers.apiKey": API_KEY,
+              })
+            : key,
+        ),
+    };
+    await runOperator(
+      [
+        "create",
+        "--key",
+        "owner.json",
+        "--root",
+        ROOT,
+        "--config-file",
+        "config.json",
+        "--idempotency-key",
+        "first",
+      ],
+      io,
+    );
+    const { id } = JSON.parse(output.pop()!) as { id: string };
+    await runOperator(["read", "--key", "owner.json", "--id", id], {
+      ...io,
+      env: { IPAB_POINTERS_SERVICE: SERVICE },
+    });
+    expect(JSON.parse(output.pop()!)).toEqual({
+      root: ROOT,
+      revision: "1",
+      etag: '"1"',
+    });
+    await runOperator(
+      [
+        "write",
+        "--key",
+        "owner.json",
+        "--id",
+        id,
+        "--root",
+        ROOT2,
+        "--if-revision",
+        "1",
+      ],
+      {
+        ...io,
+        env: { IPAB_POINTERS_SERVICE: SERVICE, IPAB_POINTERS_API_KEY: API_KEY },
+      },
+    );
+    expect(JSON.parse(output.pop()!)).toEqual({
+      root: ROOT2,
+      revision: "2",
+      etag: '"2"',
+    });
+    await runOperator(
+      [
+        "create",
+        "--key",
+        "owner.json",
+        "--root",
+        ROOT,
+        "--service",
+        SERVICE,
+        "--api-key-file",
+        "api-key.txt",
+      ],
+      {
+        ...io,
+        read: (path) =>
+          Promise.resolve(path === "api-key.txt" ? `${API_KEY}\n` : key),
+      },
+    );
+    expect(output.join("\n")).not.toContain(API_KEY);
+  });
+  it("issues only owner leaf certificates bound to service, ID, member and validity", async () => {
+    const service = await createService(),
+      owner = await generateKeyPair(),
+      member = await generateKeyPair();
+    const id = await createPointer(service, owner),
+      stores = new Map([
+        [
+          "owner.json",
+          JSON.stringify({
+            publicKey: owner.publicRaw,
+            privateKey: owner.privatePkcs8,
+          }),
+        ],
+        [
+          "member.json",
+          JSON.stringify({
+            publicKey: member.publicRaw,
+            privateKey: member.privatePkcs8,
+          }),
+        ],
+      ]);
+    const io = {
+      env: { IPAB_POINTERS_SERVICE: SERVICE },
+      print: vi.fn(),
+      read: (path: string) => Promise.resolve(stores.get(path)!),
+      save: (path: string, text: string) => {
+        stores.set(path, text);
+        return Promise.resolve();
+      },
+    };
+    await runOperator(
+      [
+        "certify",
+        "--issuer",
+        "owner.json",
+        "--member-key",
+        "member.json",
+        "--id",
+        id,
+        "--out",
+        "certified.json",
+      ],
+      io,
+    );
+    const signer = JSON.parse(stores.get("certified.json")!) as {
+      publicKey: string;
+      privateKey: string;
+      certificate: Awaited<ReturnType<typeof makeCert>>;
+    };
+    expect(signer.certificate.body).toMatchObject({
+      service: SERVICE,
+      pointerId: id,
+      owner: owner.publicRaw,
+      member: member.publicRaw,
+      v: 2,
+    });
+    expect(
+      (
+        await new PointerClient({
+          service: SERVICE,
+          signer,
+          fetch: service.fetch,
+        }).read(id)
+      ).revision,
+    ).toBe("1");
+    await expect(
+      runOperator(
+        [
+          "certify",
+          "--issuer",
+          "certified.json",
+          "--member-key",
+          "member.json",
+          "--id",
+          id,
+          "--out",
+          "delegated.json",
+        ],
+        io,
+      ),
+    ).rejects.toThrow("member delegation");
+    await expect(
+      runOperator(
+        [
+          "certify",
+          "--issuer",
+          "owner.json",
+          "--member-key",
+          "member.json",
+          "--id",
+          id,
+          "--out",
+          "invalid.json",
+          "--days",
+          "0",
+        ],
+        io,
+      ),
+    ).rejects.toThrow("positive");
+    await expect(
+      runOperator(
+        [
+          "certify",
+          "--issuer",
+          "owner.json",
+          "--member-key",
+          "member.json",
+          "--id",
+          id,
+          "--out",
+          "short.json",
+          "--days",
+          "0.0000000001",
+        ],
+        io,
+      ),
+    ).rejects.toThrow("positive safe validity");
+  });
+  it("generates API key material only on explicit invocation and prints the key once plus digest instructions", async () => {
+    const random = vi
+      .spyOn(crypto, "getRandomValues")
+      .mockImplementation((array) => array);
+    try {
+      const lines: string[] = [];
+      await runOperator(["api-key"], { print: (line) => lines.push(line) });
+      expect(lines[0]).toBe("A".repeat(43));
+      expect(lines[1]).toContain(await sha256Hex(lines[0]!));
+      expect(lines.slice(1).join("\n")).not.toContain(lines[0]!);
+      expect(random).toHaveBeenCalledTimes(1);
+    } finally {
+      random.mockRestore();
+    }
+  });
+  it("keygen writes a keystore without printing private key material", async () => {
+    const stores = new Map<string, string>(),
+      lines: string[] = [];
+    await runOperator(["keygen", "--out", "owner.json"], {
+      print: (line) => lines.push(line),
+      save: (path, text) => {
+        stores.set(path, text);
+        return Promise.resolve();
+      },
+    });
+    const key = JSON.parse(stores.get("owner.json")!) as {
+      privateKey: string;
+      publicKey: string;
+    };
+    expect(lines.join("\n")).not.toContain(key.privateKey);
+    expect(lines.join("\n")).toContain(key.publicKey);
+  });
+  it("rejects malformed config, missing options, old commands and invalid IDs", async () => {
+    const owner = await generateKeyPair();
+    const io = {
+      env: { IPAB_POINTERS_SERVICE: SERVICE },
+      read: () =>
+        Promise.resolve(
+          JSON.stringify({
+            publicKey: owner.publicRaw,
+            privateKey: owner.privatePkcs8,
+          }),
+        ),
+    };
+    await expect(runOperator(["read"], io)).rejects.toThrow("--key required");
+    await expect(
+      runOperator(["read", "--key", "owner.json", "--id", "named"], io),
+    ).rejects.toThrow("invalid pointer ID");
+    await expect(
+      runOperator(["rotate", "--key", "owner.json"], io),
+    ).rejects.toThrow("commands:");
+    await expect(
+      runOperator(["read", "--config-file", "config.json"], {
+        ...io,
+        read: () => Promise.resolve("[]"),
+      }),
+    ).rejects.toThrow("JSON object");
+    await expect(
+      runOperator(["read", "--config-file", "config.json"], {
+        ...io,
+        read: () => Promise.resolve('{"pointers.apiKey":"private-fragment'),
+      }),
+    ).rejects.toThrow("valid protected JSON");
+    await expect(
+      runOperator(["read", "--key", "owner.json"], {
+        ...io,
+        read: () => Promise.resolve('{"privateKey":"private-fragment'),
+      }),
+    ).rejects.toThrow("valid protected JSON");
+    await expect(
+      runOperator(["read", "--key", "owner.json"], {
+        ...io,
+        read: () => Promise.resolve("{}"),
+      }),
+    ).rejects.toThrow("requires canonical");
   });
 });

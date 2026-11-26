@@ -11,6 +11,7 @@ import {
   publicUrl,
   stateLocation,
   storeConfiguration,
+  visibleConfig,
   type GlobalOptions,
 } from "./config.js";
 import { HostError, message, object, syntax } from "./errors.js";
@@ -31,6 +32,7 @@ import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
 import { logFiles } from "./logs.js";
 import { builtinContent } from "./builtins.js";
+import { readSecretStream } from "./config-secret.js";
 
 export interface IO {
   out(text: string): void;
@@ -38,6 +40,7 @@ export interface IO {
   tty: boolean;
   columns?(): number | undefined;
   confirm(text: string): Promise<boolean>;
+  readSecret?(): Promise<string>;
 }
 export const processIO: IO = {
   out(text) {
@@ -49,6 +52,14 @@ export const processIO: IO = {
   tty: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   columns() {
     return process.stdout.columns;
+  },
+  async readSecret() {
+    if (process.stdin.isTTY)
+      syntax(
+        "Pipe the API key through stdin; interactive echo is not permitted.",
+      );
+    process.stdin.setEncoding("utf8");
+    return readSecretStream(process.stdin as AsyncIterable<string>);
   },
   async confirm(text) {
     const reader = createInterface({
@@ -81,7 +92,8 @@ const commands: Record<string, string> = {
   "register set": "register set SCHEMA APP [--replace] [-- TEMPLATE...]",
   "register remove": "register remove SCHEMA",
   "config get": "config get [KEY]",
-  "config set": "config set KEY VALUE",
+  "config set":
+    "config set KEY VALUE\n       ipab config set pointers.apiKey - < protected-key-file",
   "config reset": "config reset KEY",
   "store usage": "store usage",
   "store gc": "store gc",
@@ -311,6 +323,9 @@ const commandHelp: Record<
     ],
     notes: [
       "store.gateway is a read-only HTTP gateway; blocks, pins and GC remain local.",
+      "pointers.service is a canonical HTTPS origin (HTTP loopback allowed).",
+      "pointers.apiKey is accepted only through stdin using VALUE '-'; queries and confirmations redact it.",
+      "Saving pointers.apiKey protects state SQLite files with account-only Unix modes or Windows ACLs.",
     ],
   },
   "config reset": {
@@ -743,8 +758,15 @@ export function parse(argv: readonly string[]): Parsed {
       !(result.path === "config reset" && result.positional[0] === "store.rpc")
     )
       configKey(result.positional[0]);
-    if (result.path === "config set")
-      parseValue(configKey(result.positional[0]), result.positional[1], true);
+    if (result.path === "config set") {
+      if (result.positional[0] === "pointers.apiKey") {
+        if (result.positional[1] !== "-")
+          syntax(
+            "Set pointers.apiKey using '-' and piped stdin; never put the key in command-line arguments.",
+          );
+      } else
+        parseValue(configKey(result.positional[0]), result.positional[1], true);
+    }
   }
   if (typeof result.options.limit === "string")
     parseValue("history.limit", result.options.limit, true);
@@ -1113,9 +1135,9 @@ async function performCli(
         break;
       }
       case "config get": {
-        const selected = first
-          ? items.filter((item) => item.key === first)
-          : items;
+        const selected = (
+          first ? items.filter((item) => item.key === first) : items
+        ).map(visibleConfig);
         emit(
           { items: selected },
           table(
@@ -1128,14 +1150,21 @@ async function performCli(
       }
       case "config set": {
         const key = configKey(first!);
-        const saved = parseValue(key, second, true);
+        const saved = parseValue(
+          key,
+          key === "pointers.apiKey"
+            ? await (io.readSecret ?? processIO.readSecret!)()
+            : second,
+          true,
+        );
         state.setConfig(key, saved);
         const source = items.find((item) => item.key === key)!.source;
         if (source === "env" || source === "flag")
           io.err(`Warning: saved user value is masked by ${source}.`);
+        const display = visibleConfig({ key, value: saved, source: "user" });
         emit(
-          { key, value: saved, source: "user" },
-          `Saved ${key} = ${printable(String(saved))} (user).`,
+          display,
+          `Saved ${key} = ${printable(String(display.value))} (user).`,
         );
         break;
       }

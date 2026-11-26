@@ -1,6 +1,5 @@
-# Pinned Ed25519 public key of the admin key allowed to manage pointers.
-# Generate a key and print its public half with:
-#   pnpm cli keygen --subject admin --out .keys/admin.json
-POINTER_ADMIN_PUBLIC_KEY=replace-me
-# Optional: only set if a browser client on another origin must call the API.
-# ALLOWED_ORIGIN=https://example.com
+POINTER_SERVICE="http://127.0.0.1:8787"
+# Operator: pnpm cli api-key, then copy its SHA-256 digest below.
+# Do not put the raw API key in this Worker configuration.
+POINTER_API_KEY_SHA256=""
+ALLOWED_ORIGIN=""

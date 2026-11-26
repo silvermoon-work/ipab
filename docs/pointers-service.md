@@ -1,8 +1,8 @@
 # Pointers service：swarm root pointer API
 
-**状态：API 设计已确认，实现改造进行中。**
-本文规定目标接口，不代表现有
-[pointer-worker](../packages/pointer-worker) 已完成迁移。
+**状态：API 与本地实现已完成，尚未部署验证。**
+实现位于 [pointer-worker](../packages/pointer-worker)，
+完整 CLI 入群与同步流程仍未接入。
 对应用户链路见 [MVP 主链路](mvp-user-journey.md)，授权要求见
 [swarm 授权](swarm-authorization.md)。
 
@@ -47,7 +47,8 @@ pointers.service = https://pointers.example.com
 pointers.apiKey = <API key>
 ```
 
-这些是目标 cfg 键，具体工具入口随实现提供，不代表现有 CLI 已支持。
+IPAB CLI 已支持这两个 cfg 键；服务运维工具使用显式参数、环境变量或受保护的
+平面 JSON cfg，不直接读取 IPAB 的 SQLite 配置。
 cfg 只允许所属 OS 账号访问；Unix 使用文件权限，Windows 使用 ACL。
 配置查询与保存确认的文本和 JSON 均隐藏 key，错误、历史和日志不得记录它。
 key 不进入任何公开 Bundle。写入 key 的交互不得依赖把秘密放进命令行参数。
@@ -202,6 +203,17 @@ nonce 至少包含 128 位随机熵。时间戳允许服务端时钟 ±60 秒偏
 - If-Match、Idempotency-Key；
 - 时间戳、nonce，以及协议使用的其他授权相关参数。
 
+当前实现使用 v2 协议，签名内容为 UTF-8 JSON tuple，避免自由文本字段的
+分隔符歧义：
+
+```text
+["IPAB-POINTER/2",service,id,method,path,bodyHash,ifMatch,idempotencyKey,timestamp,nonce,signerPublicKey]
+["IPAB-POINTER-CERT/2",service,id,owner,member,cid,iat,exp]
+```
+
+`signerPublicKey` 为请求签名公钥，`cid` 在证书 tuple 中是证书标识，
+不是内容 CID。最终字段定义以共享协议实现为准。
+
 更改其中任一字段均不能沿用原签名。
 POST 的 owner 与初始 root 通过请求体哈希绑定；日常请求通过
 服务 origin 与 pointer ID 隔离 swarm，无需提前知道 Swarm Bundle CID。
@@ -237,9 +249,19 @@ MVP 所有有效 member 均可读写；只有 owner 能签发成员证书，
 不同参数复用同一键返回 `409`，不能通过淘汰未过期记录破坏窗口承诺。
 窗口结束后不能声称提供永久 exactly-once；创建者应持久保存已取得的 id。
 
+当前实现将成功创建／更新的重试结果保留 600 秒，重试不延长窗口；
+过期结果在后续操作时惰性清理，重启后仍遵守已保存的过期时间。
+服务级创建分配最多 200 条，每个 pointer 的写重试结果最多 200 条；
+容量满时返回 `429`，不淘汰仍有效的记录。
+未完成的创建分配不按成功结果的窗口删除，仍计入容量：
+携原幂等键重试可从初始化或确认失败中恢复。
+丢失幂等键或未设置幂等键的失败创建需要服务运营者内部恢复，
+不提供自动丢弃或公开删除接口；无幂等键的创建成功后释放分配记录。
+
 输入必须使用严格形状校验，拒绝未知字段和非法 CID。
 root 使用规范 CID 字符串，最多 256 UTF-8 字节。
-HTTP body、证书和头字段在解析前设置明确字节上限；
+当前实现的 body、编码证书与头字段总量上限分别为 4096、4096、16384 字节；
+在解析前检查并有界读取，
 限制的是整个输入，不只是解析后的 root。
 服务不访问任意请求指定的 IPFS Gateway。
 

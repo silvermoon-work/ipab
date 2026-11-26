@@ -807,13 +807,15 @@ backend:local、dataDir 和可选 gateway，不能将旧 Kubo coordinationDir
 daemon pin，相关恢复／删除明确失败且保留元数据。请用新名称重新建立
 本地 pin，再独立管理旧 daemon 上的 pin；没有自动全量迁移命令。
 
-| 配置键             | 默认      | 值域／环境变量                                              |
-| ------------------ | --------- | ----------------------------------------------------------- |
-| `store.gateway`    | `null`    | 公共 HTTP(S) Gateway URL 或 `default`；`IPAB_STORE_GATEWAY` |
-| `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                        |
-| `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录  |
-| `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                     |
-| `bundle.outputDir` | `dist`    | 非空目录路径；`IPAB_BUNDLE_OUTPUT_DIR`                      |
+| 配置键             | 默认      | 值域／环境变量                                                           |
+| ------------------ | --------- | ------------------------------------------------------------------------ |
+| `store.gateway`    | `null`    | 公共 HTTP(S) Gateway URL 或 `default`；`IPAB_STORE_GATEWAY`              |
+| `history.enabled`  | `true`    | `true/false`；`IPAB_HISTORY_ENABLED`                                     |
+| `history.limit`    | `20`      | 正的安全整数；`IPAB_HISTORY_LIMIT`，只用于查询，不清理记录               |
+| `output.retention` | `history` | `history/none`；`IPAB_OUTPUT_RETENTION`                                  |
+| `bundle.outputDir` | `dist`    | 非空目录路径；`IPAB_BUNDLE_OUTPUT_DIR`                                   |
+| `pointers.service` | `null`    | HTTPS 服务 origin；仅本地开发允许 HTTP loopback；`IPAB_POINTERS_SERVICE` |
+| `pointers.apiKey`  | `null`    | 32 字节随机 key 的无填充 base64url 编码；`IPAB_POINTERS_API_KEY`         |
 
 `config get [KEY]` 显示有效值与 flag/env/user/default 来源；
 `config set KEY VALUE` 只保存用户层，遇到更高优先级覆盖时提示；
@@ -822,6 +824,25 @@ daemon pin，相关恢复／删除明确失败且保留元数据。请用新名�
 状态目录由 `--state-dir`／`IPAB_STATE_DIR` 引导；默认 Windows
 `%LOCALAPPDATA%\ipab`，其他平台 `$XDG_DATA_HOME/ipab` 或
 `~/.local/share/ipab`，不存为自定位配置键。
+
+Pointers API key 通过 `config set pointers.apiKey -` 从标准输入保存，
+不接受秘密作为配置命令的 VALUE 参数。例如在 PowerShell 中：
+
+```powershell
+ipab config set pointers.service https://pointers.example.com
+Get-Content -Raw .keys\api-key.txt | ipab config set pointers.apiKey -
+```
+
+配置查询与保存确认的文本和 JSON 均隐藏 key。
+保存非空 key 时，将状态目录和已有 SQLite／WAL／SHM 文件限制为当前
+OS 账号可访问；Unix 目录 `700`、文件 `600`，Windows 使用当前账号 SID 的
+受保护 ACL。读取已存 key 时校验权限；这不是对所有既有状态目录的自动迁移。
+服务 key 只用于创建 pointer，不进入 Swarm Bundle，也不赋予 owner/member 资格。
+这些配置尚不代表完整 swarm 创建、授权与同步命令已接入；
+服务运维工具使用显式参数、`IPAB_POINTERS_*` 环境变量或受保护的平面 JSON
+cfg，不直接读取 IPAB 的 SQLite 配置。具体配置输入见
+[pointer-worker](../packages/pointer-worker/README.md)，HTTP 契约见
+[Pointers service API](pointers-service.md)。
 
 成功执行（包括空输出）固化整个输出 UnixFS 目录根；输出不要求 `.bundle.yaml`
 或 Schema。执行失败／取消或固化前发生错误时，不固化部分输出，记录

@@ -1,86 +1,146 @@
 import { DurableObject } from "cloudflare:workers";
-import { NONCE_TTL_SECONDS, type PointerConfig } from "./protocol.ts";
+import { randomBytes, sha256Hex, toBase64Url } from "./crypto.ts";
+import {
+  apiFailure,
+  IDEMPOTENCY_TTL_SECONDS,
+  MAX_IDEMPOTENCY_RECORDS,
+  ServiceError,
+  type ApiFailure,
+  type PointerConfig,
+} from "./protocol.ts";
+import type { AuthContext } from "./verify.ts";
+import { consumeNonce } from "./state.ts";
 
-const KEY_VARIABLES = "variables";
-const KEY_NONCES = "nonces";
-const MAX_NONCES = 5000;
-
-/**
- * The service-wide index of pointers: name -> { pubkey, createdAt }.
- *
- * Only the admin API talks to this object, so it is off the hot data path.
- * Data requests read their anchor from the variable's own PointerObject.
- */
-export class RegistryObject extends DurableObject {
-  #variables: Record<string, PointerConfig> = {};
-  #nonces = new Map<string, number>();
-  #ready: Promise<void>;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.#ready = ctx.blockConcurrencyWhile(async () => {
-      const [stored, nonces] = await Promise.all([
-        this.ctx.storage.get<Record<string, PointerConfig>>(KEY_VARIABLES),
-        this.ctx.storage.get<Record<string, number>>(KEY_NONCES),
-      ]);
-      this.#variables = stored ?? {};
-      this.#nonces = new Map(Object.entries(nonces ?? {}));
+interface Creation {
+  fingerprint: string;
+  config: PointerConfig;
+  retryKey: string;
+  /** Incomplete configurations never expire automatically. */
+  expiresAt: number | null;
+}
+export class RegistryObject extends DurableObject<Env> {
+  async reserve(
+    owner: string,
+    root: string,
+    auth: AuthContext,
+  ): Promise<PointerConfig | ApiFailure> {
+    try {
+      return await this.#reserve(owner, root, auth);
+    } catch (err) {
+      if (err instanceof ServiceError) return apiFailure(err);
+      throw err;
+    }
+  }
+  async #reserve(
+    owner: string,
+    root: string,
+    auth: AuthContext,
+  ): Promise<PointerConfig> {
+    const retryKey = auth.idempotencyKey
+      ? `create:${await sha256Hex(JSON.stringify([auth.signer, auth.idempotencyKey]))}`
+      : "";
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      const now = Math.floor(Date.now() / 1000);
+      const nonces = consumeNonce(
+        (await txn.get<Record<string, number>>("nonces")) ?? {},
+        auth.nonce,
+        now,
+      );
+      const records = await txn.list<Creation | PointerConfig>({
+        prefix: "allocation:",
+      });
+      for (const [key, record] of records) {
+        if (
+          "config" in record &&
+          record.expiresAt !== null &&
+          record.expiresAt <= now
+        ) {
+          await txn.delete(key);
+          if (record.retryKey) await txn.delete(record.retryKey);
+          records.delete(key);
+        }
+      }
+      const prior = retryKey ? await txn.get<Creation>(retryKey) : undefined;
+      await txn.put("nonces", nonces);
+      if (prior) {
+        if (prior.fingerprint !== auth.fingerprint) return null;
+        // Provisional v2 records without completion metadata stay pending until
+        // configuration is reconfirmed; never guess that an old allocation committed.
+        const recovered: Creation = {
+          ...prior,
+          retryKey,
+          expiresAt: prior.expiresAt ?? null,
+        };
+        await txn.put(`allocation:${prior.config.id}`, recovered);
+        await txn.put(retryKey, recovered);
+        return prior.config;
+      }
+      if (records.size >= MAX_IDEMPOTENCY_RECORDS) {
+        throw new ServiceError(
+          429,
+          "idempotency_capacity",
+          "creation capacity exhausted; recover pending operations or wait for completed records to expire",
+        );
+      }
+      const config: PointerConfig = {
+        id: toBase64Url(randomBytes(32)),
+        owner,
+        root,
+      };
+      const record: Creation = {
+        fingerprint: auth.fingerprint,
+        config,
+        retryKey,
+        expiresAt: null,
+      };
+      await txn.put(`allocation:${config.id}`, record);
+      if (retryKey) await txn.put(retryKey, record);
+      return config;
     });
+    if (!result)
+      throw new ServiceError(
+        409,
+        "idempotency_conflict",
+        "Idempotency-Key was used with a different creation body",
+      );
+    return result;
   }
 
-  /**
-   * One-shot admin nonce. Admin mutations are not covered by the pointer's
-   * nonce store, so the registry keeps its own replay window.
-   */
-  async consumeNonce(nonce: string, nowSeconds: number): Promise<boolean> {
-    await this.#ready;
-    for (const [value, expiresAt] of this.#nonces) {
-      if (expiresAt <= nowSeconds) this.#nonces.delete(value);
-    }
-    if (this.#nonces.has(nonce)) return false;
-    this.#nonces.set(nonce, nowSeconds + NONCE_TTL_SECONDS);
-    if (this.#nonces.size > MAX_NONCES) {
-      const oldest = [...this.#nonces.entries()].sort((a, b) => a[1] - b[1]);
-      for (let i = 0; i < oldest.length - MAX_NONCES; i++)
-        this.#nonces.delete(oldest[i]![0]);
-    }
-    await this.ctx.storage.put(KEY_NONCES, Object.fromEntries(this.#nonces));
-    return true;
-  }
-
-  async list(): Promise<PointerConfig[]> {
-    await this.#ready;
-    return Object.values(this.#variables).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
-  }
-
-  async get(name: string): Promise<PointerConfig | null> {
-    await this.#ready;
-    return this.#variables[name] ?? null;
-  }
-
-  /** Atomically reserves a name. False means it already exists. */
-  async create(config: PointerConfig): Promise<boolean> {
-    await this.#ready;
-    if (this.#variables[config.name]) return false;
-    this.#variables[config.name] = config;
-    await this.ctx.storage.put(KEY_VARIABLES, this.#variables);
-    return true;
-  }
-
-  /** Updates an existing record (used for key rotation). */
-  async put(config: PointerConfig): Promise<void> {
-    await this.#ready;
-    this.#variables[config.name] = config;
-    await this.ctx.storage.put(KEY_VARIABLES, this.#variables);
-  }
-
-  async remove(name: string): Promise<boolean> {
-    await this.#ready;
-    if (!this.#variables[name]) return false;
-    delete this.#variables[name];
-    await this.ctx.storage.put(KEY_VARIABLES, this.#variables);
-    return true;
+  /** Called only after Pointer.configure has confirmed durable persistence. */
+  async complete(config: PointerConfig): Promise<void> {
+    await this.ctx.storage.transaction(async (txn) => {
+      const key = `allocation:${config.id}`;
+      const stored = await txn.get<Creation | PointerConfig>(key);
+      if (!stored) return;
+      let record: Creation;
+      if ("config" in stored) record = stored;
+      else {
+        const prior = [
+          ...(await txn.list<Creation>({ prefix: "create:" })),
+        ].find(([, entry]) => entry.config.id === config.id);
+        record = {
+          config: stored,
+          fingerprint: prior?.[1].fingerprint ?? "",
+          retryKey: prior?.[0] ?? "",
+          expiresAt: null,
+        };
+      }
+      if (
+        record.config.owner !== config.owner ||
+        record.config.root !== config.root
+      )
+        throw new Error("creation completion conflict");
+      if (record.expiresAt !== null) return;
+      if (!record.retryKey) {
+        await txn.delete(key);
+        return;
+      }
+      const completed: Creation = {
+        ...record,
+        expiresAt: Math.floor(Date.now() / 1000) + IDEMPOTENCY_TTL_SECONDS,
+      };
+      await txn.put(key, completed);
+      await txn.put(record.retryKey, completed);
+    });
   }
 }

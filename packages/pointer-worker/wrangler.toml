@@ -1,8 +1,6 @@
 # Signed pointer service deployed as a Cloudflare Worker.
 #
-# The Worker keeps one Durable Object per pointer name (see src/index.ts) and one
-# registry Durable Object for the admin index. Neither object is shared between
-# pointers, so a data request is serialized per name.
+# One Durable Object per random pointer ID; registry only coordinates creation.
 name = "ipab-pointer"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
@@ -26,10 +24,15 @@ tag = "v1"
 new_sqlite_classes = ["PointerObject", "RegistryObject"]
 
 [vars]
-# Ed25519 public key (base64url, PEM or JWK) of the admin key allowed to create,
-# rotate and delete pointers. An empty value disables the admin API entirely.
-# Set it in wrangler.toml (public key only, never the private key) or in
-# .dev.vars for local development.
-POINTER_ADMIN_PUBLIC_KEY = ""
+# Set the exact canonical HTTPS origin deployed by the operator.
+# For local development use .dev.vars with http://127.0.0.1:8787.
+POINTER_SERVICE = ""
+# POINTER_API_KEY_SHA256 is a Wrangler secret, not a committed plaintext key.
 # Only set when a browser client from another origin must call the API.
 ALLOWED_ORIGIN = ""
+
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true

@@ -24,9 +24,29 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    "./pointer/*": {
-      "types": "./dist/pointer/*.d.ts",
-      "import": "./dist/pointer/*.js"
+    "./pointer/protocol": {
+      "types": "./dist/pointer/protocol.d.ts",
+      "import": "./dist/pointer/protocol.js"
+    },
+    "./pointer/crypto": {
+      "types": "./dist/pointer/crypto.d.ts",
+      "import": "./dist/pointer/crypto.js"
+    },
+    "./pointer/certificates": {
+      "types": "./dist/pointer/certificates.d.ts",
+      "import": "./dist/pointer/certificates.js"
+    },
+    "./pointer/client": {
+      "types": "./dist/pointer/client.d.ts",
+      "import": "./dist/pointer/client.js"
+    },
+    "./pointer/protected-files": {
+      "types": "./dist/pointer/protected-files.d.ts",
+      "import": "./dist/pointer/protected-files.js"
+    },
+    "./pointer/node-runtime": {
+      "types": "./dist/pointer/node-runtime.d.ts",
+      "import": "./dist/pointer/node-runtime.js"
     },
     ".": {
       "types": "./dist/index.d.ts",

@@ -39,7 +39,3 @@ await import(
 await import(
   new URL("../../pointer-worker/test/lifecycle.test.ts", import.meta.url).href
 );
-await import(
-  new URL("../../pointer-worker/test/protected-files.test.ts", import.meta.url)
-    .href
-);

@@ -10,8 +10,8 @@ in an existing directory are errors, never a reason to silently rotate identity.
 Unix ownership/0700/0600 and Windows account-only ACLs are checked before use.
 Changing a project or `--state-dir` does not create another identity.
 
-Canonical upstream `d39cddd` implements the confirmed pointer API and supersedes the
-earlier transient administrator-key flow. Creation now requires persistent,
+Canonical upstream `d39cddd` implements the confirmed pointer API and supersedes
+the earlier transient administrator-key flow. Creation now requires persistent,
 account-protected and explicitly origin-bound cfg:
 
 ```sh
@@ -23,11 +23,11 @@ ipab swarm create
 
 Cfg reuses upstream's account-protected State SQLite storage and `config-secret`
 helpers, rather than a second credential configuration file. API-key queries and
-confirmations are masked. Keys are sent only on POST to the explicitly configured
-origin, never on GET/PUT, from a Descriptor-selected origin, or through
-redirects. The owner signs POST body `{owner,root}`. The service allocates the
-opaque ID; no client-selected variables or administrator-key fallback remain in
-the CLI.
+confirmations are masked. Keys are sent only on POST to the explicitly
+configured origin, never on GET/PUT, from a Descriptor-selected origin, or
+through redirects. The owner signs POST body `{owner,root}`. The service
+allocates the opaque ID; no client-selected variables or administrator-key
+fallback remain in the CLI.
 
 Initial State and a publication record are provided before POST; neither refers
 to the not-yet-created Descriptor. The creation operation/idempotency key and
@@ -42,17 +42,17 @@ Portable client/cryptography/certificate/protocol code now lives under
 second protocol. The publishable CLI does not depend on a private Worker
 package. The CLI now uses only `/v1/pointers/` POST and `/v1/pointers/{id}`
 GET/PUT, `{root,revision}` responses, and strong revision-string ETags. The
-canonical upstream client and Worker use the same shared source; old variable and
-administrator endpoints are not retained as a fallback.
+canonical upstream client and Worker use the same shared source; old variable
+and administrator endpoints are not retained as a fallback.
 
 **Canonical shared protocol:** `pointer/protocol.ts` exports
 `requestSigningMessage` and `RequestProof`. Its unambiguous UTF-8 signing
 message is the JSON array:
 `["IPAB-POINTER/2",service,pointerId,method,path,bodySha256,ifMatch,idempotencyKey,timestamp,nonce,subject]`.
-Both the actual Worker and CLI consume this one encoder. This is an
-intentional breaking API/envelope change, not backward compatibility with
-`/v1/value`. Member certificates retain the existing signed certificate envelope
-as `{v:2,service,pointerId,owner,member,cid,iat,exp}` and share
+Both the actual Worker and CLI consume this one encoder. This is an intentional
+breaking API/envelope change, not backward compatibility with `/v1/value`.
+Member certificates retain the existing signed certificate envelope as
+`{v:2,service,pointerId,owner,member,cid,iat,exp}` and share
 `certificateSigningMessage`, binding the full owner/member keys, target and
 validity without delegation, aliases or fingerprints.
 
@@ -192,21 +192,43 @@ test-owned roots were imported/pinned; prior pin absence was checked, those test
 pins were removed, and owned SSH forwards stopped. No shared daemon,
 configuration, swarm connections, GC or existing pins were changed.
 
-These are **not** new-pointer-API or physical two-host Name execution proofs.
-The independent `/v1/pointers` service/encoder integration is not available in
-this worktree. Node/IPAB were not on the noninteractive `office-ubuntu` SSH
-PATH; no global installation was attempted. Full `check-release` exposed legacy
-template/help assertions (now migrated) and portable-code coverage ownership
-(restored by reusing existing protocol suites against Bundle's public source
-entrypoints). New service integration and all full validation gates must pass
-before claiming main is ready.
+Canonical upstream `d39cddd` is now integrated. The actual migrated Worker
+router passes the two-account MVP, including forced same-name conflict,
+different-name CAS refresh/retry, v1/v2/old execution, separate App/source get,
+membership and provider failure before HEAD. This uses in-memory Durable Object
+storage and does not claim production transaction certification from the Node
+fixture.
 
-Latest verification: `pnpm check` passes (static/build, unit/mock and publint,
-not complete coverage). Bundle's full coverage passes with 212 tests: statements
-96.23%, branches 92.12%, functions 98.66%, lines 96.26%. The migrated MVP probe
-fails at POST `/v1/pointers/` with HTTP 404 from the still-legacy service
-router; saved creation recovery is reported and no success CID is emitted.
-`check-release` is not green, and main is not push-ready.
+Authorized deployed-service validation at
+`https://ipab-pointer.shazhou.workers.dev` also passes owner GET/PUT/CAS,
+create/update idempotency, member authorization, cross-pointer rejection, nonce
+replay and Name v1→v2 with old-release execution. Content moves through the
+existing Windows/office-ubuntu private Kubo peers; IPAB execution uses two
+isolated Windows HOME/state contexts, not a physical remote-CLI execution claim.
+Existing remote runtimes were found read-only at
+`/home/scottwei/.nvm/versions/node/v26.13.1/bin/node` and v24.22.2; no
+installation or shell configuration change was performed.
+
+Fresh online test pointer IDs (no delete API is available):
+`FK6Tm4Eu70NtFOIfoTmULa8NAqu_QI7tO-tXAsiRxHQ` and
+`h27rAtP-Q6WiMxRwVEldVESR58L2fp79J6D8696cTeU`. Label:
+`ipab-owned-validation-bbf46206-5457-4898-8c2d-a3d1d34f6690`; Swarm CID:
+`bafybeidhdslt2x3d7uxnsq4tblecxqdrwfxpipzbfygtnroljivlifk7wm`. Only roots proved
+not previously pinned were imported/pinned and later unpinned; owned SSH
+forwards were stopped. No production pointer, shared configuration, daemon,
+swarm connection or GC was changed.
+
+Full `check-release` exposed and fixed owning-package mock isolation and a
+leading-dash opaque-ID operator parsing regression. Full validation results are
+reported separately; thresholds, test selection and assertions are not weakened.
+
+Final `pnpm check-release` and `pnpm check` pass. CLI full coverage is 95.10%
+statements, 90.92% branches, 95.67% functions and 95.50% lines; Worker full
+coverage is 96.78%, 92.73%, 95.83% and 96.94% respectively. All four 90% gates
+remain enforced. The five delivered npm packages also pass isolated tarball
+installation/import/CLI smoke. Explicit public pointer subpath exports avoid
+literal wildcard imports in that smoke. Large metadata/secret test cases were
+partitioned with all assertions and their existing timeouts preserved.
 
 Focused Builder tests verify a multi-block imported UnixFS DAG remains
 identical, including its original CID and all required blocks, and reject
@@ -214,15 +236,15 @@ collisions, missing/corrupt inputs. Worker tests verify version-2
 service/variable binding, non-delegating certificates and nonce replay
 rejection.
 
-The legacy `pointer-worker/test/mvp.test.ts` release-E2E fixture used separate
-account HOME/state/Store contexts, a real isolated HTTP server, the actual
-Worker router with isolated in-memory Durable Object storage, and an isolated
-verified-CAR provider implementing Kubo's import/Gateway HTTP contract. It never
-contacts a shared daemon. This is not a public deployment, real Kubo daemon
-test, Cloudflare runtime certification or release authorization. It asserts
+The `pointer-worker/test/mvp.test.ts` release-E2E fixture uses separate account
+HOME/state/Store contexts, a real isolated HTTP server, the actual Worker router
+with isolated in-memory Durable Object storage, and an isolated verified-CAR
+provider implementing Kubo's import/Gateway HTTP contract. It never contacts a
+shared daemon. This is not a public deployment, real Kubo daemon test,
+Cloudflare runtime certification or release authorization. It asserts
 membership, Name resolution, v1/v2 output, separate App/source get, raw node
 get, prior release availability, same-name conflict, different-name merge/retry
-and provider failure before HEAD. It must be migrated to the independent
-confirmed service, not used as evidence the new API is ready. Required checks
-and their actual results are reported separately; this document is a decision
-record, not fabricated execution evidence.
+and provider failure before HEAD. It calls the canonical production Worker
+router, not a competing contract server. Required checks and results are
+reported separately; this document is a decision record, not fabricated
+execution evidence.

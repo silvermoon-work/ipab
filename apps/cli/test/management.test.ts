@@ -44,7 +44,7 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
   const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
 
-  it("persists stdin-only pointer API keys with account-only storage and redacts all configuration output", async () => {
+  it("persists stdin-only pointer API keys with account-only storage", async () => {
     const key = Buffer.alloc(32, 7).toString("base64url");
     expect(() => parse(["config", "set", "pointers.apiKey", key])).toThrow(
       "piped stdin",
@@ -68,16 +68,26 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
     } finally {
       reopened.close();
     }
-    for (const args of [
-      ["config", "get"],
-      ["config", "get", "pointers.apiKey"],
-      ["--json", "config", "get", "pointers.apiKey"],
-    ]) {
+  });
+  it.each([
+    ["config", "get"],
+    ["config", "get", "pointers.apiKey"],
+    ["--json", "config", "get", "pointers.apiKey"],
+  ])(
+    "redacts protected pointer API keys in configuration query %j",
+    async (...args) => {
+      const key = Buffer.alloc(32, 7).toString("base64url");
+      const state = new State(work.stateDir);
+      state.setConfig("pointers.apiKey", key);
+      state.close();
       const result = await cli(work.stateDir, args);
       expect(result.code).toBe(0);
       expect(result.out).toContain("<redacted>");
       expect(result.out + result.err).not.toContain(key);
-    }
+    },
+  );
+  it("redacts an environment-masked pointer key save", async () => {
+    const key = Buffer.alloc(32, 7).toString("base64url");
     const human = await cli(
       work.stateDir,
       ["config", "set", "pointers.apiKey", "-"],
@@ -92,6 +102,8 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
     expect(human.out).toContain("<redacted>");
     expect(human.err).toContain("masked by env");
     expect(human.out + human.err).not.toContain(key);
+  });
+  it("rejects invalid stdin credentials without echoing them", async () => {
     const invalid = await cli(
       work.stateDir,
       ["--json", "config", "set", "pointers.apiKey", "-"],
@@ -101,6 +113,14 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
     );
     expect(invalid.code).toBe(2);
     expect(invalid.err).not.toContain("private-invalid-value");
+  });
+  it("resets a protected pointer key and reports the default", async () => {
+    const state = new State(work.stateDir);
+    state.setConfig(
+      "pointers.apiKey",
+      Buffer.alloc(32, 7).toString("base64url"),
+    );
+    state.close();
     expect(
       (await cli(work.stateDir, ["config", "reset", "pointers.apiKey"])).code,
     ).toBe(0);

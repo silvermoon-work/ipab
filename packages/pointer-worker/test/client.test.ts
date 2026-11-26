@@ -173,6 +173,47 @@ describe("new client shapes", { tags: ["mock"] }, () => {
 });
 
 describe("operator commands", { tags: ["mock"] }, () => {
+  it("accepts opaque IDs and idempotency keys beginning with a dash", async () => {
+    const owner = await generateKeyPair();
+    const id = `-${"A".repeat(42)}`;
+    let request: Request | undefined;
+    await runOperator(
+      [
+        "write",
+        "--key",
+        "key.json",
+        "--id",
+        id,
+        "--root",
+        ROOT,
+        "--if-revision",
+        "1",
+        "--idempotency-key",
+        "-".repeat(24),
+      ],
+      {
+        env: { IPAB_POINTERS_SERVICE: SERVICE },
+        read: () =>
+          Promise.resolve(
+            JSON.stringify({
+              publicKey: owner.publicRaw,
+              privateKey: owner.privatePkcs8,
+            }),
+          ),
+        print: () => undefined,
+        fetch: (input, options) => {
+          request = new Request(input, options);
+          return Promise.resolve(
+            new Response(JSON.stringify({ root: ROOT, revision: "2" }), {
+              headers: { etag: '"2"' },
+            }),
+          );
+        },
+      },
+    );
+    expect(request?.url).toBe(`${SERVICE}/v1/pointers/${id}`);
+    expect(request?.headers.get("idempotency-key")).toBe("-".repeat(24));
+  });
   it("consumes flat protected JSON config or aligned environment without exposing the API key", async () => {
     const service = await createService(),
       owner = await generateKeyPair();

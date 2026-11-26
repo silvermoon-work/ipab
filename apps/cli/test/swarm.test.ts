@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { IpfsStore } from "@ipab/ipfs-store";
+import { IpfsStore, type IpfsStoreOptions } from "@ipab/ipfs-store";
+import type * as StoreModule from "@ipab/ipfs-store";
 import { CarBlockIterator } from "@ipld/car/iterator";
+import * as dagCbor from "@ipld/dag-cbor";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
 import {
   encodeBundleCar,
   memoryTree,
@@ -23,6 +27,7 @@ import {
   pointer,
   publish,
   requestMembership,
+  readSnapshot,
   requestType,
   resolveReference,
   responseType,
@@ -34,10 +39,25 @@ import { getBundle } from "../src/get.js";
 import { appSchema } from "../src/app-definition.js";
 import type { Identity } from "../src/identity.js";
 import type * as IdentityModule from "../src/identity.js";
+import { cli } from "./helpers.js";
+import { writeCar } from "../src/authoring.js";
 
 const ports = vi.hoisted(() => ({
   identity: vi.fn<(env: NodeJS.ProcessEnv) => Promise<Identity>>(),
+  store: undefined as IpfsStore | undefined,
 }));
+vi.mock("@ipab/ipfs-store", async () => {
+  const actual = await vi.importActual<typeof StoreModule>("@ipab/ipfs-store");
+  return {
+    ...actual,
+    IpfsStore: class extends actual.IpfsStore {
+      constructor(options: IpfsStoreOptions) {
+        super(options);
+        if (ports.store) return ports.store;
+      }
+    },
+  };
+});
 vi.mock("../src/identity.js", async () => ({
   ...(await vi.importActual<typeof IdentityModule>("../src/identity.js")),
   accountIdentity: ports.identity,
@@ -89,8 +109,10 @@ describe(
           get: () => Promise.reject(new Error("Missing mocked content")),
         },
       });
+      ports.store = store;
       vi.spyOn(store, "registerOwner").mockImplementation(() => undefined);
       vi.spyOn(store, "retain").mockResolvedValue(undefined);
+      vi.spyOn(store, "close").mockResolvedValue(undefined);
       root = "";
       revision = 1;
       creates = 0;
@@ -160,10 +182,20 @@ describe(
       };
       a = await context("a");
       b = await context("b");
+      vi.stubGlobal("fetch", fetcher);
+      const contentConfig = join(work, "store.json");
+      await writeFile(
+        contentConfig,
+        JSON.stringify({ backend: "local", dataDir: join(work, "content") }),
+      );
+      vi.stubEnv("TASK_CONTENT_CONFIG", contentConfig);
     });
     afterEach(async () => {
       vi.restoreAllMocks();
       ports.identity.mockReset();
+      ports.store = undefined;
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
       await store.close();
       await rm(work, {
         recursive: true,
@@ -173,6 +205,226 @@ describe(
       });
     });
     const local = (reference: string) => reference;
+    it("retries only network failures, reports bounded CAS contention, and preserves candidates on service errors", async () => {
+      const swarm = await createSwarm(a);
+      const original = a.fetch!;
+      let attempts = 0;
+      a.fetch = (input, options) => {
+        const request = new Request(input, options);
+        if (request.method === "GET" && attempts++ < 2)
+          return Promise.reject(new TypeError("network"));
+        return original(input, options);
+      };
+      await (await pointer(a, swarm)).read();
+      expect(attempts).toBe(3);
+      const content = await jsonBundle(store, noteType, { text: "retained" });
+      a.fetch = (input, options) => {
+        const request = new Request(input, options);
+        if (request.method === "PUT")
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  code: "precondition_failed",
+                  message: "changed",
+                  details: { root, revision: String(revision) },
+                },
+              }),
+              { status: 412, headers: { etag: `"${revision}"` } },
+            ),
+          );
+        return original(input, options);
+      };
+      await expect(
+        publish(a, content, { swarm, name: "busy" }),
+      ).rejects.toThrow("HEAD is busy");
+      a.fetch = (input, options) => {
+        const request = new Request(input, options);
+        if (request.method === "PUT")
+          return Promise.resolve(
+            new Response(
+              '{"error":{"code":"internal","message":"storage failure"}}',
+              { status: 500 },
+            ),
+          );
+        return original(input, options);
+      };
+      await expect(
+        publish(a, content, { swarm, name: "unconfirmed" }),
+      ).rejects.toThrow("result is unknown");
+      await expect(publish(a, content, { snapshot: true })).rejects.toThrow(
+        "require --name",
+      );
+      await expect(publish(a, content, { name: "named" })).rejects.toThrow(
+        "requires --swarm",
+      );
+      await expect(
+        publish(a, content, { name: "../unsafe", swarm }),
+      ).rejects.toThrow("Unsafe");
+    });
+    it("rejects invalid publication/state data instead of treating it as an empty name table", async () => {
+      const block = async (value: unknown) => {
+        const bytes = dagCbor.encode(value);
+        const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+        await store.put(cid, bytes);
+        return cid;
+      };
+      await expect(
+        readSnapshot(store, await jsonBundle(store, noteType, {})),
+      ).rejects.toThrow("DAG-CBOR");
+      await expect(
+        readSnapshot(store, (await block({ v: 1 })).toString()),
+      ).rejects.toThrow("publication");
+      for (const value of [
+        { v: 2, properties: { name: "", description: "" }, names: {} },
+        { v: 1, properties: { name: 1, description: "" }, names: {} },
+        {
+          v: 1,
+          properties: { name: "", description: "" },
+          names: { test: "not-a-CID" },
+        },
+        {
+          v: 1,
+          properties: { name: "", description: "" },
+          names: { "../bad": await block({}) },
+        },
+      ]) {
+        const state = await block(value);
+        const publication = await block({ v: 1, state });
+        await expect(
+          readSnapshot(store, publication.toString()),
+        ).rejects.toThrow();
+      }
+    });
+    it("routes the new CLI create/request/approve/join/status/publish/get commands through configured ports", async () => {
+      const env = {
+        HOME: "a",
+        IPAB_POINTERS_SERVICE: origin,
+        IPAB_POINTERS_API_KEY: a.pointerApiKey!,
+        IPAB_SWARM_PROVIDER: a.provider,
+      };
+      const create = await cli(
+        a.stateDir,
+        [
+          "--json",
+          "swarm",
+          "create",
+          "--name",
+          "test",
+          "--description",
+          "owned",
+        ],
+        { env },
+      );
+      expect(create.code, create.err).toBe(0);
+      const swarm = (JSON.parse(create.out) as { cid: string }).cid;
+      const memberEnv = { HOME: "b", IPAB_SWARM_PROVIDER: b.provider };
+      const requested = await cli(
+        b.stateDir,
+        ["--json", "swarm", "request", swarm],
+        { env: memberEnv },
+      );
+      expect(requested.code, requested.err).toBe(0);
+      const request = (JSON.parse(requested.out) as { cid: string }).cid;
+      expect(
+        (await cli(a.stateDir, ["swarm", "approve", request], { env })).code,
+      ).toBe(1);
+      expect(
+        (
+          await cli(a.stateDir, ["swarm", "approve", request], {
+            env,
+            tty: true,
+            confirm: () => Promise.resolve(false),
+          })
+        ).code,
+      ).toBe(1);
+      const approved = await cli(
+        a.stateDir,
+        ["--json", "swarm", "approve", request, "--yes", "--expires-in", "600"],
+        { env },
+      );
+      expect(approved.code, approved.err).toBe(0);
+      const response = (JSON.parse(approved.out) as { cid: string }).cid;
+      expect(
+        (await cli(b.stateDir, ["swarm", "join", response], { env: memberEnv }))
+          .code,
+      ).toBe(0);
+      expect(
+        (await cli(b.stateDir, ["swarm", "status"], { env: memberEnv })).code,
+      ).toBe(2);
+      expect(
+        (
+          await cli(b.stateDir, ["--json", "swarm", "status", swarm], {
+            env: memberEnv,
+          })
+        ).code,
+      ).toBe(0);
+      const payload = await jsonBundle(store, noteType, { text: "Hello" });
+      const published = await cli(
+        a.stateDir,
+        [
+          "--swarm",
+          swarm,
+          "--json",
+          "publish",
+          payload,
+          "--name",
+          "documents/hello",
+        ],
+        { env },
+      );
+      expect(published.code, published.err).toBe(0);
+      const node = (JSON.parse(published.out) as { cid: string }).cid;
+      const downloaded = await cli(
+        b.stateDir,
+        [
+          "--swarm",
+          swarm,
+          "--json",
+          "get",
+          "name:documents/hello",
+          "-o",
+          join(work, "cli-get"),
+        ],
+        { env: memberEnv },
+      );
+      expect(downloaded.code, downloaded.err).toBe(0);
+      expect(JSON.parse(downloaded.out)).toMatchObject({
+        targetCid: node,
+        cid: payload,
+      });
+      expect(
+        (
+          await cli(
+            b.stateDir,
+            [
+              "--swarm",
+              swarm,
+              "get",
+              "--raw",
+              "name:documents/hello",
+              "-o",
+              join(work, "raw-get"),
+            ],
+            { env: memberEnv },
+          )
+        ).code,
+      ).toBe(0);
+      const encoded = await encodeBundleCar(
+        memoryTree(
+          new Map([
+            [
+              ".bundle.yaml",
+              new TextEncoder().encode(JSON.stringify(noteType)),
+            ],
+            ["entry.json", new TextEncoder().encode('{"text":"CAR"}')],
+          ]),
+        ),
+      );
+      const car = join(work, "content.car");
+      await writeCar(encoded, car);
+      expect((await cli(a.stateDir, ["publish", car], { env })).code).toBe(0);
+    });
     it("creates, grants membership, publishes versions, and gets content/raw without implicit source fetch", async () => {
       const swarm = await createSwarm(a);
       expect((await descriptor(store, swarm)).variable).toBe(fixtureId);

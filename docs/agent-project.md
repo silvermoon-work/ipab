@@ -11,8 +11,8 @@ owner 直接签名，member 使用 owner 签发且绑定 service/variable 的证
 CLI 使用 HOME 中受保护且显式绑定 origin 的 pointers.service/apiKey；
 API key 仅安全 STDIN 设置、查询掩码，仅用于 POST 创建，不用于 GET/PUT。
 创建使用 owner 持钥签名、服务随机 ID 和持久恢复记录；没有旧管理面 fallback。
-独立服务线程须采用共享 pointerSigningMessage 编码器及证书 aud URI；
-迁移未接入前不能声称新 API / 跨设备 HEAD 链路已验证。Kubo
+已集成 d39cddd 的 canonical requestSigningMessage / certificateSigningMessage；
+Worker 与 CLI 共用同一份编码器，成员证书 v2 绑定 service/pointerId/owner/member。Kubo
 bridge 只提供／pin 内容，
 不恢复 Store RPC backend，不管理部署。决定与迁移见
 [mvp-implementation.md](mvp-implementation.md)。

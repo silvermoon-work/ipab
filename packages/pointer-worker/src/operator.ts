@@ -34,8 +34,22 @@ export async function runOperator(
   argv: string[],
   io: OperatorIO = {},
 ): Promise<void> {
+  const args: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    const option = argv[index]!;
+    const value = argv[index + 1];
+    if (
+      value !== undefined &&
+      ((option === "--id" && POINTER_ID_PATTERN.test(value)) ||
+        (option === "--idempotency-key" &&
+          /^[A-Za-z0-9_-]{16,128}$/.test(value)))
+    ) {
+      args.push(`${option}=${value}`);
+      index++;
+    } else args.push(option);
+  }
   const { positionals, values } = parseArgs({
-    args: argv,
+    args,
     allowPositionals: true,
     options: Object.fromEntries(
       [

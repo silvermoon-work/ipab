@@ -648,25 +648,25 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         }
       },
     );
+    const metadata = {
+      name: "Reader",
+      version: "1.2.3-rc.0+build.1",
+      description: "Base description",
+      entry: "resources/app.cjs",
+      author: { name: "Author", email: "author@example.com" },
+      license: "Proprietary; declarative only",
+      icon: "resources/icon.svg",
+      i18n: {
+        "zh-CN": { name: "阅读器" },
+        en: { description: "English description" },
+      },
+    };
+    const files = {
+      ".bundle.yaml": JSON.stringify(appSchema),
+      "resources/app.cjs": 'process.stdout.write("licensed app still runs");',
+      "resources/icon.svg": "<svg/>",
+    };
     it("validates concrete App metadata without changing type identity or enforcing licenses", async () => {
-      const metadata = {
-        name: "Reader",
-        version: "1.2.3-rc.0+build.1",
-        description: "Base description",
-        entry: "resources/app.cjs",
-        author: { name: "Author", email: "author@example.com" },
-        license: "Proprietary; declarative only",
-        icon: "resources/icon.svg",
-        i18n: {
-          "zh-CN": { name: "阅读器" },
-          en: { description: "English description" },
-        },
-      };
-      const files = {
-        ".bundle.yaml": JSON.stringify(appSchema),
-        "resources/app.cjs": 'process.stdout.write("licensed app still runs");',
-        "resources/icon.svg": "<svg/>",
-      };
       const root = await importFiles(work.store, {
         ...files,
         "app.json": JSON.stringify(metadata),
@@ -695,30 +695,6 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
             "resources/app.cjs",
           );
         }
-        for (const overrides of [
-          { name: "  " },
-          { version: "01.2.3" },
-          { version: "1.2.3-01" },
-          { version: "1.2.3+bad..id" },
-          { author: { name: "" } },
-          { author: { name: "A", email: "not-an-email" } },
-          { license: "" },
-          { icon: "../icon.svg" },
-          { icon: "app.json" },
-          { icon: "resources/missing.svg" },
-          { i18n: { not_a_tag: { name: "Name" } } },
-          { i18n: { en: { name: "" } } },
-          { i18n: { en: { icon: "x" } } },
-          { i18n: { en: { description: 1 } } },
-          { i18n: { "en-US": {}, "en-us": {} } },
-          { profile: "ipab.node.v1", runtime: "node" },
-        ]) {
-          const invalid = await importFiles(work.store, {
-            ...files,
-            "app.json": JSON.stringify({ ...metadata, ...overrides }),
-          });
-          await expect(loadApp(invalid, work.store, owner)).rejects.toThrow();
-        }
       } finally {
         await owner.release();
       }
@@ -729,6 +705,44 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       expect(run.code, run.stderr).toBe(0);
       expect(run.stdout.toString()).toBe("licensed app still runs");
     }, 30000);
+    it.each([
+      { name: "  " },
+      { version: "01.2.3" },
+      { version: "1.2.3-01" },
+      { version: "1.2.3+bad..id" },
+      { author: { name: "" } },
+      { author: { name: "A", email: "not-an-email" } },
+      { license: "" },
+      { icon: "../icon.svg" },
+      { icon: "app.json" },
+      { icon: "resources/missing.svg" },
+      { i18n: { not_a_tag: { name: "Name" } } },
+      { i18n: { en: { name: "" } } },
+      { i18n: { en: { icon: "x" } } },
+      { i18n: { en: { description: 1 } } },
+      { i18n: { "en-US": {}, "en-us": {} } },
+      { profile: "ipab.node.v1", runtime: "node" },
+    ])(
+      "rejects invalid concrete App metadata %#",
+      async (overrides) => {
+        const invalid = await importFiles(work.store, {
+          ...files,
+          "app.json": JSON.stringify({ ...metadata, ...overrides }),
+        });
+        const owner = await Ownership.create(
+          state,
+          work.store,
+          "invalid-metadata-validation",
+          null,
+        );
+        try {
+          await expect(loadApp(invalid, work.store, owner)).rejects.toThrow();
+        } finally {
+          await owner.release();
+        }
+      },
+      30000,
+    );
     it("empty success finalizes an empty UnixFS directory; failed app preserves its exit without partial output", async () => {
       const empty = await app(work.store, "process.stdout.write('plain');");
       const good = await subprocess(

@@ -15,3 +15,8 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# Cloudflare Worker local state and operator keys
+.wrangler/
+.dev.vars
+.keys/

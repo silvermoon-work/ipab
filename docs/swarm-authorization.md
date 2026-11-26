@@ -1,6 +1,9 @@
 # 个人 swarm 的创建与授权需求
 
-**状态：需求草案，尚未实现。**
+**状态：需求草案，尚未实现完整流程。**
+中心服务（每个 swarm 一个可变 `HEAD` 的签名指针）已有实现：
+[packages/pointer-worker](../packages/pointer-worker)。CLI 的设备授权、命名域解析与
+跨设备同步仍未实现。
 本文细化[项目愿景](../VISION.md)中的个人 swarm 接入场景：
 我在电脑上创建 swarm，授权笔记本加入；此后两台设备上的 Agent 都能读取和更新同一份
 Artifact 映射，无需共享私钥，也无需我批准每一次发布。

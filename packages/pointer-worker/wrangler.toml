@@ -1,0 +1,35 @@
+# Signed pointer service deployed as a Cloudflare Worker.
+#
+# The Worker keeps one Durable Object per pointer name (see src/index.ts) and one
+# registry Durable Object for the admin index. Neither object is shared between
+# pointers, so a data request is serialized per name.
+name = "ipab-pointer"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# Replace this block with your own zone route when deploying to a custom domain.
+# [[routes]]
+# pattern = "pointers.example.com/*"
+# zone_name = "example.com"
+
+[[durable_objects.bindings]]
+name = "POINTER"
+class_name = "PointerObject"
+
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "RegistryObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PointerObject", "RegistryObject"]
+
+[vars]
+# Ed25519 public key (base64url, PEM or JWK) of the admin key allowed to create,
+# rotate and delete pointers. An empty value disables the admin API entirely.
+# Set it in wrangler.toml (public key only, never the private key) or in
+# .dev.vars for local development.
+POINTER_ADMIN_PUBLIC_KEY = ""
+# Only set when a browser client from another origin must call the API.
+ALLOWED_ORIGIN = ""

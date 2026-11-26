@@ -27,6 +27,12 @@ private
 根 test-package-smoke 调用其 CLI，scripts/package-smoke.mjs 负责项目特有验证。
 该试验包不加入五个 npm 交付项。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
+private `@ipab/pointer-worker` 迁入本机 signed-pointer 服务：每个 pointer 名一个
+Durable Object，值≤256 UTF-8 字节，Ed25519 直接签名或成员证书链签名，
+`If-Match` 版本号做乐观锁，管理面只用固定公钥增删／轮换。
+它是个人 swarm 的 HEAD 指针候选实现，尚未接入 CLI 同步流程，也不进入 npm 交付。
+测试在 Node 中以内存 DurableObjectState 运行 Worker 路由与 DO，
+`cloudflare:workers` 由共享 Vitest 配置别名到测试桩；不启动 workerd。
 private `@ipab/check-spec` 迁入 okr-agent 的 MIT React 定义查看器；
 `apps/check-viewer` 由 bundle-viewer 模板初始化，为独立 private App。
 Check 类型入口 check.yaml，instructions 为正文或显式 {path} Markdown 引用；
@@ -83,6 +89,8 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   发布前 `pnpm check-release` 独立执行全部静态检查、未过滤的完整 test-coverage
   及四项 90% 门槛、包检查和真实安装 smoke。门禁详情见 CONTRIBUTING.md。
 - 当前设备的 registry 由设备配置决定，不在仓库中写镜像或凭据。
+- Cloudflare Worker 成员保留 `wrangler.toml`／DO 迁移与空的管理公钥占位，
+  不提交个人域名、线上实例地址或 `.dev.vars`／`.keys` 私钥材料。
 - 只在实际交付成员声明 `lint-package: publint --strict`，根通过 Turbo 调用。
 - 不复制参考工程的业务包、历史生命周期记录、发布授权或个人配置。
 - 新成员 minimum engines.node 为 22.15.0，所有适用成员保持同一 minimum；

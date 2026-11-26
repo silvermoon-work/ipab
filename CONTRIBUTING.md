@@ -16,6 +16,9 @@ check-release 保留全部测试、四项 90% 覆盖率门槛和交付安装 smo
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
+private `@ipab/pointer-worker` 是个人 swarm 的签名指针服务（Cloudflare
+Worker），
+不属于 npm 交付项；它只提供 HEAD 指针，尚未接入 CLI 的设备授权与同步流程。
 Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告
 提交，以及原始 Check model 根 CID 在 App／Result 中的准确复用。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，

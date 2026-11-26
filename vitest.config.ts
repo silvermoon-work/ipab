@@ -1,6 +1,21 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Durable Object classes import this Workers-only module. Node tests run
+      // them against an in-memory DurableObjectState instead, so the import is
+      // resolved to a local stand-in at test time while TypeScript keeps using
+      // the real declarations from @cloudflare/workers-types.
+      "cloudflare:workers": fileURLToPath(
+        new URL(
+          "./packages/pointer-worker/test/cloudflare-workers.ts",
+          import.meta.url,
+        ),
+      ),
+    },
+  },
   test: {
     tags: [
       {

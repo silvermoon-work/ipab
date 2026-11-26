@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const state = mkdtempSync(join(tmpdir(), "ipab-check-viewer-build-"));
+const { prepareApp } = await import("@ipab/cli/devtools");
+await prepareApp(fileURLToPath(new URL("../", import.meta.url)), {
+  replace: true,
+});
+const state = mkdtempSync(join(process.cwd(), ".ipab-check-viewer-build-"));
 try {
   const result = spawnSync(
     process.execPath,
@@ -13,7 +16,9 @@ try {
       "--state-dir",
       state,
       "build",
-      fileURLToPath(new URL("../", import.meta.url)),
+      fileURLToPath(new URL("../dist/prepared-app/", import.meta.url)),
+      "--output",
+      fileURLToPath(new URL("../dist/app.car", import.meta.url)),
       "--no-import",
       "--replace",
     ],

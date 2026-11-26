@@ -4,7 +4,10 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 
 const output = process.env.IPAB_BUILD_DIR;
-if (!output) throw new Error("Run ipab build to provide IPAB_BUILD_DIR.");
+if (!output)
+  throw new Error(
+    "Run the project prepare-app script to provide IPAB_BUILD_DIR.",
+  );
 const require = createRequire(import.meta.url);
 await buildNode({
   entryPoints: ["src/server/main.ts"],

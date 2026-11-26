@@ -7,6 +7,7 @@ import {
   HEADER_SCOPE,
   HEADER_SUBJECT,
   HEADER_TIMESTAMP,
+  HEADER_AUDIENCE,
   type RequestProof,
   requestSigningMessage,
 } from "./protocol.ts";
@@ -22,6 +23,7 @@ import { narrowScope, verifyCertificateChain } from "./certificates.ts";
 
 export interface AuthEnv {
   POINTER_ROOT_PUBLIC_KEY: string;
+  REQUIRE_AUDIENCE?: boolean;
 }
 
 export interface AuthContext {
@@ -117,6 +119,19 @@ export async function authenticate(
 ): Promise<AuthResult> {
   const url = new URL(request.url);
   const path = url.pathname;
+  const audience = request.headers.get(HEADER_AUDIENCE);
+  if (audience !== null && audience !== url.origin)
+    return bad(
+      401,
+      ERROR_CODES.unauthorized,
+      "request audience differs from service",
+    );
+  if (env.REQUIRE_AUDIENCE && audience === null)
+    return bad(
+      401,
+      ERROR_CODES.unauthorized,
+      "origin-bound request proof is required",
+    );
 
   const authorization = request.headers.get("authorization");
   if (!authorization) {
@@ -231,6 +246,16 @@ export async function authenticate(
         `${HEADER_SUBJECT} does not match the certificate subject`,
       );
     }
+    if (
+      (env.REQUIRE_AUDIENCE || verified.leaf.aud !== undefined) &&
+      (audience === null ||
+        verified.leaf.aud !== `${url.origin}/${path.split("/")[1]}`)
+    )
+      return bad(
+        403,
+        ERROR_CODES.forbidden,
+        "certificate belongs to another service or variable",
+      );
     signerKey = await importPublicKeyRaw(verified.leaf.pub);
     keyId = await keyIdOf(verified.leaf.pub);
     certId = verified.leaf.cid;
@@ -256,6 +281,7 @@ export async function authenticate(
   }
 
   const proof: RequestProof = {
+    ...(audience === null ? {} : { audience }),
     method: request.method,
     path,
     timestamp,

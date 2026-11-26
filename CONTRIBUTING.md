@@ -18,7 +18,12 @@ check-release 保留全部测试、四项 90% 覆盖率门槛和交付安装 smo
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
 private `@ipab/pointer-worker` 是个人 swarm 的签名指针服务（Cloudflare
 Worker），
-不属于 npm 交付项；它只提供 HEAD 指针，尚未接入 CLI 的设备授权与同步流程。
+不属于 npm 交付项；CLI 已接入其授权与共享 Name/HEAD 同步。
+portable 协议在 Bundle 包复用；最新确认的 pointers API 使用受保护、origin-bound
+API key（安全 STDIN 设置、查询掩码）与 owner 签名创建。独立服务实现仍需
+与共享签名字节编码、opaque ID 和 revision 字符串协议集成，不能回退旧管理面。
+根 `ipab build` 只做通用组装，App 准备由项目显式调用 `prepareApp` 完成；
+迁移及验收边界见 [MVP 实现](docs/mvp-implementation.md)。
 Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告
 提交，以及原始 Check model 根 CID 在 App／Result 中的准确复用。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，

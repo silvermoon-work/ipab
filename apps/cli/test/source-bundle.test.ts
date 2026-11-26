@@ -26,6 +26,7 @@ it(
     await mkdir(join(project, "src", "excluded"), { recursive: true });
     await mkdir(join(project, "node_modules"));
     await mkdir(join(project, ".git"));
+    await mkdir(join(project, ".ipab", "identity"), { recursive: true });
     await mkdir(join(project, "dist"));
     await mkdir(join(project, ".ipab-app-old"));
     await mkdir(join(project, "artifacts"));
@@ -39,6 +40,8 @@ it(
       "src/excluded/keep.txt": "cannot reinclude a file in a pruned directory",
       "node_modules/tool.js": "dependency",
       ".git/config": "metadata",
+      ".ipab/pointers.json": '{"apiKey":"credential-placeholder"}',
+      ".ipab/identity/key.json": '{"privateKey":"credential-placeholder"}',
       "dist/old.car": "old output",
       ".ipab-app-old/program.cjs": "stale staging",
       "artifacts/old.car": "configured output",

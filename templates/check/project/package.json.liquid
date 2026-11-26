@@ -6,6 +6,7 @@
   "description": {{ description | json }},
   "engines": { "node": ">=22.15.0" },
   "scripts": {
+    "prepare-app": "node scripts/prepare.mjs",
     "build": "node scripts/build.mjs",
     "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
     "typecheck": "node scripts/typecheck.mjs"

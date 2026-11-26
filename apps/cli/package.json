@@ -29,6 +29,10 @@
     "src"
   ],
   "exports": {
+    "./devtools": {
+      "types": "./dist/app-authoring.d.ts",
+      "import": "./dist/app-authoring.js"
+    },
     ".": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js"
@@ -45,6 +49,7 @@
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage"
   },
   "dependencies": {
+    "@ipld/dag-cbor": "catalog:",
     "liquidjs": "catalog:",
     "@ipab/web-app": "workspace:*",
     "esbuild": "catalog:",

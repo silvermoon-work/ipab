@@ -1,0 +1,229 @@
+# MVP implementation decisions
+
+## Protocol and authorization
+
+The immutable swarm identifier is a typed Descriptor Bundle CID. Its entry has
+exactly `service`, `variable`, and the full Ed25519 public key `owner`. Each
+account has one key at `HOME/.ipab/identity/key.json` (`USERPROFILE` fallback).
+The identity directory is also the initialization marker: missing/corrupt keys
+in an existing directory are errors, never a reason to silently rotate identity.
+Unix ownership/0700/0600 and Windows account-only ACLs are checked before use.
+Changing a project or `--state-dir` does not create another identity.
+
+The confirmed `origin/main:docs/pointers-service.md` (ab24887) supersedes the
+earlier transient administrator-key flow. Creation now requires persistent,
+account-protected and explicitly origin-bound cfg:
+
+```sh
+ipab config set pointers.service https://service.example
+# Pipe the operator's key using safe stdin; never put it in command arguments.
+ipab config set pointers.apiKey --stdin
+ipab swarm create
+```
+
+Cfg is `HOME/.ipab/pointers.json`, protected by Unix account
+ownership/permissions or Windows account-only ACL. API-key queries and
+confirmations are masked. Changing the bound service requires explicitly
+resetting the old API key first. Keys are sent only on POST to that configured
+origin, never on GET/PUT, from a Descriptor-selected origin, or through
+redirects. The owner signs POST body `{owner,root}`. The service allocates the
+opaque ID; no client-selected variables or administrator-key fallback remain in
+the CLI.
+
+Initial State and a publication record are provided before POST; neither refers
+to the not-yet-created Descriptor. The creation operation/idempotency key and
+returned ID are persisted under protected state credentials before Descriptor
+assembly/distribution. `swarm create --resume OPERATION` reuses the saved ID,
+not another pointer allocation. An unconfirmed creation without an ID is blocked
+after the minimum ten-minute server idempotency window, requiring operator
+recovery rather than claiming permanent exactly-once behavior.
+
+Portable client/cryptography/certificate/protocol code now lives under
+`@ipab/bundle/pointer/*`; the Worker re-exports it rather than maintaining a
+second protocol. The publishable CLI does not depend on a private Worker
+package. The CLI now uses only `/v1/pointers/` POST and `/v1/pointers/{id}`
+GET/PUT, `{root,revision}` responses, and strong revision-string ETags. The
+legacy `client.ts`/Worker routes are retained only pending the independent
+service migration; they are not silently used as a new-API fallback.
+
+**Necessary shared protocol handoff:** `pointer/pointers.ts` exports
+`pointerSigningMessage` and `PointerProof`. Its unambiguous UTF-8 signing
+message is the JSON array:
+`["IPAB-POINTERS/1",origin,id,method,path,bodySha256,ifMatch,idempotencyKey,timestamp,nonce,subject]`.
+The independent service implementation must adopt exactly that shared encoder;
+the API design alone does not define matching signature bytes. This is an
+intentional breaking API/envelope change, not backward compatibility with
+`/v1/value`. Member certificates retain the existing signed certificate envelope
+with `aud` bound to the full `origin/v1/pointers/id` URI and `ca:false`; the
+service must verify the same encoder, pinned owner and target.
+
+Network retries issue fresh nonce/timestamp proofs with the same operation key.
+A rebase that creates a different CAS candidate receives a new operation key.
+Server-pinned origin, atomic nonce/CAS/idempotency persistence, capacity
+rejection, and recovery remain the independent service thread's responsibility;
+no competing server implementation or deployment is added here.
+
+Owners sign directly without self-membership certificates. Members need both an
+owner-signed, non-delegating certificate and possession proof on every request.
+Membership requests are typed, signed, target-bound Bundles valid for seven
+days. Responses reference the exact request CID. Join checks the pending local
+request, the account public key, owner, target, signature and validity, and
+authenticates HEAD before saving the certificate. Certificates default to seven
+days, with explicit `--expires-in` seconds (60 to 2592000).
+Renewal/revocation/recovery are outside this MVP. Approval requires `--yes` or
+an interactive confirmation.
+
+## Content, Names and retention
+
+All references are CIDs. `name:apps/hello` explicitly selects a formal shared
+Name; bare references retain existing local pin/CID semantics. Select a swarm
+with global `--swarm CID`, `IPAB_SWARM`, or `swarm.default`. The service has one
+HEAD per swarm. HEAD is a DAG-CBOR publication `{v:1,state:CID,previous?:CID}`.
+Its State contains `v:1`, mutable `properties` (`name`, `description`) and
+`names` (Name to **CID links**). History links prior publication records rather
+than Descriptors. Mutable properties are not in the Descriptor. There is no
+arbitrary root replacement command or properties-edit command.
+
+Artifact Bundles have exactly `{value,previous?,timestamp}`; timestamp is
+RFC3339 UTC. Genesis omits previous. Iteration links the old **Artifact node**,
+not its payload or the global snapshot. `exec`, `get` and `open` resolve
+Artifact values; `get --raw` and `open --raw` select the node itself. `exec` has
+no raw mode. One operation freezes its resolved target/content CIDs.
+
+```sh
+ipab publish dist/app.car --name apps/hello
+ipab --json get name:apps/hello -o downloaded-app
+ipab publish APP_V2 --name apps/hello --expect RELEASE_V1
+ipab publish CONTENT_CID --name documents/snapshot --snapshot
+ipab publish CONTENT_CID
+```
+
+Named publication creates an Artifact unless `--snapshot` explicitly names
+ordinary content. Initial names must be unoccupied; ordinary snapshots cannot
+replace an occupied Name. Iteration requires the exact old Artifact node.
+Different-name global CAS conflicts refresh the snapshot, preserve all other
+Names, rebuild a candidate and retry (at most eight attempts). Same-name changes
+return edit conflict/exit 3 with retained candidate/content CIDs. Non-CAS
+network failures are not silently retried; unknown commit outcomes are not
+successes. Publication does not edit, compile, execute or install.
+
+Swarm flows require a prepared private Kubo network. `store.gateway` stays
+read-only; it does not upload. `swarm.provider` (default local port 5001) is an
+explicit **CAR import bridge**, not a restored `store.rpc` backend. It POSTs
+multipart CAR to `/api/v0/dag/import?pin-roots=true`, verifies every returned
+root/pin result and keeps local coordinated retention. HTTP RPC is restricted to
+loopback; other providers require HTTPS. Redirects are refused.
+App/source/Artifact dependencies and required history are explicitly provided
+and pinned before HEAD is written. Weak JSON CID references are not mistaken for
+automatic IPFS links. Pin confirmation does not claim any remote member is
+online or has downloaded content. Garbage collection does not unpin publication
+roots; retention expiry/reclamation is not part of this MVP.
+
+`get` validates the Bundle and unpacks only its actual files into a new/empty
+directory, refusing overwrite. JSON output includes `targetCid` (the editing
+baseline), `cid` (selected content) and `directory`. It never installs, edits,
+builds, executes or automatically follows an App's optional `source.cid`. An
+Agent obtains source with a separate `get SOURCE_CID`. Apps without source
+remain downloadable/runnable. Node execution remains trusted, **not sandboxed**.
+
+Creation, request and approval stdout are one CID line, or exactly `{cid}` with
+global `--json`. Progress/errors use stderr. Management failures exit 1, syntax
+errors 2, Name edit conflicts 3; App exit codes remain unchanged.
+
+## Intentional build migration
+
+Root `ipab build` now **only** assembles/validates a generic Bundle and writes
+its CAR. It never executes an App compiler, npm script or prebuild hook. Supply
+a directory containing `.bundle.yaml` and `ipab.build.yaml`, or the recipe path:
+
+```yaml
+version: 1
+files:
+  - source: app.json
+    target: app.json
+  - source: compiled/main.cjs
+    target: resources/app.cjs
+imports:
+  - cid: EXACT_UNIXFS_CID
+    target: resources/original
+```
+
+Type and entry come only from `.bundle.yaml`, not duplicate recipe fields. Files
+use explicit relative local source/target paths; no scans or implicit
+resolution. CID imports are exact UnixFS content, not Names or Artifact values.
+Imported root/subtree CIDs and block bytes are preserved. Only ancestor
+directories are rebuilt. Needed blocks are hash-verified and included in the
+final CAR. Missing/corrupt content, path collisions (including case-only
+collisions), crossing files and missing entry selections fail. `bundle build`
+remains the low-level direct-directory/type-only packer.
+
+Old App `ipab.yaml`/`ipab.json` is **rejected** by root build, not silently
+ignored. Its App-specific behavior is available only to explicitly invoked
+project tooling: `prepareApp` in `@ipab/cli/devtools` prepares
+`dist/prepared-app/` (files plus recipe) and a separate source CAR. Existing
+metadata/supportedSchemas/source validation and trusted project prebuild rules
+are retained there, outside root build. Generated templates provide:
+
+```sh
+# Explicitly link this candidate CLI as a project dependency first:
+pnpm add --save-dev @ipab/cli@link:PATH_TO_THIS_WORKTREE/apps/cli
+pnpm prepare-app
+pnpm build
+ipab bundle import dist/app.source.car
+ipab publish dist/app.car --name apps/hello
+```
+
+Replace the link with an authorized released version when one actually exists;
+templates do not invent an unpublished registry version. Installing dependencies
+and linking developer tools are explicit external operations. Source snapshots
+exclude generated outputs and carry the project scripts/configuration. Check
+Viewer repository build likewise prepares explicitly then invokes generic
+assembly using isolated local state. Old scripts that assumed `ipab build`
+compiles must migrate to the two explicit stages above.
+
+## Validation boundary
+
+Validation before the confirmed pointer API migration: two isolated same-host
+Kubo 0.43.1 private repos and the legacy Worker router completed Hello→Welcome
+and prior-release Hello, with App/source get. Windows and `office-ubuntu`
+existing private Kubo 0.43.1 nodes also verified real bidirectional Bundles: A→B
+`bafybeiaeyxrgijj2cteat3pdumbesjbivxmzcbirvbzwj6qv3ox4ptqive`; B→A
+`bafybeidwv32yojp3qv3pa4mnx3wht7zxmrpwoysjqawx6akc5dc6rt762y`. Only new
+test-owned roots were imported/pinned; prior pin absence was checked, those test
+pins were removed, and owned SSH forwards stopped. No shared daemon,
+configuration, swarm connections, GC or existing pins were changed.
+
+These are **not** new-pointer-API or physical two-host Name execution proofs.
+The independent `/v1/pointers` service/encoder integration is not available in
+this worktree. Node/IPAB were not on the noninteractive `office-ubuntu` SSH
+PATH; no global installation was attempted. Full `check-release` exposed legacy
+template/help assertions (now migrated) and portable-code coverage ownership
+(restored by reusing existing protocol suites against Bundle's public source
+entrypoints). New service integration and all full validation gates must pass
+before claiming main is ready.
+
+Latest verification: `pnpm check` passes (static/build, unit/mock and publint,
+not complete coverage). Bundle's full coverage passes with 212 tests: statements
+96.23%, branches 92.12%, functions 98.66%, lines 96.26%. The migrated MVP probe
+fails at POST `/v1/pointers/` with HTTP 404 from the still-legacy service
+router; saved creation recovery is reported and no success CID is emitted.
+`check-release` is not green, and main is not push-ready.
+
+Focused Builder tests verify a multi-block imported UnixFS DAG remains
+identical, including its original CID and all required blocks, and reject
+collisions, missing/corrupt inputs. Worker tests verify version-2
+service/variable binding, non-delegating certificates and nonce replay
+rejection.
+
+The legacy `pointer-worker/test/mvp.test.ts` release-E2E fixture used separate
+account HOME/state/Store contexts, a real isolated HTTP server, the actual
+Worker router with isolated in-memory Durable Object storage, and an isolated
+verified-CAR provider implementing Kubo's import/Gateway HTTP contract. It never
+contacts a shared daemon. This is not a public deployment, real Kubo daemon
+test, Cloudflare runtime certification or release authorization. It asserts
+membership, Name resolution, v1/v2 output, separate App/source get, raw node
+get, prior release availability, same-name conflict, different-name merge/retry
+and provider failure before HEAD. It must be migrated to the independent
+confirmed service, not used as evidence the new API is ready. Required checks
+and their actual results are reported separately; this document is a decision
+record, not fabricated execution evidence.

@@ -44,7 +44,7 @@ function corsHeaders(env: Env, request: Request): Record<string, string> {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "GET, PUT, POST, DELETE, OPTIONS",
     "access-control-allow-headers":
-      "authorization, content-type, if-match, idempotency-key, x-pointer-cert, x-pointer-scope, x-pointer-subject, x-pointer-timestamp, x-pointer-nonce",
+      "authorization, content-type, if-match, idempotency-key, x-pointer-cert, x-pointer-scope, x-pointer-subject, x-pointer-timestamp, x-pointer-nonce, x-pointer-audience",
     "access-control-expose-headers": "etag",
     "access-control-max-age": "600",
     vary: "origin",
@@ -193,7 +193,10 @@ async function handleValue(
 
   const authenticated = await authenticate(
     request,
-    { POINTER_ROOT_PUBLIC_KEY: config.pubkey },
+    {
+      POINTER_ROOT_PUBLIC_KEY: config.pubkey,
+      ...(config.requireAudience ? { REQUIRE_AUDIENCE: true } : {}),
+    },
     nowSeconds,
   );
   if (!authenticated.ok) {
@@ -428,12 +431,23 @@ async function handleAdmin(
     if (request.method === "POST") {
       const parsed = readJsonObject(authenticated.requestBody, finish);
       if (!parsed.ok) return parsed.response;
-      const extra = onlyKeys(parsed.body, ["name", "pubkey"]);
+      const extra = onlyKeys(parsed.body, [
+        "name",
+        "pubkey",
+        "requireAudience",
+      ]);
       if (extra)
         return finish(
           error(400, ERROR_CODES.badRequest, `unknown body field(s): ${extra}`),
         );
       const { name, pubkey } = parsed.body;
+      if (
+        parsed.body.requireAudience !== undefined &&
+        typeof parsed.body.requireAudience !== "boolean"
+      )
+        return finish(
+          error(400, ERROR_CODES.badRequest, "requireAudience must be boolean"),
+        );
       if (typeof name !== "string" || !isValidVariableName(name)) {
         return finish(
           error(
@@ -465,6 +479,9 @@ async function handleAdmin(
         name,
         pubkey: normalized,
         createdAt: nowSeconds,
+        ...(parsed.body.requireAudience === true
+          ? { requireAudience: true }
+          : {}),
       };
       const reserved = await registry.create(config);
       if (!reserved) {

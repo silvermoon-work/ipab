@@ -83,6 +83,106 @@ async function decode(bytes: Uint8Array) {
   };
 }
 const work: string[] = [];
+describe("explicit CID imports", { tags: ["unit"] }, () => {
+  it("grafts the exact original multi-block UnixFS DAG into the final CAR", async () => {
+    const large = text("x".repeat(600_000));
+    const imported = await encodeBundleCar(
+      memoryTree(new Map([...controls, ["resources/data.bin", large]])),
+    );
+    const original = await decode(await consume(imported.stream));
+    const final = await encodeBundleCar(memoryTree(controls), {
+      imports: [
+        {
+          path: "resources/original",
+          cid: original.root,
+          resolveCid: original.resolveCid,
+        },
+      ],
+    });
+    const assembled = await decode(await consume(final.stream));
+    const root = dagPb.decode(assembled.blocks.get(assembled.root.toString())!);
+    const resources = root.Links.find((link) => link.Name === "resources")!;
+    const directory = dagPb.decode(
+      assembled.blocks.get(resources.Hash.toString())!,
+    );
+    expect(
+      directory.Links.find((link) => link.Name === "original")!.Hash.equals(
+        original.root,
+      ),
+    ).toBe(true);
+    for (const [cid, block] of original.blocks) {
+      if (cid !== schema.cid.toString())
+        expect(assembled.blocks.get(cid)).toEqual(block);
+    }
+    const bundle = await openBundle(assembled.root, {
+      resolveCid: assembled.resolveCid,
+    });
+    expect(
+      await readBytes(
+        {
+          list: () => Promise.resolve([]),
+          read: () => bundle.readFile("resources/original/resources/data.bin"),
+        },
+        "file",
+        700_000,
+      ),
+    ).toEqual(large);
+  });
+  it("rejects import collisions, missing blocks and corrupt blocks", async () => {
+    const imported = await encodeBundleCar(memoryTree(controls));
+    const original = await decode(await consume(imported.stream));
+    await expect(
+      encodeBundleCar(memoryTree(controls), {
+        imports: [
+          {
+            path: "data.json",
+            cid: original.root,
+            resolveCid: original.resolveCid,
+          },
+        ],
+      }),
+    ).rejects.toThrow(/collision/i);
+    await expect(
+      encodeBundleCar(memoryTree(controls), {
+        imports: [
+          {
+            path: "resources/import",
+            cid: original.root,
+            resolveCid: () =>
+              Promise.reject(new Error("Missing imported block")),
+          },
+        ],
+      }),
+    ).rejects.toThrow(/Missing/);
+    await expect(
+      encodeBundleCar(memoryTree(controls), {
+        imports: [
+          {
+            path: "resources/import",
+            cid: original.root,
+            resolveCid: () => Promise.resolve(text("corrupt")),
+          },
+        ],
+      }),
+    ).rejects.toThrow(/Invalid imported/);
+    await expect(
+      encodeBundleCar(memoryTree(controls), {
+        imports: [
+          {
+            path: "resources/import",
+            cid: original.root,
+            resolveCid: original.resolveCid,
+          },
+          {
+            path: "resources/import/child",
+            cid: original.root,
+            resolveCid: original.resolveCid,
+          },
+        ],
+      }),
+    ).rejects.toThrow(/overlap/);
+  });
+});
 afterEach(async () => {
   for (const path of work.splice(0))
     await rm(path, { recursive: true, force: true });

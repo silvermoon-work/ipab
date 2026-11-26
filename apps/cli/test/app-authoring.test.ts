@@ -18,7 +18,7 @@ import type { CID } from "multiformats/cid";
 import { encodeSchema, openBundle, parseData } from "@ipab/bundle";
 import { stringify } from "yaml";
 import { readSupportedSchemas } from "../src/supported-schemas.js";
-import { buildApp, initApp } from "../src/app-authoring.js";
+import { buildApp, initApp, prepareApp } from "../src/app-authoring.js";
 import { appSchema, appSchemaCid } from "../src/space.js";
 import { appDescription, schemaAlias } from "../src/app-definition.js";
 import { object } from "../src/errors.js";
@@ -26,6 +26,7 @@ import { cli, fixture, subprocess } from "./helpers.js";
 import { State } from "../src/state.js";
 import { buildChain, projectBuild, runPrebuild } from "../src/app-prebuild.js";
 import { readCar } from "../src/authoring.js";
+import { message } from "../src/errors.js";
 
 const require = createRequire(import.meta.url);
 const appData = {
@@ -44,6 +45,36 @@ vi.mock("node:child_process", async () => {
   return { ...original, spawn: vi.fn(original.spawn) };
 });
 const result = (out: string) => object(JSON.parse(out) as unknown, "result");
+async function projectToolBuild(
+  stateDir: string,
+  directory: string,
+  options: {
+    replace?: boolean;
+    noImport?: boolean;
+    includeSource?: boolean;
+  } = {},
+) {
+  let diagnostic = "";
+  try {
+    const built = await buildApp(directory, {
+      ...options,
+      diagnostic: (text) => {
+        diagnostic += text;
+      },
+    });
+    if (!options.noImport) {
+      const imported = await cli(stateDir, ["bundle", "import", built.output]);
+      if (imported.code) return imported;
+    }
+    return {
+      code: 0,
+      out: JSON.stringify({ ...built, imported: !options.noImport }),
+      err: diagnostic,
+    };
+  } catch (cause) {
+    return { code: 1, out: "", err: `${diagnostic}${message(cause)}` };
+  }
+}
 async function projectTools(root: string) {
   await mkdir(join(root, "node_modules", "@types"), { recursive: true });
   for (const [name, target] of [
@@ -243,7 +274,11 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
     expect(pkg).toMatchObject({
       name: "hello",
       private: true,
-      scripts: { build: "ipab build", typecheck: "tsc --noEmit" },
+      scripts: {
+        build: "ipab build dist/prepared-app --output dist/app.car --replace",
+        "prepare-app": "node scripts/prepare.mjs",
+        typecheck: "tsc --noEmit",
+      },
       devDependencies: { typescript: "6.0.3", "@types/node": "26.6.6" },
     });
     expect(await readdir(project)).not.toContain("node_modules");
@@ -292,7 +327,10 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
     expect(await initApp("Bad Name", project).catch(String)).toContain("npm");
     const missing = await cli(work.stateDir, ["build", project]);
     expect(missing.code).toBe(1);
-    expect(missing.err).toContain("Project-local TypeScript is missing");
+    expect(missing.err).toContain("Legacy App build configuration");
+    await expect(prepareApp(project)).rejects.toThrow(
+      "Project-local TypeScript is missing",
+    );
     expect(await readdir(project)).not.toContain("dist");
   });
   it("resolves the full builtin definition offline while keeping generic commands compilation-free", async () => {
@@ -388,7 +426,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
         },
       }),
     );
-    const response = await cli(work.stateDir, ["--json", "build", project]);
+    const response = await projectToolBuild(work.stateDir, project);
     expect(response.code, response.err).toBe(0);
     expect(result(response.out)).toMatchObject({
       kind: "app-bundle",
@@ -470,7 +508,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
   it("executes a built App before and after renaming its independent pin", async () => {
     await initApp("hello", project);
     await projectTools(project);
-    const response = await cli(work.stateDir, ["--json", "build", project]);
+    const response = await projectToolBuild(work.stateDir, project);
     expect(response.code, response.err).toBe(0);
     const storeConfig = join(work.root, "store.json");
     expect(work.store.pins()).toEqual([]);
@@ -505,11 +543,12 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
     async () => {
       await initApp("hello", project);
       await projectTools(project);
-      const response = await cli(work.stateDir, ["--json", "build", project]);
+      const response = await projectToolBuild(work.stateDir, project);
       expect(response.code, response.err).toBe(0);
       const firstCar = await readFile(join(project, "dist", "app.car"));
       const storeConfig = join(work.root, "store.json");
-      expect((await cli(work.stateDir, ["build", project])).code).toBe(1);
+      expect((await projectToolBuild(work.stateDir, project)).code).toBe(1);
+      await prepareApp(project, { replace: true });
       const defaultBuild = await promisify(execFile)(
         process.execPath,
         [
@@ -520,6 +559,9 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
           "--store-gateway",
           "http://127.0.0.1:1",
           "build",
+          "dist/prepared-app",
+          "--output",
+          "dist/app.car",
           "--replace",
           "--no-import",
         ],
@@ -530,7 +572,8 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       );
       expect(result(defaultBuild.stdout).imported).toBe(false);
       expect(
-        (await cli(work.stateDir, ["build", project, "--replace"])).code,
+        (await projectToolBuild(work.stateDir, project, { replace: true }))
+          .code,
       ).toBe(0);
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(
         firstCar,
@@ -554,7 +597,9 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
         join(project, "src", "main.ts"),
         'const invalid: number = "not a number";\n',
       );
-      const failed = await cli(work.stateDir, ["build", project, "--replace"]);
+      const failed = await projectToolBuild(work.stateDir, project, {
+        replace: true,
+      });
       expect(failed.code).toBe(1);
       expect(failed.err).toContain("typecheck failed");
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(
@@ -982,7 +1027,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       });
       expect(initialized.templateCid).toMatch(/^bafy/);
       await projectTools(project);
-      for (const name of ["esbuild", "vite", "@ipab/web-app"]) {
+      for (const name of ["esbuild", "vite", "@ipab/web-app", "@ipab/cli"]) {
         if (name.startsWith("@ipab/"))
           await mkdir(join(project, "node_modules", "@ipab"), {
             recursive: true,
@@ -1005,19 +1050,24 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
           ...pkg,
           scripts: {
             ...object(pkg.scripts, "scripts"),
-            build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build`,
+            build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build dist/prepared-app --output dist/app.car`,
           },
         }),
       );
       const runner = process.env.npm_execpath!;
       expect(runner).toMatch(/pnpm(?:\.cjs|\.mjs|\.js|\.exe)?$/);
+      await promisify(execFile)(
+        runner.endsWith(".exe") ? runner : process.execPath,
+        [...(runner.endsWith(".exe") ? [] : [runner]), "run", "prepare-app"],
+        { cwd: project },
+      );
       const built = await promisify(execFile)(
         runner.endsWith(".exe") ? runner : process.execPath,
         [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
         { cwd: project },
       );
       expect(result(built.stdout)).toMatchObject({
-        kind: "app-bundle",
+        kind: "content-bundle",
         imported: true,
       });
       const bundle = await loadCar(join(project, "dist", "app.car"));
@@ -1060,14 +1110,12 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
           },
         }),
       );
-      const recursive = await cli(work.stateDir, [
-        "build",
-        project,
-        "--replace",
-        "--no-import",
-      ]);
+      const recursive = await projectToolBuild(work.stateDir, project, {
+        replace: true,
+        noImport: true,
+      });
       expect(recursive.code).toBe(1);
-      expect(recursive.err).toContain("Recursive ipab build");
+      expect(recursive.err).toContain("Legacy App build configuration");
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(oldCar);
     },
   );
@@ -1179,12 +1227,9 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
           },
         }),
       );
-      const first = await cli(work.stateDir, [
-        "--json",
-        "build",
-        project,
-        "--no-import",
-      ]);
+      const first = await projectToolBuild(work.stateDir, project, {
+        noImport: true,
+      });
       expect(first.code, first.err).toBe(0);
       expect(first.err).toContain("prebuild diagnostic");
       expect(result(first.out).imported).toBe(false);
@@ -1236,7 +1281,7 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
     },
   );
   it(
-    "uses project source defaults and mutually exclusive CLI overrides without retaining source",
+    "uses project source defaults and explicit project-tool overrides without retaining source",
     { tags: ["release-e2e"], timeout: 60_000 },
     async () => {
       await initApp("hello", project);
@@ -1249,24 +1294,18 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
           build: { includeSource: false },
         }),
       );
-      const disabled = await cli(work.stateDir, [
-        "--json",
-        "build",
-        project,
-        "--no-import",
-      ]);
+      const disabled = await projectToolBuild(work.stateDir, project, {
+        noImport: true,
+      });
       expect(disabled.code, disabled.err).toBe(0);
       expect(result(disabled.out)).not.toHaveProperty("source");
       const withoutBytes = await readFile(join(project, "dist", "app.car"));
       expect(await readdir(join(project, "dist"))).toEqual(["app.car"]);
-      const included = await cli(work.stateDir, [
-        "--json",
-        "build",
-        project,
-        "--with-source",
-        "--replace",
-        "--no-import",
-      ]);
+      const included = await projectToolBuild(work.stateDir, project, {
+        includeSource: true,
+        replace: true,
+        noImport: true,
+      });
       expect(included.code, included.err).toBe(0);
       const includedSource = object(result(included.out).source, "source");
       expect(includedSource).toMatchObject({
@@ -1281,14 +1320,11 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
           build: { includeSource: true },
         }),
       );
-      const excluded = await cli(work.stateDir, [
-        "--json",
-        "build",
-        project,
-        "--without-source",
-        "--replace",
-        "--no-import",
-      ]);
+      const excluded = await projectToolBuild(work.stateDir, project, {
+        includeSource: false,
+        replace: true,
+        noImport: true,
+      });
       expect(excluded.code, excluded.err).toBe(0);
       expect(result(excluded.out)).not.toHaveProperty("source");
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(

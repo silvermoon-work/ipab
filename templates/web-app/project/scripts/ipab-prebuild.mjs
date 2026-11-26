@@ -3,7 +3,10 @@ import { build as buildWeb } from "vite";
 import { join } from "node:path";
 
 const output = process.env.IPAB_BUILD_DIR;
-if (!output) throw new Error("Run ipab build to provide IPAB_BUILD_DIR.");
+if (!output)
+  throw new Error(
+    "Run the project prepare-app script to provide IPAB_BUILD_DIR.",
+  );
 
 await buildNode({
   entryPoints: ["src/server/main.ts"],

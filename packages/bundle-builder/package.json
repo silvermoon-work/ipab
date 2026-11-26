@@ -46,6 +46,7 @@
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage"
   },
   "dependencies": {
+    "ipfs-unixfs": "catalog:",
     "@ipab/bundle": "workspace:*",
     "@ipld/car": "catalog:",
     "@ipld/dag-pb": "catalog:",

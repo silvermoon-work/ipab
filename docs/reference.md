@@ -4,6 +4,13 @@
 首次使用请先阅读 [README](../README.md)；
 参与 IPAB 本身的开发请阅读 [贡献指南](../CONTRIBUTING.md)。
 
+**MVP 有意迁移：** 根 `ipab build` 已改为通用 `ipab.build.yaml` 配方组装；
+旧 App 编译／prebuild／源码生成由显式项目工具完成，不再是 CLI build 行为。
+新增 swarm/publish/get、共享 Name/Artifact 解析和完整迁移说明见
+[MVP 实现与决策](mvp-implementation.md)。下文旧 App 构建章节保留为
+`@ipab/cli/devtools` 项目工具的配置背景，不可把旧命令直接当作新 root
+build 使用。
+
 IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/stdout/stderr，
 通过独立 IPC 提供 IPFS 文件流及可写输出 Space。**它不是沙箱**：应用拥有
 当前用户的 Node、文件系统、网络和环境权限；只执行你信任的应用。

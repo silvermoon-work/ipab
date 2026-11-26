@@ -1,11 +1,12 @@
 # @ipab/pointer-worker
 
-个人 swarm 的**全局状态指针服务**：每个 `swarmAID`（这里称为 pointer 名）维护
+个人 swarm 的**全局状态指针服务**：每个内部 pointer 变量维护
 一个可变的 `HEAD`，读写都要求 Ed25519 签名，写操作使用版本号做乐观锁。
 服务运行在 Cloudflare Workers 上，每个 pointer 名对应一个 Durable Object。
 
 本包是 private workspace 成员，不属于五个 npm 交付项；它目前只提供签名指针服务，
-还没有接入 `ipab` CLI 的 swarm 同步流程。需求背景见
+已接入 `ipab` CLI 的 swarm 同步流程。具体决策和授权政策见
+[MVP 实现](../../docs/mvp-implementation.md)。需求背景见
 [个人 swarm 的创建与授权需求](../../docs/swarm-authorization.md) 与
 [项目愿景](../../VISION.md)。
 
@@ -32,7 +33,8 @@
   `POINTER_ADMIN_PUBLIC_KEY`，只接受该密钥直接签名（不接受证书链）
   来增删 pointer 和轮换公钥。
 
-映射到 swarm 授权需求：pointer 名对应 `swarmAID`，锚定公钥对应 swarm 根公钥，
+映射到 swarm 授权需求：pointer 名是 Descriptor 内部 variable，锚定公钥对应 swarm
+owner 公钥，
 值是发布记录当前的 `HEAD`（CID 字符串，≤256 UTF-8 字节）；`If-Match` 版本号
 承载“预期旧根 → 候选新根”的比较并交换语义。映射表本身不存储在这里。
 
@@ -72,7 +74,7 @@ pnpm cli read --key .keys/agent-1.json --url $U
 ```
 
 `.dev.vars`（管理公钥）和 `.keys/`（私钥）已由根 `.gitignore` 排除，不要提交。
-证书与凭证的编码、`swarmAID` 生成方式、根密钥轮换与设备撤销仍未定案，
+Swarm CID 是不可变 Descriptor Bundle；根密钥轮换与设备撤销仍在 CLI MVP 之外，
 本服务只实现签名指针部分。
 
 运行测试与类型检查：

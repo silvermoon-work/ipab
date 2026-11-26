@@ -1,10 +1,14 @@
 import { homedir } from "node:os";
+import { CID } from "multiformats/cid";
 import { join, resolve } from "node:path";
 import { readContentConfiguration } from "@ipab/ipfs-store/node";
 import type { StoreConfiguration } from "@ipab/ipfs-store";
 import { HostError, object, syntax } from "./errors.js";
 
 export type ConfigKey =
+  | "swarm.default"
+  | "swarm.service"
+  | "swarm.provider"
   | "store.gateway"
   | "history.enabled"
   | "history.limit"
@@ -13,6 +17,7 @@ export type ConfigKey =
 export type ConfigValue = string | boolean | number | null;
 export type Source = "flag" | "env" | "user" | "default";
 export interface GlobalOptions {
+  swarm?: string;
   stateDir?: string;
   storeGateway?: string;
   json: boolean;
@@ -23,6 +28,9 @@ export interface ConfigItem {
   source: Source;
 }
 export const defaults: Record<ConfigKey, ConfigValue> = {
+  "swarm.default": null,
+  "swarm.service": null,
+  "swarm.provider": "http://127.0.0.1:5001",
   "store.gateway": null,
   "history.enabled": true,
   "history.limit": 20,
@@ -30,6 +38,9 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "bundle.outputDir": "dist",
 };
 const environments: Record<ConfigKey, string> = {
+  "swarm.default": "IPAB_SWARM",
+  "swarm.service": "IPAB_SWARM_SERVICE",
+  "swarm.provider": "IPAB_SWARM_PROVIDER",
   "store.gateway": "IPAB_STORE_GATEWAY",
   "history.enabled": "IPAB_HISTORY_ENABLED",
   "history.limit": "IPAB_HISTORY_LIMIT",
@@ -71,6 +82,7 @@ export function parseValue(
   text = false,
 ): ConfigValue {
   if (text && typeof value === "string") {
+    if (key.startsWith("swarm.") && value === "default") return null;
     if (key === "history.enabled") {
       if (value === "true") return true;
       if (value === "false") return false;
@@ -79,6 +91,19 @@ export function parseValue(
       value = Number(value);
     if (key === "store.gateway" && value === "default") return null;
   }
+  if (key.startsWith("swarm.") && value === null) return null;
+  if (key === "swarm.default" && typeof value === "string") {
+    try {
+      return CID.parse(value).toV1().toString();
+    } catch {
+      syntax("swarm.default requires an exact Swarm Bundle CID.");
+    }
+  }
+  if (
+    (key === "swarm.service" || key === "swarm.provider") &&
+    typeof value === "string"
+  )
+    return publicUrl(value);
   if (key === "store.gateway" && value === null) return null;
   if (
     key === "bundle.outputDir" &&
@@ -171,7 +196,12 @@ export function effectiveConfig(
   const result = (Object.keys(defaults) as ConfigKey[]).map(
     (key): ConfigItem => {
       const variable = env[environments[key]];
-      const flag = key === "store.gateway" ? flags.storeGateway : undefined;
+      const flag =
+        key === "store.gateway"
+          ? flags.storeGateway
+          : key === "swarm.default"
+            ? flags.swarm
+            : undefined;
       // Invalid lower layers are not hidden by a higher-priority override.
       const environmental =
         variable === undefined ? undefined : parseValue(key, variable, true);

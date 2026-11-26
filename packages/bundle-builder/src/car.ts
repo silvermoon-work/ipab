@@ -5,6 +5,8 @@ import {
 } from "@ipld/car/buffer-writer";
 import * as dagPb from "@ipld/dag-pb";
 import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
+import { UnixFS } from "ipfs-unixfs";
 import { importer } from "ipfs-unixfs-importer";
 import { fixedSize } from "ipfs-unixfs-importer/chunker";
 import { balanced } from "ipfs-unixfs-importer/layout";
@@ -13,6 +15,7 @@ import {
   encodeSchema,
   openBundle,
   resolveBundleLimits,
+  safePath,
 } from "@ipab/bundle";
 import type { BundleLimits, SchemaBlock, EntryValidation } from "@ipab/bundle";
 import { listTree, streamChunks } from "./tree.js";
@@ -20,6 +23,11 @@ import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 
 export interface BundleCarOptions extends ReadOptions {
   readonly limits?: Partial<BundleLimits>;
+  readonly imports?: readonly {
+    path: string;
+    cid: CID;
+    resolveCid(this: void, cid: CID, options: ReadOptions): Promise<Uint8Array>;
+  }[];
 }
 export interface EncodedBundleCar {
   readonly cid: CID;
@@ -174,6 +182,127 @@ export async function encodeBundleCar(
         "MANIFEST_INVALID",
         "Bundle requires a nonempty file tree.",
       );
+    const imported = new Set<string>();
+    const load = async (
+      cid: CID,
+      source: NonNullable<BundleCarOptions["imports"]>[number]["resolveCid"],
+      depth: number,
+    ): Promise<number> => {
+      signal.throwIfAborted();
+      if (depth > limits.depth)
+        throw new ContentBundleError(
+          "LIMIT_EXCEEDED",
+          "Imported DAG depth exceeded.",
+        );
+      const key = cid.toV1().toString();
+      if (!imported.has(key)) {
+        const bytes = await source(cid, { signal });
+        const hash = await sha256.digest(bytes);
+        if (
+          cid.multihash.code !== sha256.code ||
+          cid.multihash.digest.length !== hash.digest.length ||
+          !hash.digest.every(
+            (byte, index) => byte === cid.multihash.digest[index],
+          ) ||
+          ![dagPb.code, 0x55].includes(cid.code)
+        )
+          throw new ContentBundleError(
+            "CONTENT_INVALID",
+            "Invalid imported UnixFS block.",
+          );
+        await put(cid, bytes);
+        imported.add(key);
+        if (cid.code === dagPb.code)
+          for (const link of dagPb.decode(bytes).Links)
+            await load(link.Hash, source, depth + 1);
+      }
+      const bytes = await get(cid);
+      return (
+        bytes.length +
+        (cid.code === dagPb.code
+          ? dagPb
+              .decode(bytes)
+              .Links.reduce((sum, link) => sum + (link.Tsize ?? 0), 0)
+          : 0)
+      );
+    };
+    const insert = async (
+      directory: CID,
+      parts: string[],
+      child: CID,
+      childSize: number,
+    ): Promise<CID> => {
+      const node = dagPb.decode(await get(directory));
+      if (!node.Data || UnixFS.unmarshal(node.Data).type !== "directory")
+        throw new ContentBundleError(
+          "PATH_INVALID",
+          "Import target crosses a file.",
+        );
+      const name = parts[0]!;
+      const existing = node.Links.find(
+        (link) => link.Name?.toLowerCase() === name.toLowerCase(),
+      );
+      if (existing && (parts.length === 1 || existing.Name !== name))
+        throw new ContentBundleError(
+          "PATH_INVALID",
+          "CID import target collision.",
+          name,
+        );
+      let hash = child;
+      let size = childSize;
+      if (parts.length > 1) {
+        let parent = existing?.Hash;
+        if (!parent) {
+          const empty = dagPb.encode(
+            dagPb.prepare({
+              Data: new UnixFS({ type: "directory" }).marshal(),
+              Links: [],
+            }),
+          );
+          parent = CID.createV1(dagPb.code, await sha256.digest(empty));
+          await put(parent, empty);
+        }
+        hash = await insert(parent, parts.slice(1), child, childSize);
+        const bytes = await get(hash);
+        size =
+          bytes.length +
+          dagPb
+            .decode(bytes)
+            .Links.reduce((sum, link) => sum + (link.Tsize ?? 0), 0);
+      }
+      const bytes = dagPb.encode(
+        dagPb.prepare({
+          Data: node.Data,
+          Links: [
+            ...node.Links.filter((link) => link !== existing),
+            { Name: name, Hash: hash, Tsize: size },
+          ],
+        }),
+      );
+      const cid = CID.createV1(dagPb.code, await sha256.digest(bytes));
+      await put(cid, bytes);
+      return cid;
+    };
+    const importPaths: string[] = [];
+    for (const item of options.imports ?? []) {
+      safePath(item.path);
+      const key = item.path.toLowerCase();
+      if (
+        importPaths.some(
+          (previous) =>
+            previous === key ||
+            previous.startsWith(`${key}/`) ||
+            key.startsWith(`${previous}/`),
+        )
+      )
+        throw new ContentBundleError(
+          "PATH_INVALID",
+          "CID import targets must not overlap.",
+        );
+      importPaths.push(key);
+      const size = await load(item.cid, item.resolveCid, 0);
+      root = await insert(root, item.path.split("/"), item.cid, size);
+    }
     const bundle = await openBundle(root, { resolveCid: get, signal, limits });
     await put(bundle.schema.cid, bundle.schema.bytes);
     const reached = new Map<string, { cid: CID; bytes: Uint8Array }>();

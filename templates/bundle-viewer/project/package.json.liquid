@@ -6,7 +6,8 @@
   "description": {{ description | json }},
   "engines": { "node": ">=22.15.0" },
   "scripts": {
-    "build": "ipab build",
+    "prepare-app": "node scripts/prepare.mjs",
+    "build": "ipab build dist/prepared-app --output dist/app.car --replace",
     "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
     "typecheck": "node scripts/typecheck.mjs"
   },

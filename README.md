@@ -54,6 +54,11 @@ ipab config set store.gateway http://127.0.0.1:8080
 旧 Kubo pin／历史保留记录不会自动迁移或解除；需重新获取并建立本地 pin，
 旧节点上的 pin 由你独立管理。
 
+个人 swarm 的共享 Name／授权／发布需要已经准备好的私网 Kubo 内容提供者和
+签名指针服务，不由 IPAB 安装或部署。新 MVP 的命令、真实服务授权政策及
+`build` 的有意迁移见 [MVP 实现与决策](docs/mvp-implementation.md)。
+独立 CID／具名 pin 的本机操作仍不要求 Kubo。
+
 ## 快速上手
 
 ### 运行应用

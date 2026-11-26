@@ -41,7 +41,7 @@ export async function captureSource(
     if (
       normalized
         .split("/")
-        .some((part) => [".git", "node_modules"].includes(part)) ||
+        .some((part) => [".git", ".ipab", "node_modules"].includes(part)) ||
       normalized === ".bundle-ignore" ||
       normalized === "dist" ||
       normalized.startsWith("dist/") ||

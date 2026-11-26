@@ -26,13 +26,28 @@ import { execute } from "./runtime.js";
 import { validatedBundle } from "./space.js";
 import { exactCid, pinName, State, type RunRecord } from "./state.js";
 import { buildBundle, inspectBundle, importBundle } from "./authoring.js";
-import { buildApp, initApp } from "./app-authoring.js";
+import { initApp } from "./app-authoring.js";
+import { assembleBundle } from "./assembly.js";
+import { getBundle } from "./get.js";
+import { pointersConfig, setPointersConfig } from "./pointers-config.js";
+import {
+  createSwarm,
+  requestMembership,
+  approveMembership,
+  joinSwarm,
+  descriptor,
+  pointer,
+  resolveReference,
+  publish,
+  type SwarmContext,
+} from "./swarm.js";
 import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
 import { logFiles } from "./logs.js";
 import { builtinContent } from "./builtins.js";
 
 export interface IO {
+  readSecret?(): Promise<string>;
   out(text: string): void;
   err(text: string): void;
   tty: boolean;
@@ -40,6 +55,21 @@ export interface IO {
   confirm(text: string): Promise<boolean>;
 }
 export const processIO: IO = {
+  async readSecret() {
+    if (process.stdin.isTTY)
+      throw new HostError(
+        "API key input requires a safe stdin pipe, not terminal echo or command arguments.",
+      );
+    let value = "";
+    for await (const chunk of process.stdin) {
+      value += String(chunk);
+      if (Buffer.byteLength(value) > 512)
+        throw new HostError(
+          "API key input is oversized; its contents are not echoed.",
+        );
+    }
+    return value.trim();
+  },
   out(text) {
     process.stdout.write(`${text}\n`);
   },
@@ -65,8 +95,16 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
+  "swarm create": "swarm create [--service URL] [--resume OPERATION]",
+  "swarm request": "swarm request SWARM_CID",
+  "swarm approve": "swarm approve REQUEST_CID [--expires-in SECONDS] --yes",
+  "swarm join": "swarm join RESPONSE_CID",
+  "swarm status": "swarm status [SWARM_CID]",
+  publish:
+    "publish CID_OR_CAR [--name NAME [--expect OLD_NODE_CID | --snapshot]]",
+  get: "get REF [--raw] [-o DIRECTORY]",
   init: "init NAME [DIR] [OPTIONS]",
-  build: "build [DIR] [OPTIONS]",
+  build: "build [SOURCE] [OPTIONS]",
   "bundle build": "bundle build SOURCE [OPTIONS]",
   "bundle inspect": "bundle inspect SOURCE",
   "bundle import": "bundle import FILE.car",
@@ -91,6 +129,7 @@ const commands: Record<string, string> = {
     "history remove RUN_ID... [--yes]\n       ipab history remove FILTERS [--yes]",
 };
 const groups: Record<string, string> = {
+  swarm: "Create, authorize and inspect personal swarms",
   bundle: "Create, inspect and import content bundles",
   pin: "Retain content and manage short names",
   register: "Associate content types with Apps",
@@ -108,6 +147,85 @@ const commandHelp: Record<
     notes?: string[];
   }
 > = {
+  "swarm create": {
+    summary: "Create a swarm using the account HOME identity",
+    options: [
+      "--service URL  Must match the protected pointers.service origin.",
+      "--resume OPERATION  Recover the same saved create/idempotency result.",
+      "--name TEXT  Initial mutable swarm name.",
+      "--description TEXT  Initial mutable description.",
+    ],
+    examples: [
+      "ipab config set pointers.service https://service.example",
+      "ipab config set pointers.apiKey --stdin",
+      "ipab swarm create",
+    ],
+    notes: [
+      "Creation uses the protected, origin-bound API key and owner possession proof.",
+      "Uses the prepared private Kubo provider; never deploys infrastructure.",
+      "Returns one descriptor CID; owner needs no member certificate.",
+    ],
+  },
+  "swarm request": {
+    summary: "Publish a signed account membership request",
+    examples: ["ipab swarm request SWARM_CID"],
+    notes: [
+      "Returns one request CID. Private IPFS access is a prerequisite, not membership.",
+    ],
+  },
+  "swarm approve": {
+    summary: "Owner signs a certificate for an exact request",
+    options: [
+      "--yes  Explicit approval; required outside a TTY.",
+      "--expires-in SECONDS  60..2592000; default 604800.",
+    ],
+    examples: ["ipab swarm approve REQUEST_CID --yes"],
+    notes: ["Returns one response CID. Never exports the owner private key."],
+  },
+  "swarm join": {
+    summary: "Verify a response and authenticate HEAD",
+    examples: ["ipab swarm join RESPONSE_CID"],
+    notes: [
+      "Requires this account's exact pending request and bound member certificate.",
+    ],
+  },
+  "swarm status": {
+    summary: "Authenticate the current swarm HEAD",
+    examples: ["ipab swarm status", "ipab swarm status SWARM_CID"],
+  },
+  publish: {
+    summary: "Provide built content and explicitly publish a Name",
+    options: [
+      "--name NAME  New formal Name; occupied Names fail.",
+      "--expect CID  Exact old Artifact node, required for iteration.",
+      "--snapshot  Name ordinary content without an Artifact; initial only.",
+    ],
+    examples: [
+      "ipab publish app.car --name apps/hello",
+      "ipab publish APP_CID --name apps/hello --expect OLD_NODE_CID",
+      "ipab publish CONTENT_CID",
+    ],
+    notes: [
+      "No build, edit, install or execution. CID-only stdout.",
+      "Different-name CAS contention is rebased; same-name edits conflict (exit 3).",
+      "Kubo pin confirmation precedes HEAD; it does not prove a remote device is online.",
+    ],
+  },
+  get: {
+    summary: "Verify and unpack Bundle content without executing it",
+    options: [
+      "--raw  Select the Artifact node instead of its value.",
+      "-o, --output DIRECTORY  New or empty directory; defaults to resolved CID.",
+    ],
+    examples: [
+      "ipab --json get name:apps/hello -o hello-app",
+      "ipab get --raw RELEASE_CID",
+    ],
+    notes: [
+      "Returns the selected content CID and original target CID (editing baseline).",
+      "Does not install, build, edit, or automatically retrieve associated source.",
+    ],
+  },
   "store usage": {
     summary: "Query cached and recursively pinned block bytes",
     examples: ["ipab store usage", "ipab --json store usage"],
@@ -140,21 +258,24 @@ const commandHelp: Record<
     notes: ["Does not install dependencies or execute template code."],
   },
   build: {
-    summary: "Build an App CAR from a project",
-    arguments: ["DIR  Project directory (default: current directory)."],
-    options: [
-      "-o, --output FILE  Destination (default: dist/app.car).",
-      "--replace         Allow replacing existing regular artifacts.",
-      "--no-import       Write CAR files without importing the App into Store.",
-      "--with-source     Include a separate source CAR (default: enabled).",
-      "--without-source  Omit source CAR; conflicts with --with-source.",
+    summary: "Assemble any Bundle using ipab.build.yaml (no compilation)",
+    arguments: [
+      "SOURCE  Recipe file or Bundle directory (default: current directory).",
     ],
-    examples: ["ipab build", "ipab build hello --replace --without-source"],
+    options: [
+      "-o, --output FILE  Destination (default: dist/bundle.car).",
+      "--replace         Allow replacing existing regular artifacts.",
+      "--no-import       Write the CAR without importing the Bundle into Store.",
+    ],
+    examples: [
+      "ipab build prepared-app",
+      "ipab build ipab.build.yaml --replace",
+    ],
     notes: [
-      "Uses local tsc and bundles Node CommonJS; ipab.yaml configures the build.",
-      "Explicit ipab-prebuild strategy executes trusted project code.",
-      "Source follows project .gitignore rules; review private files before sharing.",
-      "Imports only the App, without pinning; source needs separate import/retention.",
+      "Recipe explicitly maps source files and exact CID imports to target paths.",
+      "Type and entry come from .bundle.yaml; imported DAG identities are preserved.",
+      "Legacy App ipab.yaml is rejected; use project preparation tools separately.",
+      "Select explicit files; review private files before providing Bundles.",
       "Store failures preserve the CAR; retry with ipab bundle import FILE.car.",
     ],
   },
@@ -306,6 +427,7 @@ const commandHelp: Record<
   "config set": {
     summary: "Save a local configuration value",
     examples: [
+      "ipab config set pointers.apiKey --stdin",
       "ipab config set store.gateway http://127.0.0.1:8080",
       "ipab config set history.enabled false",
     ],
@@ -363,6 +485,7 @@ const commandHelp: Record<
 
 export function help(path = ""): string {
   const globalOptions = `Global options (before COMMAND):
+  --swarm CID       Select shared swarm (or swarm.default)
   --state-dir PATH  Set the local state directory
   --store-gateway URL  Use a read-only upstream HTTP gateway
   --json            Output management/development metadata, not App stdio`;
@@ -383,6 +506,9 @@ Create:
   bundle    ${groups.bundle}
 
 Manage:
+  swarm     ${groups.swarm}
+  publish   ${commandHelp.publish!.summary}
+  get       ${commandHelp.get!.summary}
   pin       ${groups.pin}
   register  ${groups.register}
   config    ${groups.config}
@@ -586,10 +712,15 @@ export function parse(argv: readonly string[]): Parsed {
       syntax(
         "Store RPC is no longer supported. Use --store-gateway with an HTTP gateway URL; existing Kubo pins are not migrated.",
       );
-    else if (flag === "--state-dir" || flag === "--store-gateway") {
+    else if (
+      flag === "--state-dir" ||
+      flag === "--store-gateway" ||
+      flag === "--swarm"
+    ) {
       const value = tokens.shift();
       if (!value || value.startsWith("-")) syntax(`${flag} needs a value.`);
       if (flag === "--state-dir") flags.stateDir = value;
+      else if (flag === "--swarm") flags.swarm = exactCid(value);
       else {
         flags.storeGateway = publicUrl(value);
       }
@@ -620,11 +751,17 @@ export function parse(argv: readonly string[]): Parsed {
     result.positional = tokens;
     return result;
   }
-  if (!["open", "init", "build"].includes(group)) {
+  if (!["open", "init", "build", "publish", "get"].includes(group)) {
     if (
-      !["bundle", "pin", "register", "config", "history", "store"].includes(
-        group,
-      )
+      ![
+        "bundle",
+        "pin",
+        "register",
+        "config",
+        "history",
+        "store",
+        "swarm",
+      ].includes(group)
     )
       syntax(`Unknown command "${group}".`);
     if (!tokens.length || tokens[0] === "-h" || tokens[0] === "--help") {
@@ -642,30 +779,54 @@ export function parse(argv: readonly string[]): Parsed {
     result.help = true;
     return result;
   }
+  if (
+    result.path === "config set" &&
+    tokens.includes("pointers.apiKey") &&
+    !(tokens.length === 2 && tokens.includes("--stdin"))
+  )
+    syntax(
+      "API key must be provided through --stdin; never pass it in command arguments.",
+    );
   const booleans =
-    result.path === "bundle build"
-      ? ["replace", "schema-only", "no-import"]
-      : result.path === "build"
-        ? ["replace", "no-import", "with-source", "without-source"]
-        : result.path === "register set"
-          ? ["replace"]
-          : result.path === "history remove"
-            ? ["yes"]
-            : result.path === "open"
-              ? ["log"]
-              : [];
+    result.path === "config set"
+      ? ["stdin"]
+      : result.path === "bundle build"
+        ? ["replace", "schema-only", "no-import"]
+        : result.path === "build"
+          ? ["replace", "no-import"]
+          : result.path === "publish"
+            ? ["snapshot"]
+            : result.path === "get"
+              ? ["raw"]
+              : result.path === "swarm approve"
+                ? ["yes"]
+                : result.path === "register set"
+                  ? ["replace"]
+                  : result.path === "history remove"
+                    ? ["yes"]
+                    : result.path === "open"
+                      ? ["log", "raw"]
+                      : [];
   const values =
-    result.path === "init"
-      ? ["template"]
-      : result.path === "bundle build" || result.path === "build"
-        ? ["output"]
-        : result.path === "history list"
-          ? ["app", "status", "since", "until", "limit", "before"]
-          : result.path === "history remove"
-            ? ["app", "status", "since", "until"]
-            : result.path === "pin list"
-              ? ["type"]
-              : [];
+    result.path === "swarm create"
+      ? ["service", "resume", "name", "description"]
+      : result.path === "swarm approve"
+        ? ["expires-in"]
+        : result.path === "publish"
+          ? ["name", "expect"]
+          : result.path === "get"
+            ? ["output"]
+            : result.path === "init"
+              ? ["template"]
+              : result.path === "bundle build" || result.path === "build"
+                ? ["output"]
+                : result.path === "history list"
+                  ? ["app", "status", "since", "until", "limit", "before"]
+                  : result.path === "history remove"
+                    ? ["app", "status", "since", "until"]
+                    : result.path === "pin list"
+                      ? ["type"]
+                      : [];
   while (tokens.length) {
     const value = tokens.shift()!;
     if (value.startsWith("--") || value === "-o") {
@@ -688,6 +849,13 @@ export function parse(argv: readonly string[]): Parsed {
     } else result.positional.push(value);
   }
   const counts: Record<string, [number, number]> = {
+    "swarm create": [0, 0],
+    "swarm request": [1, 1],
+    "swarm approve": [1, 1],
+    "swarm join": [1, 1],
+    "swarm status": [0, 1],
+    publish: [1, 1],
+    get: [1, 1],
     init: [1, 2],
     build: [0, 1],
     "bundle build": [1, 1],
@@ -703,7 +871,7 @@ export function parse(argv: readonly string[]): Parsed {
     "register set": [2, 2],
     "register remove": [1, 1],
     "config get": [0, 1],
-    "config set": [2, 2],
+    "config set": result.options.stdin ? [1, 1] : [2, 2],
     "config reset": [1, 1],
     "store usage": [0, 0],
     "store gc": [0, 0],
@@ -739,12 +907,23 @@ export function parse(argv: readonly string[]): Parsed {
   }
   if (result.path.startsWith("config ") && result.positional[0]) {
     if (
-      !(result.path === "config get" && result.positional[0] === "state-dir") &&
-      !(result.path === "config reset" && result.positional[0] === "store.rpc")
-    )
-      configKey(result.positional[0]);
-    if (result.path === "config set")
-      parseValue(configKey(result.positional[0]), result.positional[1], true);
+      ["pointers.service", "pointers.apiKey"].includes(result.positional[0])
+    ) {
+      if (result.options.stdin && result.positional[0] !== "pointers.apiKey")
+        syntax("--stdin is only for protected pointers.apiKey.");
+    } else {
+      if (
+        !(
+          result.path === "config get" && result.positional[0] === "state-dir"
+        ) &&
+        !(
+          result.path === "config reset" && result.positional[0] === "store.rpc"
+        )
+      )
+        configKey(result.positional[0]);
+      if (result.path === "config set")
+        parseValue(configKey(result.positional[0]), result.positional[1], true);
+    }
   }
   if (typeof result.options.limit === "string")
     parseValue("history.limit", result.options.limit, true);
@@ -779,6 +958,41 @@ async function performCli(
       io.out(pkg.version);
       return 0;
     }
+    if (
+      parsed.path.startsWith("config ") &&
+      ["pointers.service", "pointers.apiKey"].includes(
+        parsed.positional[0] ?? "",
+      )
+    ) {
+      const key = parsed.positional[0] as
+        "pointers.service" | "pointers.apiKey";
+      if (parsed.path === "config set") {
+        const input =
+          key === "pointers.apiKey"
+            ? await io.readSecret?.()
+            : parsed.positional[1];
+        if (input === undefined)
+          throw new HostError("Protected API key input requires --stdin.");
+        await setPointersConfig(env, key, input);
+      } else if (parsed.path === "config reset")
+        await setPointersConfig(env, key, null);
+      const cfg = await pointersConfig(env);
+      const result =
+        key === "pointers.apiKey"
+          ? {
+              key,
+              value: cfg.apiKey ? "[redacted]" : null,
+              configured: Boolean(cfg.apiKey),
+              service: cfg.service ?? null,
+            }
+          : { key, value: cfg.service ?? null };
+      io.out(
+        parsed.flags.json
+          ? JSON.stringify(result)
+          : `${key}: ${result.value ?? "(not configured)"}`,
+      );
+      return 0;
+    }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)
       syntax("Non-interactive history remove requires --yes.");
     const builtins = await builtinContent();
@@ -802,10 +1016,119 @@ async function performCli(
       io.out(parsed.flags.json ? JSON.stringify(result) : human);
     };
     const [first, second] = parsed.positional;
+    const selectedSwarm =
+      value("swarm.default") === null
+        ? undefined
+        : String(value("swarm.default"));
+    const swarmContext = (): SwarmContext => ({
+      store: store!,
+      env,
+      stateDir: stateLocation(parsed.flags, env).path,
+      provider: String(value("swarm.provider") ?? "http://127.0.0.1:5001"),
+    });
     const filter = parsed.path.startsWith("history ")
       ? filters(state, parsed.options)
       : {};
     switch (parsed.path) {
+      case "swarm create":
+      case "swarm request":
+      case "swarm approve":
+      case "swarm join":
+      case "swarm status":
+      case "publish":
+      case "get": {
+        store = new IpfsStore(await storeConfiguration(value("store.gateway")));
+        const context = swarmContext();
+        if (parsed.path === "swarm status") {
+          const cid = first ?? selectedSwarm;
+          if (!cid)
+            syntax("swarm status requires a Swarm CID or swarm.default.");
+          const data = await descriptor(store, cid);
+          const head = await (await pointer(context, cid)).read();
+          emit(
+            { cid, ...data, root: head.root, revision: head.revision },
+            `Swarm: ${cid}\nHEAD: ${head.root}\nRevision: ${head.revision}`,
+          );
+          break;
+        }
+        if (parsed.path === "get") {
+          const selected = await resolveReference(
+            context,
+            first!,
+            selectedSwarm,
+            (reference) => state!.resolve(reference),
+            Boolean(parsed.options.raw),
+          );
+          const directory = await getBundle(
+            store,
+            selected.cid,
+            typeof parsed.options.output === "string"
+              ? parsed.options.output
+              : undefined,
+          );
+          emit(
+            { ...selected, directory },
+            `CID: ${selected.cid}\nTarget CID: ${selected.targetCid}\nDirectory: ${directory}`,
+          );
+          break;
+        }
+        let cid: string;
+        if (parsed.path === "swarm create") {
+          cid = await createSwarm(context, {
+            ...(typeof parsed.options.service === "string"
+              ? { service: parsed.options.service }
+              : {}),
+            ...(typeof parsed.options.resume === "string"
+              ? { resume: parsed.options.resume }
+              : {}),
+            properties: {
+              name: String(parsed.options.name ?? ""),
+              description: String(parsed.options.description ?? ""),
+            },
+          });
+        } else if (parsed.path === "swarm request")
+          cid = await requestMembership(context, exactCid(first!));
+        else if (parsed.path === "swarm approve") {
+          if (
+            !parsed.options.yes &&
+            (!io.tty ||
+              !(await io.confirm(
+                `Approve membership request ${first!}? This grants swarm HEAD read/write access.`,
+              )))
+          )
+            throw new HostError(
+              "Approval requires explicit --yes or interactive confirmation.",
+            );
+          cid = await approveMembership(
+            context,
+            exactCid(first!),
+            parsed.options["expires-in"] === undefined
+              ? undefined
+              : Number(parsed.options["expires-in"]),
+          );
+        } else if (parsed.path === "swarm join")
+          cid = await joinSwarm(context, exactCid(first!));
+        else {
+          let content: string;
+          if (first!.toLowerCase().endsWith(".car"))
+            content = (
+              await importBundle(first!, () => Promise.resolve(store!))
+            ).cid;
+          else content = exactCid(first!);
+          cid = await publish(context, content, {
+            ...(selectedSwarm ? { swarm: selectedSwarm } : {}),
+            ...(typeof parsed.options.name === "string"
+              ? { name: parsed.options.name }
+              : {}),
+            ...(typeof parsed.options.expect === "string"
+              ? { expect: parsed.options.expect }
+              : {}),
+            snapshot: Boolean(parsed.options.snapshot),
+          });
+        }
+        emit({ cid }, cid);
+        break;
+      }
       case "store usage":
       case "store gc": {
         store = new IpfsStore(await storeConfiguration(value("store.gateway")));
@@ -872,7 +1195,7 @@ async function performCli(
           if (parsed.path === "bundle build" || parsed.path === "build")
             io.err(
               parsed.path === "build"
-                ? "Typechecking, bundling and building App..."
+                ? "Assembling and validating Bundle (no compilation)..."
                 : "Validating and building bundle...",
             );
           if (parsed.path === "bundle import")
@@ -895,14 +1218,9 @@ async function performCli(
                     : {}),
                 })
               : parsed.path === "build"
-                ? await buildApp(first, {
+                ? await assembleBundle(first, {
                     ...request,
                     replace: Boolean(parsed.options.replace),
-                    ...(parsed.options["with-source"]
-                      ? { includeSource: true }
-                      : parsed.options["without-source"]
-                        ? { includeSource: false }
-                        : {}),
                     ...(typeof parsed.options.output === "string"
                       ? { output: parsed.options.output }
                       : {}),
@@ -944,7 +1262,7 @@ async function performCli(
           if ("output" in result)
             emit(
               { ...result, imported: importing },
-              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}${result.validation !== undefined ? `\nEntry validation: ${result.validation?.status ?? "not-applicable"}` : ""}${"source" in result ? `\nSource CID: ${result.source.cid}\nSource CAR: ${result.source.output} (not imported or pinned)` : ""}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
+              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}${result.validation !== undefined ? `\nEntry validation: ${result.validation?.status ?? "not-applicable"}` : ""}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
             );
           else if (result.kind === "bundle-import")
             emit(
@@ -962,7 +1280,7 @@ async function performCli(
                 result.files.includes("ipab.json"))
             )
               io.err(
-                `Next: install declared dependencies in ${JSON.stringify(result.directory)}; then ipab build ${JSON.stringify(result.directory)} (requires locally linked ipab).`,
+                `Next: install declared dependencies and explicitly link the candidate @ipab/cli as a project dependency in ${JSON.stringify(result.directory)}; run pnpm prepare-app, then pnpm build. Root ipab build does not compile.`,
               );
             else if (result.files.includes(".bundle.yaml"))
               io.err(
@@ -1234,9 +1552,17 @@ async function performCli(
           throw new HostError(
             "Execution logging requires history.enabled=true.",
           );
-        const target = state.resolve(first!);
         await recoverInactive(state);
         store = new IpfsStore(await storeConfiguration(value("store.gateway")));
+        const target = (
+          await resolveReference(
+            swarmContext(),
+            first!,
+            selectedSwarm,
+            (reference) => state!.resolve(reference),
+            Boolean(parsed.options.raw),
+          )
+        ).cid;
         let appCid: string;
         let appArgv: string[];
         if (parsed.path === "open") {

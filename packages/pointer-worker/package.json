@@ -17,7 +17,13 @@
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage",
     "cli": "tsx scripts/cli.ts"
   },
+  "dependencies": {
+    "@ipab/bundle": "workspace:*"
+  },
   "devDependencies": {
+    "@ipab/cli": "workspace:*",
+    "@ipld/car": "catalog:",
+    "multiformats": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

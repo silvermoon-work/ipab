@@ -1,4 +1,4 @@
-# IPAB App build configuration (data only; no hooks or JS configuration).
+# Project App preparation configuration; root ipab build uses ipab.build.yaml.
 entry: src/main.ts
 
 # Explicit non-hidden files under assets/; no directories, globs or symlinks.
@@ -13,7 +13,7 @@ supportedSchemas: []
 #   - schemas/note.json
 
 # Separate source CAR; App stores only a weak source.cid, never source blocks.
-# CLI --with-source / --without-source overrides this default.
+# Explicit prepareApp({ includeSource }) project-tool options override this default.
 build:
   includeSource: true
 

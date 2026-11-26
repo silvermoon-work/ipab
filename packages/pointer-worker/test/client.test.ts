@@ -8,6 +8,8 @@ import {
 } from "../src/client.ts";
 import { fromBase64Url, generateKeyPair, toBase64Url } from "../src/crypto.ts";
 import { NOW, createService, world } from "./helpers.ts";
+import { issueCertificate } from "../src/certificates.ts";
+import { importPrivateKeyPkcs8, keyId, randomBytes } from "../src/crypto.ts";
 
 const BASE = "https://pointer.example";
 
@@ -30,6 +32,71 @@ async function pointerWorld(name = "demo") {
 }
 
 describe("PointerClient", () => {
+  it(
+    "requires bound requests and certificates for new swarms, rejects cross-service reuse and replay",
+    { tags: ["mock"] },
+    async () => {
+      const { service, admin, w } = await pointerWorld();
+      await admin.create("bound", w.root.publicRaw, true);
+      await admin.create("other", w.root.publicRaw, true);
+      const certificate = await issueCertificate(
+        {
+          v: 1,
+          aud: `${BASE}/bound`,
+          sub: "member",
+          pub: w.agent1.keys.publicRaw,
+          scope: { read: true, write: true },
+          iss: "owner",
+          iss_pub: w.root.publicRaw,
+          kid: await keyId(w.agent1.keys.publicRaw),
+          cid: toBase64Url(randomBytes(16)),
+          iat: NOW - 10,
+          exp: NOW + 3600,
+          ca: false,
+        },
+        await importPrivateKeyPkcs8(w.root.privatePkcs8),
+      );
+      const options = {
+        signer: {
+          privateKey: w.agent1.keys.privatePkcs8,
+          certificates: [certificate],
+        },
+        fetch: service.fetch,
+        now: () => NOW,
+      };
+      const bound = new PointerClient({ ...options, baseUrl: `${BASE}/bound` });
+      await bound.read();
+      await expect(
+        new PointerClient({ ...options, baseUrl: `${BASE}/other` }).read(),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        new PointerClient({
+          ...options,
+          baseUrl: `https://elsewhere.example/bound`,
+        }).read(),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        new PointerClient({
+          ...options,
+          signer: {
+            privateKey: w.agent1.keys.privatePkcs8,
+            certificates: w.agent1.chain,
+          },
+          baseUrl: `${BASE}/bound`,
+        }).read(),
+      ).rejects.toMatchObject({ status: 403 });
+      const replay = new PointerClient({
+        ...options,
+        baseUrl: `${BASE}/bound`,
+        nonce: () => "fixed_nonce_for_replay_123",
+      });
+      await replay.read();
+      await expect(replay.read()).rejects.toMatchObject({
+        status: 401,
+        code: "replayed",
+      });
+    },
+  );
   it("validates its options", { tags: ["unit"] }, async () => {
     const { signer: s } = await signer();
     expect(

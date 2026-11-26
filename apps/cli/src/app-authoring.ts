@@ -30,6 +30,7 @@ import {
 import { appTemplate } from "./app-templates.js";
 import { buildChain, projectBuild, runPrebuild } from "./app-prebuild.js";
 import { captureSource, sourceFingerprint } from "./source-bundle.js";
+export { appSchema } from "./app-definition.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -187,6 +188,7 @@ export async function buildApp(
     outputDir?: string;
     replace?: boolean;
     includeSource?: boolean;
+    preparedDirectory?: string;
   } = {},
 ): Promise<
   Omit<BuildResult, "kind"> & {
@@ -591,6 +593,52 @@ export async function buildApp(
               ),
             }
           : undefined;
+        if (options.preparedDirectory) {
+          const preparedFiles = new Map<string, Uint8Array>();
+          const preparedTree = await filesystemTree(bundleStage);
+          const collect = async (path: string): Promise<void> => {
+            for (const item of await preparedTree.list(path, options)) {
+              const child = path ? `${path}/${item.name}` : item.name;
+              if (item.kind === "directory") await collect(child);
+              else
+                preparedFiles.set(
+                  child,
+                  await readBytes(
+                    preparedTree,
+                    child,
+                    16 * 1024 * 1024,
+                    options,
+                  ),
+                );
+            }
+          };
+          await collect("");
+          preparedFiles.set(
+            "ipab.build.yaml",
+            new TextEncoder().encode(
+              stringify({
+                version: 1,
+                files: [...preparedFiles.keys()]
+                  .filter((path) => path !== ".bundle.yaml")
+                  .map((path) => ({ source: path, target: path })),
+                imports: [],
+              }),
+            ),
+          );
+          await scaffoldFiles(
+            options.preparedDirectory,
+            preparedFiles,
+            options,
+          );
+          return {
+            kind: "app-bundle",
+            cid: encoded.cid.toString(),
+            schemaCid: encoded.schema.cid.toString(),
+            output,
+            bytes: 0,
+            ...(source ? { source } : {}),
+          };
+        }
         return {
           kind: "app-bundle",
           cid: encoded.cid.toString(),
@@ -613,4 +661,75 @@ export async function buildApp(
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
+}
+
+/** Explicit project tool. The root CLI build never calls this helper. */
+export async function prepareApp(
+  directory = ".",
+  options: AuthoringOptions & {
+    replace?: boolean;
+    includeSource?: boolean;
+  } = {},
+) {
+  const root = resolve(directory);
+  const prepared = join(root, "dist", "prepared-app");
+  try {
+    const stat = await lstat(prepared);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || !options.replace)
+      throw new HostError(
+        "Prepared output exists; explicit replacement requires a regular generated directory.",
+      );
+    const tree = await filesystemTree(prepared);
+    const recipe = object(
+      parseData(
+        await readBytes(tree, "ipab.build.yaml", 64 * 1024),
+        "application/yaml",
+      ),
+      "prepared recipe",
+    );
+    if (
+      recipe.version !== 1 ||
+      !Array.isArray(recipe.files) ||
+      !Array.isArray(recipe.imports) ||
+      recipe.imports.length
+    )
+      throw new HostError(
+        "Existing prepared output is not owned by the App preparation tool.",
+      );
+    const allowed = new Set([
+      ".bundle.yaml",
+      "ipab.build.yaml",
+      ...recipe.files.map((item: unknown) => {
+        const mapping = object(item, "prepared mapping");
+        if (
+          typeof mapping.source !== "string" ||
+          mapping.source !== mapping.target
+        )
+          throw new HostError("Existing prepared mapping is not generated.");
+        return relativePath(mapping.source);
+      }),
+    ]);
+    const verify = async (path: string): Promise<void> => {
+      for (const item of await tree.list(path)) {
+        const child = path ? `${path}/${item.name}` : item.name;
+        if (item.kind === "directory") await verify(child);
+        else if (!allowed.has(child))
+          throw new HostError(
+            "Prepared output contains custom files; choose a new output rather than deleting them.",
+          );
+      }
+    };
+    await verify("");
+    await rm(prepared, { recursive: true });
+  } catch (cause) {
+    if (!nodeError(cause, "ENOENT")) throw cause;
+  }
+  const result = await buildApp(root, {
+    ...options,
+    preparedDirectory: prepared,
+  });
+  return {
+    directory: prepared,
+    ...(result.source ? { source: result.source } : {}),
+  };
 }

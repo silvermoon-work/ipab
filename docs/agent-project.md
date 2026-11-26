@@ -2,6 +2,21 @@
 
 ## Scope
 
+2026-11-26 MVP 有意迁移（优先于下文旧行为记录）：根 `ipab build` 只做通用
+配方组装，App 编译／元数据／支持类型／源码由显式项目 `prepareApp` 工具准备。
+共享 Names 在单个 HEAD 的 CID-linked DAG-CBOR 快照中；账号 HOME 单一密钥，
+owner 直接签名，member 使用 owner 签发且绑定 service/variable 的证书。
+最新确认的
+`origin/main:docs/pointers-service.md`（ab24887）覆盖早期临时管理授权：
+CLI 使用 HOME 中受保护且显式绑定 origin 的 pointers.service/apiKey；
+API key 仅安全 STDIN 设置、查询掩码，仅用于 POST 创建，不用于 GET/PUT。
+创建使用 owner 持钥签名、服务随机 ID 和持久恢复记录；没有旧管理面 fallback。
+独立服务线程须采用共享 pointerSigningMessage 编码器及证书 aud URI；
+迁移未接入前不能声称新 API / 跨设备 HEAD 链路已验证。Kubo
+bridge 只提供／pin 内容，
+不恢复 Store RPC backend，不管理部署。决定与迁移见
+[mvp-implementation.md](mvp-implementation.md)。
+
 本仓库是 IPAB（InterPlanetary Artifact Bundle）的独立工程 workspace。
 项目愿景与使用场景见 [VISION.md](../VISION.md)，不代表当前已实现能力。
 当前 `apps/cli` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、

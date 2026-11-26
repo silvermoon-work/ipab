@@ -1,7 +1,9 @@
 # IPAB
 
-**InterPlanetary Application
-Bundle**：通过内容标识符（CID）获取、运行和管理应用。
+**InterPlanetary Artifact Bundle**：通过内容标识符（CID）获取、运行和管理应用。
+
+项目愿景是让人与 Agent 跨设备共享、理解和演进 Artifact，详见
+[Vision](VISION.md)。下文描述当前已实现的应用运行与内容管理能力。
 
 IPAB 使用 Node 子进程运行 App Bundle，保留应用的命令行参数和标准输入输出，
 并提供 IPFS 文件读取与可写输出空间。你可以：

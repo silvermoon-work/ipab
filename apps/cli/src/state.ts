@@ -10,6 +10,7 @@ import {
   type ConfigValue,
 } from "./config.js";
 import { HostError, object, syntax } from "./errors.js";
+import { secureConfigurationStorage } from "./config-secret.js";
 
 export interface Association {
   schemaCid: string;
@@ -135,7 +136,7 @@ export class State {
     readonly directory: string,
     private readonly builtins: readonly NamedPin[] = [],
   ) {
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(directory, "state.sqlite"));
     this.db
       .exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -170,6 +171,12 @@ export class State {
   }
   config(): Partial<Record<ConfigKey, ConfigValue>> {
     const entries = this.db.prepare("SELECT key,value FROM config").all();
+    if (
+      entries.some(
+        (row) => row.key === "pointers.apiKey" && row.value !== "null",
+      )
+    )
+      secureConfigurationStorage(this.directory, false);
     if (entries.some((row) => row.key === "store.rpc"))
       throw new HostError(
         "store.rpc is no longer supported. Run ipab config reset store.rpc, then configure store.gateway with an HTTP gateway URL. Existing Kubo pins are not migrated or released.",
@@ -190,6 +197,8 @@ export class State {
     }
   }
   setConfig(key: ConfigKey, value: ConfigValue): void {
+    if (key === "pointers.apiKey" && value !== null)
+      secureConfigurationStorage(this.directory, true);
     this.db
       .prepare("INSERT OR REPLACE INTO config VALUES (?,?)")
       .run(key, JSON.stringify(value));

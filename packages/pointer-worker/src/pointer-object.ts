@@ -1,204 +1,140 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  ERROR_CODES,
-  MAX_NONCES,
-  NONCE_TTL_SECONDS,
+  apiFailure,
+  IDEMPOTENCY_TTL_SECONDS,
+  MAX_IDEMPOTENCY_RECORDS,
+  parseBody,
+  parseRevision,
+  ServiceError,
+  type ApiFailure,
   type PointerConfig,
   type PointerState,
 } from "./protocol.ts";
-import {
-  EMPTY_POINTER,
-  execute,
-  type ExecuteResult,
-  type OpRequest,
-  type OpResult,
-} from "./state.ts";
+import { authenticate, type WireRequest } from "./verify.ts";
+import { compareAndSwap, consumeNonce, type OpResult } from "./state.ts";
+import { sha256Hex } from "./crypto.ts";
 
-interface IdempotencyRecord {
+interface StoredPointer {
+  config: PointerConfig;
+  state: PointerState;
+  nonces: Record<string, number>;
+}
+interface Retry {
   fingerprint: string;
-  response: OpResult;
-  expiresAt: number;
+  result: OpResult;
+  expiresAt?: number;
 }
 
-const KEY_CONFIG = "config";
-const KEY_STATE = "state";
-const KEY_NONCES = "nonces";
-const KEY_IDEMPOTENCY = "idempotency";
-const MAX_IDEMPOTENCY_RECORDS = 200;
-
-/**
- * Single Durable Object instance holding the one global pointer.
- *
- * All reads and writes are serialized by the runtime, which is what makes the
- * compare-and-swap (optimistic lock) exact: no two writers can both observe
- * version N and commit version N+1.
- */
-export class PointerObject extends DurableObject {
-  #config: PointerConfig | null = null;
-  #state: PointerState = EMPTY_POINTER;
-  #nonces = new Map<string, number>();
-  #idempotency = new Map<string, IdempotencyRecord>();
-  #ready: Promise<void>;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.#ready = ctx.blockConcurrencyWhile(async () => {
-      const [config, state, nonces, idempotency] = await Promise.all([
-        this.ctx.storage.get<PointerConfig>(KEY_CONFIG),
-        this.ctx.storage.get<PointerState>(KEY_STATE),
-        this.ctx.storage.get<Record<string, number>>(KEY_NONCES),
-        this.ctx.storage.get<Record<string, IdempotencyRecord>>(
-          KEY_IDEMPOTENCY,
-        ),
-      ]);
-      if (config) this.#config = config;
-      if (state) this.#state = state;
-      this.#nonces = new Map(Object.entries(nonces ?? {}));
-      this.#idempotency = new Map(Object.entries(idempotency ?? {}));
+export class PointerObject extends DurableObject<Env> {
+  async configure(config: PointerConfig): Promise<void> {
+    await this.ctx.storage.transaction(async (txn) => {
+      const existing = await txn.get<StoredPointer>("pointer");
+      if (existing) {
+        if (
+          existing.config.id !== config.id ||
+          existing.config.owner !== config.owner ||
+          existing.config.root !== config.root
+        )
+          throw new Error("configuration conflict");
+        return;
+      }
+      await txn.put("pointer", {
+        config,
+        state: { root: config.root, revision: "1" },
+        nonces: {},
+      });
     });
   }
 
-  /** Configuration set by the admin API, or null for an unprovisioned instance. */
-  async getConfig(): Promise<PointerConfig | null> {
-    await this.#ready;
-    return this.#config;
-  }
-
-  /** First-time provisioning. Returns false if the instance is already configured. */
-  async configure(config: PointerConfig): Promise<boolean> {
-    await this.#ready;
-    if (this.#config) return false;
-    this.#config = config;
-    await this.ctx.storage.put(KEY_CONFIG, config);
-    return true;
-  }
-
-  /** Changes the pinned anchor while keeping the value and version. */
-  async rotate(pubkey: string): Promise<PointerConfig | null> {
-    await this.#ready;
-    if (!this.#config) return null;
-    this.#config = { ...this.#config, pubkey };
-    await this.ctx.storage.put(KEY_CONFIG, this.#config);
-    return this.#config;
-  }
-
-  /** Deletes configuration, value, nonces and idempotency records. */
-  async destroy(): Promise<void> {
-    await this.#ready;
-    await this.ctx.storage.deleteAll();
-    this.#config = null;
-    this.#state = EMPTY_POINTER;
-    this.#nonces.clear();
-    this.#idempotency.clear();
-  }
-
-  /** Current pointer state. Only exposed through the admin API. */
-  async status(): Promise<PointerState> {
-    await this.#ready;
-    return this.#state;
-  }
-
-  /**
-   * Authenticated read or write. Called only by the Worker, after signature and
-   * scope verification. Nonce consumption, the optimistic-lock check and the
-   * state write happen in one serialized turn.
-   */
-  async execute(request: OpRequest, nowSeconds: number): Promise<OpResult> {
-    await this.#ready;
-    if (!this.#config) {
-      return {
-        ok: false,
-        code: ERROR_CODES.unknownPointer,
-        message: "pointer is not configured",
-      };
+  async handle(request: WireRequest): Promise<OpResult | ApiFailure> {
+    try {
+      return await this.#handle(request);
+    } catch (err) {
+      if (err instanceof ServiceError) return apiFailure(err);
+      throw err;
     }
-
-    // Idempotent retry: same key + same request fingerprint -> cached result.
-    // Checked before the nonce so a retry does not need a new nonce.
-    if (request.idempotencyKey) {
-      const prior = this.#idempotency.get(request.idempotencyKey);
-      if (prior) {
-        if (
-          prior.expiresAt > nowSeconds &&
-          prior.fingerprint === request.fingerprint
-        ) {
-          if (!prior.response.ok) return prior.response;
-          return { ...prior.response, idempotent: true, replayed: false };
-        }
-        if (prior.expiresAt > nowSeconds) {
-          return {
-            ok: false,
-            code: "idempotency_conflict",
-            message: "this Idempotency-Key was used for a different request",
-          };
-        }
-      }
-    }
-
-    const outcome: ExecuteResult = execute(
-      this.#state,
-      this.#nonces,
+  }
+  async #handle(request: WireRequest): Promise<OpResult> {
+    const stored = await this.ctx.storage.get<StoredPointer>("pointer");
+    if (!stored)
+      throw new ServiceError(404, "not_found", "pointer does not exist");
+    // The owner is immutable. Authorization is anchored here, never in a router cache.
+    const auth = await authenticate(
       request,
-      nowSeconds,
+      stored.config.owner,
+      this.env.POINTER_SERVICE,
+      stored.config.id,
+      Math.floor(Date.now() / 1000),
     );
-
-    // Commit: state change + nonce + idempotency record in one storage write.
-    const writes: Promise<void>[] = [];
-    if (outcome.result.ok) {
-      this.#state = outcome.result.state;
-      writes.push(this.ctx.storage.put(KEY_STATE, this.#state));
-    }
-
-    this.#rememberNonce(outcome.nonce);
-    // Persist the whole nonce set (bounded, ~120 entries in steady state).
-    writes.push(
-      this.ctx.storage.put(KEY_NONCES, Object.fromEntries(this.#nonces)),
-    );
-
-    if (outcome.idempotency) {
-      this.#idempotency.set(outcome.idempotency.key, {
-        fingerprint: outcome.idempotency.fingerprint,
-        response: outcome.idempotency.response,
-        expiresAt: outcome.idempotency.expiresAt,
-      });
-      this.#pruneIdempotency(nowSeconds);
-      writes.push(
-        this.ctx.storage.put(
-          KEY_IDEMPOTENCY,
-          Object.fromEntries(this.#idempotency),
-        ),
-      );
-    }
-
-    await Promise.all(writes);
-    return outcome.result;
-  }
-
-  #rememberNonce(entry: { value: string; expiresAt: number }): void {
-    // Drop expired entries so the map stays around the size of the live window.
-    for (const [nonce, expiresAt] of this.#nonces) {
-      if (expiresAt <= entry.expiresAt - NONCE_TTL_SECONDS)
-        this.#nonces.delete(nonce);
-    }
-    this.#nonces.set(entry.value, entry.expiresAt);
-    if (this.#nonces.size <= MAX_NONCES) return;
-    // Safety valve only: drop the soonest-to-expire entries first.
-    const sorted = [...this.#nonces.entries()].sort((a, b) => a[1] - b[1]);
-    for (let i = 0; i < sorted.length - MAX_NONCES; i++)
-      this.#nonces.delete(sorted[i]![0]);
-  }
-
-  #pruneIdempotency(nowSeconds: number): void {
-    for (const [key, record] of this.#idempotency) {
-      if (record.expiresAt <= nowSeconds) this.#idempotency.delete(key);
-    }
-    if (this.#idempotency.size > MAX_IDEMPOTENCY_RECORDS) {
-      const oldest = [...this.#idempotency.entries()].sort(
-        (a, b) => a[1].expiresAt - b[1].expiresAt,
-      );
-      for (let i = 0; i < oldest.length - MAX_IDEMPOTENCY_RECORDS; i++) {
-        this.#idempotency.delete(oldest[i]![0]);
+    if (request.method === "GET" && request.body !== "")
+      throw new ServiceError(400, "bad_request", "GET must not have a body");
+    let root: string | undefined,
+      revision: string | null = null;
+    if (request.method === "PUT") {
+      try {
+        root = parseBody(request.body).root as string;
+      } catch (err) {
+        if (err instanceof ServiceError) throw err;
+        throw new ServiceError(400, "bad_request", String(err));
       }
+      revision = parseRevision(auth.ifMatch);
+      if (!auth.ifMatch)
+        throw new ServiceError(
+          428,
+          "precondition_required",
+          'requires If-Match: "<revision>"',
+        );
+      if (revision === null)
+        throw new ServiceError(
+          400,
+          "bad_request",
+          "If-Match must be a single positive strong revision ETag",
+        );
     }
+    const retryKey =
+      auth.idempotencyKey && request.method === "PUT"
+        ? `retry:${await sha256Hex(JSON.stringify([auth.signer, auth.idempotencyKey]))}`
+        : "";
+    return this.ctx.storage.transaction(async (txn) => {
+      const now = Math.floor(Date.now() / 1000);
+      const current = (await txn.get<StoredPointer>("pointer"))!;
+      const nonces = consumeNonce(current.nonces, auth.nonce, now);
+      const records = await txn.list<Retry>({ prefix: "retry:" });
+      for (const [key, record] of records) {
+        const expiresAt = record.expiresAt ?? now + IDEMPOTENCY_TTL_SECONDS;
+        if (record.expiresAt === undefined)
+          await txn.put(key, { ...record, expiresAt });
+        if (expiresAt <= now) {
+          await txn.delete(key);
+          records.delete(key);
+        }
+      }
+      const prior = retryKey ? records.get(retryKey) : undefined;
+      if (prior) {
+        await txn.put("pointer", { ...current, nonces });
+        if (prior.fingerprint !== auth.fingerprint)
+          return { status: 409, state: current.state };
+        return prior.result;
+      }
+      if (retryKey && records.size >= MAX_IDEMPOTENCY_RECORDS) {
+        throw new ServiceError(
+          429,
+          "idempotency_capacity",
+          "write idempotency capacity exhausted; wait for records to expire",
+        );
+      }
+      const result =
+        root === undefined
+          ? { status: 200, state: current.state }
+          : compareAndSwap(current.state, root, revision!);
+      await txn.put("pointer", { ...current, nonces, state: result.state });
+      if (retryKey)
+        await txn.put(retryKey, {
+          fingerprint: auth.fingerprint,
+          result,
+          expiresAt: now + IDEMPOTENCY_TTL_SECONDS,
+        });
+      return result;
+    });
   }
 }

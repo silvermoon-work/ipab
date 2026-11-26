@@ -14,34 +14,40 @@ import {
 } from "@ipab/bundle-builder";
 import type { IpfsStore } from "@ipab/ipfs-store";
 import {
-  RootPointerClient,
-  RootPointerError,
-  pointerOrigin,
-  pointerId,
-} from "@ipab/bundle/pointer/pointers";
+  PointerClient,
+  PointerApiError,
+  type ReadResult,
+} from "@ipab/bundle/pointer/client";
+import {
+  canonicalService,
+  POINTER_ID_PATTERN,
+} from "@ipab/bundle/pointer/protocol";
 import {
   encodeCertificate,
   issueCertificate,
-  verifyCertificateChain,
+  verifyMemberCertificate,
 } from "@ipab/bundle/pointer/certificates";
 import {
   importPrivateKeyPkcs8,
   importPublicKeyRaw,
   signEd25519,
   verifyEd25519,
-  keyId,
   randomBytes,
   toBase64Url,
 } from "@ipab/bundle/pointer/crypto";
 import type { Certificate } from "@ipab/bundle/pointer/protocol";
 import { HostError, object, message } from "./errors.js";
-import { accountIdentity, protectedPath, secureNew } from "./identity.js";
+import {
+  accountIdentity,
+  protectedPath,
+  secureNew,
+  type Identity,
+} from "./identity.js";
 import { nodeError } from "./authoring.js";
 import { bundleJson, provideContent } from "./content-provider.js";
 import { bytes, relativePath } from "./space.js";
 import { publicUrl } from "./config.js";
 import { appSchemaCid } from "./app-definition.js";
-import { pointersConfig } from "./pointers-config.js";
 
 const cidField = { type: "string", minLength: 1, maxLength: 128 } as const;
 function definition(
@@ -120,6 +126,63 @@ export interface SwarmContext {
   stateDir: string;
   provider: string;
   fetch?: typeof fetch;
+  pointerService?: string;
+  pointerApiKey?: string;
+}
+async function requestPointer<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (cause) {
+      if (
+        attempt >= 2 ||
+        !(cause instanceof Error) ||
+        !["TypeError", "AbortError", "TimeoutError"].includes(cause.name)
+      )
+        throw cause;
+    }
+  }
+}
+const serviceFetch: typeof fetch = (input, options) =>
+  fetch(input, {
+    ...options,
+    redirect: "error",
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+interface BoundPointer {
+  read(): Promise<ReadResult>;
+  write(
+    root: string,
+    revision: string,
+    idempotencyKey: string,
+  ): Promise<ReadResult>;
+}
+function bindPointer(
+  context: SwarmContext,
+  data: Descriptor,
+  identity: Identity,
+  certificate?: Certificate,
+): BoundPointer {
+  const client = new PointerClient({
+    service: data.service,
+    signer: {
+      privateKey: identity.privateKey,
+      publicKey: identity.publicKey,
+      ...(certificate ? { certificate } : {}),
+    },
+    fetch: context.fetch ?? serviceFetch,
+  });
+  return {
+    read: () => requestPointer(() => client.read(data.variable)),
+    write: (root, revision, idempotencyKey) =>
+      requestPointer(() =>
+        client.write(data.variable, root, {
+          ifRevision: revision,
+          idempotencyKey,
+        }),
+      ),
+  };
 }
 export async function typedJson<T>(
   store: IpfsStore,
@@ -169,7 +232,8 @@ export async function descriptor(
     throw new HostError(
       "Swarm service must be an HTTPS origin or isolated loopback HTTP origin.",
     );
-  pointerId(data.variable);
+  if (!POINTER_ID_PATTERN.test(data.variable))
+    throw new HostError("Invalid service pointer ID.");
   await importPublicKeyRaw(data.owner);
   return data;
 }
@@ -242,52 +306,30 @@ export async function pointer(
   context: SwarmContext,
   swarm: string,
   certificate?: Certificate,
-): Promise<RootPointerClient> {
+): Promise<BoundPointer> {
   const data = await descriptor(context.store, swarm);
   const identity = await accountIdentity(context.env);
   if (identity.publicKey === data.owner && certificate === undefined)
-    return new RootPointerClient({
-      origin: data.service,
-      id: data.variable,
-      privateKey: identity.privateKey,
-      publicKey: identity.publicKey,
-      ...(context.fetch ? { fetch: context.fetch } : {}),
-    });
+    return bindPointer(context, data, identity);
   const cert =
     certificate ??
     ((await saved(context, `${swarm}.json`)) as { certificate: Certificate })
       .certificate;
-  const verified = await verifyCertificateChain(
-    [encodeCertificate(cert)],
+  const verified = await verifyMemberCertificate(
+    encodeCertificate(cert),
     await importPublicKeyRaw(data.owner),
+    data.owner,
+    data.service,
+    data.variable,
     now(),
-    0,
   );
-  if (
-    !verified.ok ||
-    cert.body.pub !== identity.publicKey ||
-    cert.body.aud !== target(data) ||
-    cert.body.ca
-  )
+  if (verified.member !== identity.publicKey)
     throw new HostError(
       "Membership certificate does not match this account, swarm, owner or validity window.",
     );
   if (identity.publicKey === data.owner)
-    return new RootPointerClient({
-      origin: data.service,
-      id: data.variable,
-      privateKey: identity.privateKey,
-      publicKey: identity.publicKey,
-      ...(context.fetch ? { fetch: context.fetch } : {}),
-    });
-  return new RootPointerClient({
-    origin: data.service,
-    id: data.variable,
-    privateKey: identity.privateKey,
-    publicKey: identity.publicKey,
-    certificate: cert,
-    ...(context.fetch ? { fetch: context.fetch } : {}),
-  });
+    return bindPointer(context, data, identity);
+  return bindPointer(context, data, identity, cert);
 }
 export async function writeSnapshot(
   store: IpfsStore,
@@ -393,12 +435,15 @@ export async function createSwarm(
     properties?: { name: string; description: string };
   } = {},
 ): Promise<string> {
-  const cfg = await pointersConfig(context.env);
-  if (!cfg.service || !cfg.apiKey || cfg.keyOrigin !== cfg.service)
+  const cfg = {
+    service: context.pointerService,
+    apiKey: context.pointerApiKey,
+  };
+  if (!cfg.service || !cfg.apiKey)
     throw new HostError(
       "Configure protected pointers.service and pointers.apiKey via safe stdin before creating a swarm.",
     );
-  if (options.service && pointerOrigin(options.service) !== cfg.service)
+  if (options.service && canonicalService(options.service) !== cfg.service)
     throw new HostError(
       "Creation API key cannot be sent outside its explicitly configured origin.",
     );
@@ -456,17 +501,20 @@ export async function createSwarm(
       context.fetch,
     );
     if (!record.id) {
-      const client = new RootPointerClient({
-        origin: cfg.service,
-        privateKey: identity.privateKey,
-        publicKey: identity.publicKey,
-        ...(context.fetch ? { fetch: context.fetch } : {}),
+      const client = new PointerClient({
+        service: cfg.service,
+        apiKey: cfg.apiKey,
+        signer: {
+          privateKey: identity.privateKey,
+          publicKey: identity.publicKey,
+        },
+        fetch: context.fetch ?? serviceFetch,
       });
-      record.id = await client.create(
-        record.root,
-        { origin: cfg.keyOrigin, apiKey: cfg.apiKey },
-        operation,
-      );
+      record.id = (
+        await requestPointer(() =>
+          client.create(record.root, { idempotencyKey: operation }),
+        )
+      ).id;
       await saveCreation(context, operation, record);
     }
     const data: Descriptor = {
@@ -539,18 +587,14 @@ export async function approveMembership(
     throw new HostError("Only this swarm's owner can approve members.");
   const certificate = await issueCertificate(
     {
-      v: 1,
-      aud: target(data),
-      sub: request.member,
-      pub: request.member,
-      scope: { read: true, write: true, sub: request.member },
-      iss: data.owner,
-      iss_pub: data.owner,
-      kid: await keyId(request.member),
+      v: 2,
+      service: data.service,
+      pointerId: data.variable,
+      owner: data.owner,
+      member: request.member,
       cid: toBase64Url(randomBytes(16)),
       iat: now(),
       exp: now() + seconds,
-      ca: false,
     },
     await importPrivateKeyPkcs8(identity.privateKey),
   );
@@ -780,7 +824,7 @@ export async function publish(
       await client.write(next, head.revision, toBase64Url(randomBytes(18)));
       return candidate;
     } catch (cause) {
-      if (!(cause instanceof RootPointerError) || cause.status !== 412)
+      if (!(cause instanceof PointerApiError) || cause.status !== 412)
         throw new HostError(
           `HEAD update failed or its result is unknown: ${message(cause)}. Candidate ${candidate} remains retained; authenticate swarm status before retrying.`,
           1,

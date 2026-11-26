@@ -37,9 +37,6 @@ import type * as IdentityModule from "../src/identity.js";
 
 const ports = vi.hoisted(() => ({
   identity: vi.fn<(env: NodeJS.ProcessEnv) => Promise<Identity>>(),
-  cfg: vi.fn<
-    () => Promise<{ service: string; apiKey: string; keyOrigin: string }>
-  >(),
 }));
 vi.mock("../src/identity.js", async () => ({
   ...(await vi.importActual<typeof IdentityModule>("../src/identity.js")),
@@ -47,13 +44,13 @@ vi.mock("../src/identity.js", async () => ({
   protectedPath: () => Promise.resolve(),
   secureNew: () => Promise.resolve(),
 }));
-vi.mock("../src/pointers-config.js", () => ({ pointersConfig: ports.cfg }));
 
 describe(
   "client swarm workflow with mocked identity/retention/network ports",
   { tags: ["mock"] },
   () => {
     const origin = "https://pointers.example";
+    const fixtureId = toBase64Url(new Uint8Array(32).fill(5));
     const noteType = {
       name: "Note",
       description: "",
@@ -87,11 +84,6 @@ describe(
         return Promise.resolve(identity);
       });
       const apiKey = toBase64Url(randomBytes(32));
-      ports.cfg.mockResolvedValue({
-        service: origin,
-        keyOrigin: origin,
-        apiKey,
-      });
       store = IpfsStore.fromClient({
         block: {
           get: () => Promise.reject(new Error("Missing mocked content")),
@@ -129,9 +121,9 @@ describe(
           const body = (await request.json()) as { root: string };
           root = body.root;
           creates++;
-          return new Response('{"id":"fixture_pointer1"}', {
+          return new Response(JSON.stringify({ id: fixtureId }), {
             status: 201,
-            headers: { location: "/v1/pointers/fixture_pointer1" },
+            headers: { location: `/v1/pointers/${fixtureId}` },
           });
         }
         if (request.method === "PUT") {
@@ -162,6 +154,8 @@ describe(
           env: { HOME: home },
           provider: "http://127.0.0.1:5001",
           fetch: fetcher,
+          pointerService: origin,
+          pointerApiKey: apiKey,
         };
       };
       a = await context("a");
@@ -170,7 +164,6 @@ describe(
     afterEach(async () => {
       vi.restoreAllMocks();
       ports.identity.mockReset();
-      ports.cfg.mockReset();
       await store.close();
       await rm(work, {
         recursive: true,
@@ -182,9 +175,7 @@ describe(
     const local = (reference: string) => reference;
     it("creates, grants membership, publishes versions, and gets content/raw without implicit source fetch", async () => {
       const swarm = await createSwarm(a);
-      expect((await descriptor(store, swarm)).variable).toBe(
-        "fixture_pointer1",
-      );
+      expect((await descriptor(store, swarm)).variable).toBe(fixtureId);
       const request = await requestMembership(b, swarm);
       await expect(approveMembership(b, request)).rejects.toThrow("Only");
       const response = await approveMembership(a, request);
@@ -289,9 +280,7 @@ describe(
       expect(creates).toBe(1);
       a.fetch = original;
       const swarm = await createSwarm(a, { resume: operation! });
-      expect((await descriptor(store, swarm)).variable).toBe(
-        "fixture_pointer1",
-      );
+      expect((await descriptor(store, swarm)).variable).toBe(fixtureId);
       expect(creates).toBe(1);
     });
     it("rejects foreign origin, mismatched requests/certificates and unauthorized Name lookups", async () => {

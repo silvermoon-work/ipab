@@ -1,7 +1,11 @@
-import { lstat, mkdir, open, readFile, chmod } from "node:fs/promises";
+import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import {
+  protectAccountOnly,
+  requireAccountOnly,
+  requireAccountOnlyMany,
+} from "@ipab/bundle/pointer/protected-files";
 import {
   generateKeyPair,
   importPrivateKeyPkcs8,
@@ -17,32 +21,12 @@ export interface Identity {
   privateKey: string;
 }
 
-function acl(paths: string[], set: boolean): void {
-  const protect = set
-    ? "$a=Get-Acl -LiteralPath $p; $a.SetAccessRuleProtection($true,$false); foreach($r in @($a.Access)){$a.RemoveAccessRuleSpecific($r)}; $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($identity.User,'FullControl','Allow'))); Set-Acl -LiteralPath $p -AclObject $a;"
-    : "";
-  const script = `$ErrorActionPreference='Stop'; $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent(); foreach($p in (ConvertFrom-Json $env:IPAB_ACL_PATHS)){${protect}$a=Get-Acl -LiteralPath $p; if($a.Owner -ne $identity.Name){exit 1}; foreach($r in $a.Access){if($r.AccessControlType -eq 'Allow' -and $r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $identity.User.Value){exit 1}}}`;
-  const result = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      env: { ...process.env, IPAB_ACL_PATHS: JSON.stringify(paths) },
-      encoding: "utf8",
-      windowsHide: true,
-    },
-  );
-  if (result.error || result.status !== 0)
-    throw new HostError(
-      "Identity permissions are unsafe or could not be secured. Repair the account-only ACL; the identity was not replaced.",
-    );
-}
-
 export async function protectedPath(
   path: string,
   directory = false,
 ): Promise<void> {
   await regularPath(path, directory);
-  if (process.platform === "win32") acl([path], false);
+  await requireAccountOnly(path);
 }
 
 async function regularPath(path: string, directory: boolean): Promise<void> {
@@ -54,26 +38,14 @@ async function regularPath(path: string, directory: boolean): Promise<void> {
     throw new HostError(
       "Credential path is not a regular account-owned file/directory.",
     );
-  if (
-    process.platform !== "win32" &&
-    ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())
-  )
-    throw new HostError(
-      "Unsafe credential permissions; require account ownership and mode 0600 (directory 0700).",
-    );
 }
 
 export async function secureNew(
   path: string,
   directory = false,
 ): Promise<void> {
-  if (process.platform === "win32") {
-    await regularPath(path, directory);
-    acl([path], true);
-  } else {
-    await chmod(path, directory ? 0o700 : 0o600);
-    await protectedPath(path, directory);
-  }
+  await regularPath(path, directory);
+  await protectAccountOnly(path);
 }
 
 export async function readIdentityFile(path: string): Promise<Identity> {
@@ -156,6 +128,6 @@ export async function accountIdentity(
   await regularPath(parent, true);
   await regularPath(directory, true);
   await regularPath(file, false);
-  if (process.platform === "win32") acl([parent, directory, file], false);
+  await requireAccountOnlyMany([parent, directory, file]);
   return decodeIdentityFile(file);
 }

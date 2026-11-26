@@ -9,7 +9,7 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { randomBytes, toBase64Url, sha256Hex } from "../src/crypto.ts";
 import { runCli } from "@ipab/cli";
-import { pointersContract } from "./pointers-contract.ts";
+import { createService } from "./helpers.ts";
 
 interface Result {
   code: number;
@@ -32,7 +32,7 @@ function concatenate(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
   return result;
 }
 test(
-  "two accounts iterate a Name through an explicit NEW pointer API contract fixture",
+  "two accounts iterate a Name through the canonical Worker router",
   { tags: ["release-e2e"], timeout: 240_000 },
   async () => {
     const base = resolve(".test-work");
@@ -128,7 +128,10 @@ test(
     });
     await new Promise<void>((accept) => server.listen(0, "127.0.0.1", accept));
     const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    const service = pointersContract(endpoint, await sha256Hex(apiKey));
+    const service = await createService({
+      service: endpoint,
+      digest: await sha256Hex(apiKey),
+    });
     const cli = fileURLToPath(
       new URL("../../../apps/cli/dist/main.js", import.meta.url),
     );
@@ -136,6 +139,9 @@ test(
       homeB = join(work, "b"),
       homeC = join(work, "c");
     const environments = new Map<string, NodeJS.ProcessEnv>();
+    const inherited = { ...runtime.process.env };
+    delete inherited.IPAB_POINTERS_SERVICE;
+    delete inherited.IPAB_POINTERS_API_KEY;
     for (const home of [homeA, homeB, homeC]) {
       await mkdir(home);
       const config = join(home, "content.json");
@@ -148,7 +154,7 @@ test(
         }),
       );
       environments.set(home, {
-        ...runtime.process.env,
+        ...inherited,
         HOME: home,
         USERPROFILE: home,
         TASK_CONTENT_CONFIG: config,
@@ -221,11 +227,7 @@ test(
         ),
       ).toBe(0);
       expect(
-        await runCli(
-          ["config", "set", "pointers.apiKey", "--stdin"],
-          cfgIO,
-          envA,
-        ),
+        await runCli(["config", "set", "pointers.apiKey", "-"], cfgIO, envA),
       ).toBe(0);
       expect(cfgMessages.some((value) => value.includes(apiKey))).toBe(false);
       const swarm = await cidResult(homeA, [

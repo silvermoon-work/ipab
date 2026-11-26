@@ -11,6 +11,7 @@ import {
   publicUrl,
   stateLocation,
   storeConfiguration,
+  visibleConfig,
   type GlobalOptions,
 } from "./config.js";
 import { HostError, message, object, syntax } from "./errors.js";
@@ -29,7 +30,6 @@ import { buildBundle, inspectBundle, importBundle } from "./authoring.js";
 import { initApp } from "./app-authoring.js";
 import { assembleBundle } from "./assembly.js";
 import { getBundle } from "./get.js";
-import { pointersConfig, setPointersConfig } from "./pointers-config.js";
 import {
   createSwarm,
   requestMembership,
@@ -45,31 +45,17 @@ import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
 import { logFiles } from "./logs.js";
 import { builtinContent } from "./builtins.js";
+import { readSecretStream } from "./config-secret.js";
 
 export interface IO {
-  readSecret?(): Promise<string>;
   out(text: string): void;
   err(text: string): void;
   tty: boolean;
   columns?(): number | undefined;
   confirm(text: string): Promise<boolean>;
+  readSecret?(): Promise<string>;
 }
 export const processIO: IO = {
-  async readSecret() {
-    if (process.stdin.isTTY)
-      throw new HostError(
-        "API key input requires a safe stdin pipe, not terminal echo or command arguments.",
-      );
-    let value = "";
-    for await (const chunk of process.stdin) {
-      value += String(chunk);
-      if (Buffer.byteLength(value) > 512)
-        throw new HostError(
-          "API key input is oversized; its contents are not echoed.",
-        );
-    }
-    return value.trim();
-  },
   out(text) {
     process.stdout.write(`${text}\n`);
   },
@@ -79,6 +65,14 @@ export const processIO: IO = {
   tty: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   columns() {
     return process.stdout.columns;
+  },
+  async readSecret() {
+    if (process.stdin.isTTY)
+      syntax(
+        "Pipe the API key through stdin; interactive echo is not permitted.",
+      );
+    process.stdin.setEncoding("utf8");
+    return readSecretStream(process.stdin as AsyncIterable<string>);
   },
   async confirm(text) {
     const reader = createInterface({
@@ -119,7 +113,8 @@ const commands: Record<string, string> = {
   "register set": "register set SCHEMA APP [--replace] [-- TEMPLATE...]",
   "register remove": "register remove SCHEMA",
   "config get": "config get [KEY]",
-  "config set": "config set KEY VALUE",
+  "config set":
+    "config set KEY VALUE\n       ipab config set pointers.apiKey - < protected-key-file",
   "config reset": "config reset KEY",
   "store usage": "store usage",
   "store gc": "store gc",
@@ -157,7 +152,7 @@ const commandHelp: Record<
     ],
     examples: [
       "ipab config set pointers.service https://service.example",
-      "ipab config set pointers.apiKey --stdin",
+      "ipab config set pointers.apiKey -",
       "ipab swarm create",
     ],
     notes: [
@@ -427,12 +422,15 @@ const commandHelp: Record<
   "config set": {
     summary: "Save a local configuration value",
     examples: [
-      "ipab config set pointers.apiKey --stdin",
+      "ipab config set pointers.apiKey -",
       "ipab config set store.gateway http://127.0.0.1:8080",
       "ipab config set history.enabled false",
     ],
     notes: [
       "store.gateway is a read-only HTTP gateway; blocks, pins and GC remain local.",
+      "pointers.service is a canonical HTTPS origin (HTTP loopback allowed).",
+      "pointers.apiKey is accepted only through stdin using VALUE '-'; queries and confirmations redact it.",
+      "Saving pointers.apiKey protects state SQLite files with account-only Unix modes or Windows ACLs.",
     ],
   },
   "config reset": {
@@ -782,31 +780,29 @@ export function parse(argv: readonly string[]): Parsed {
   if (
     result.path === "config set" &&
     tokens.includes("pointers.apiKey") &&
-    !(tokens.length === 2 && tokens.includes("--stdin"))
+    !(tokens.length === 2 && tokens[1] === "-")
   )
     syntax(
-      "API key must be provided through --stdin; never pass it in command arguments.",
+      "API key must be provided through '-' and piped stdin; never pass it in command arguments.",
     );
   const booleans =
-    result.path === "config set"
-      ? ["stdin"]
-      : result.path === "bundle build"
-        ? ["replace", "schema-only", "no-import"]
-        : result.path === "build"
-          ? ["replace", "no-import"]
-          : result.path === "publish"
-            ? ["snapshot"]
-            : result.path === "get"
-              ? ["raw"]
-              : result.path === "swarm approve"
-                ? ["yes"]
-                : result.path === "register set"
-                  ? ["replace"]
-                  : result.path === "history remove"
-                    ? ["yes"]
-                    : result.path === "open"
-                      ? ["log", "raw"]
-                      : [];
+    result.path === "bundle build"
+      ? ["replace", "schema-only", "no-import"]
+      : result.path === "build"
+        ? ["replace", "no-import"]
+        : result.path === "publish"
+          ? ["snapshot"]
+          : result.path === "get"
+            ? ["raw"]
+            : result.path === "swarm approve"
+              ? ["yes"]
+              : result.path === "register set"
+                ? ["replace"]
+                : result.path === "history remove"
+                  ? ["yes"]
+                  : result.path === "open"
+                    ? ["log", "raw"]
+                    : [];
   const values =
     result.path === "swarm create"
       ? ["service", "resume", "name", "description"]
@@ -871,7 +867,7 @@ export function parse(argv: readonly string[]): Parsed {
     "register set": [2, 2],
     "register remove": [1, 1],
     "config get": [0, 1],
-    "config set": result.options.stdin ? [1, 1] : [2, 2],
+    "config set": [2, 2],
     "config reset": [1, 1],
     "store usage": [0, 0],
     "store gc": [0, 0],
@@ -907,21 +903,17 @@ export function parse(argv: readonly string[]): Parsed {
   }
   if (result.path.startsWith("config ") && result.positional[0]) {
     if (
-      ["pointers.service", "pointers.apiKey"].includes(result.positional[0])
-    ) {
-      if (result.options.stdin && result.positional[0] !== "pointers.apiKey")
-        syntax("--stdin is only for protected pointers.apiKey.");
-    } else {
-      if (
-        !(
-          result.path === "config get" && result.positional[0] === "state-dir"
-        ) &&
-        !(
-          result.path === "config reset" && result.positional[0] === "store.rpc"
-        )
-      )
-        configKey(result.positional[0]);
-      if (result.path === "config set")
+      !(result.path === "config get" && result.positional[0] === "state-dir") &&
+      !(result.path === "config reset" && result.positional[0] === "store.rpc")
+    )
+      configKey(result.positional[0]);
+    if (result.path === "config set") {
+      if (result.positional[0] === "pointers.apiKey") {
+        if (result.positional[1] !== "-")
+          syntax(
+            "Set pointers.apiKey using '-' and piped stdin; never put the key in command-line arguments.",
+          );
+      } else
         parseValue(configKey(result.positional[0]), result.positional[1], true);
     }
   }
@@ -958,41 +950,6 @@ async function performCli(
       io.out(pkg.version);
       return 0;
     }
-    if (
-      parsed.path.startsWith("config ") &&
-      ["pointers.service", "pointers.apiKey"].includes(
-        parsed.positional[0] ?? "",
-      )
-    ) {
-      const key = parsed.positional[0] as
-        "pointers.service" | "pointers.apiKey";
-      if (parsed.path === "config set") {
-        const input =
-          key === "pointers.apiKey"
-            ? await io.readSecret?.()
-            : parsed.positional[1];
-        if (input === undefined)
-          throw new HostError("Protected API key input requires --stdin.");
-        await setPointersConfig(env, key, input);
-      } else if (parsed.path === "config reset")
-        await setPointersConfig(env, key, null);
-      const cfg = await pointersConfig(env);
-      const result =
-        key === "pointers.apiKey"
-          ? {
-              key,
-              value: cfg.apiKey ? "[redacted]" : null,
-              configured: Boolean(cfg.apiKey),
-              service: cfg.service ?? null,
-            }
-          : { key, value: cfg.service ?? null };
-      io.out(
-        parsed.flags.json
-          ? JSON.stringify(result)
-          : `${key}: ${result.value ?? "(not configured)"}`,
-      );
-      return 0;
-    }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)
       syntax("Non-interactive history remove requires --yes.");
     const builtins = await builtinContent();
@@ -1025,6 +982,12 @@ async function performCli(
       env,
       stateDir: stateLocation(parsed.flags, env).path,
       provider: String(value("swarm.provider") ?? "http://127.0.0.1:5001"),
+      ...(typeof value("pointers.service") === "string"
+        ? { pointerService: String(value("pointers.service")) }
+        : {}),
+      ...(typeof value("pointers.apiKey") === "string"
+        ? { pointerApiKey: String(value("pointers.apiKey")) }
+        : {}),
     });
     const filter = parsed.path.startsWith("history ")
       ? filters(state, parsed.options)
@@ -1431,9 +1394,9 @@ async function performCli(
         break;
       }
       case "config get": {
-        const selected = first
-          ? items.filter((item) => item.key === first)
-          : items;
+        const selected = (
+          first ? items.filter((item) => item.key === first) : items
+        ).map(visibleConfig);
         emit(
           { items: selected },
           table(
@@ -1446,14 +1409,21 @@ async function performCli(
       }
       case "config set": {
         const key = configKey(first!);
-        const saved = parseValue(key, second, true);
+        const saved = parseValue(
+          key,
+          key === "pointers.apiKey"
+            ? await (io.readSecret ?? processIO.readSecret!)()
+            : second,
+          true,
+        );
         state.setConfig(key, saved);
         const source = items.find((item) => item.key === key)!.source;
         if (source === "env" || source === "flag")
           io.err(`Warning: saved user value is masked by ${source}.`);
+        const display = visibleConfig({ key, value: saved, source: "user" });
         emit(
-          { key, value: saved, source: "user" },
-          `Saved ${key} = ${printable(String(saved))} (user).`,
+          display,
+          `Saved ${key} = ${printable(String(display.value))} (user).`,
         );
         break;
       }

@@ -44,6 +44,123 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
   const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
 
+  it("persists stdin-only pointer API keys with account-only storage and redacts all configuration output", async () => {
+    const key = Buffer.alloc(32, 7).toString("base64url");
+    expect(() => parse(["config", "set", "pointers.apiKey", key])).toThrow(
+      "piped stdin",
+    );
+    const saved = await cli(
+      work.stateDir,
+      ["--json", "config", "set", "pointers.apiKey", "-"],
+      {
+        readSecret: () => Promise.resolve(key),
+      },
+    );
+    expect(saved.code).toBe(0);
+    expect(JSON.parse(saved.out) as unknown).toEqual({
+      key: "pointers.apiKey",
+      value: "<redacted>",
+      source: "user",
+    });
+    const reopened = new State(work.stateDir);
+    try {
+      expect(reopened.config()["pointers.apiKey"]).toBe(key);
+    } finally {
+      reopened.close();
+    }
+    for (const args of [
+      ["config", "get"],
+      ["config", "get", "pointers.apiKey"],
+      ["--json", "config", "get", "pointers.apiKey"],
+    ]) {
+      const result = await cli(work.stateDir, args);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain("<redacted>");
+      expect(result.out + result.err).not.toContain(key);
+    }
+    const human = await cli(
+      work.stateDir,
+      ["config", "set", "pointers.apiKey", "-"],
+      {
+        readSecret: () => Promise.resolve(key),
+        env: {
+          IPAB_POINTERS_API_KEY: Buffer.alloc(32, 8).toString("base64url"),
+        },
+      },
+    );
+    expect(human.code, human.err).toBe(0);
+    expect(human.out).toContain("<redacted>");
+    expect(human.err).toContain("masked by env");
+    expect(human.out + human.err).not.toContain(key);
+    const invalid = await cli(
+      work.stateDir,
+      ["--json", "config", "set", "pointers.apiKey", "-"],
+      {
+        readSecret: () => Promise.resolve("private-invalid-value"),
+      },
+    );
+    expect(invalid.code).toBe(2);
+    expect(invalid.err).not.toContain("private-invalid-value");
+    expect(
+      (await cli(work.stateDir, ["config", "reset", "pointers.apiKey"])).code,
+    ).toBe(0);
+    expect(
+      JSON.parse(
+        (
+          await cli(work.stateDir, [
+            "--json",
+            "config",
+            "get",
+            "pointers.apiKey",
+          ])
+        ).out,
+      ) as unknown,
+    ).toEqual({
+      items: [{ key: "pointers.apiKey", value: null, source: "default" }],
+    });
+  });
+
+  it("saves a pointer service origin and applies aligned environment overrides independently of API key output", async () => {
+    expect(
+      (
+        await cli(work.stateDir, [
+          "config",
+          "set",
+          "pointers.service",
+          "https://pointer.example",
+        ])
+      ).code,
+    ).toBe(0);
+    const result = await cli(
+      work.stateDir,
+      ["--json", "config", "get", "pointers.service"],
+      {
+        env: { IPAB_POINTERS_SERVICE: "http://127.0.0.1:8787" },
+      },
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out) as unknown).toEqual({
+      items: [
+        {
+          key: "pointers.service",
+          value: "http://127.0.0.1:8787",
+          source: "env",
+        },
+      ],
+    });
+    const key = Buffer.alloc(32, 9).toString("base64url");
+    const secret = await cli(
+      work.stateDir,
+      ["--json", "config", "get", "pointers.apiKey"],
+      { env: { IPAB_POINTERS_API_KEY: key } },
+    );
+    expect(secret.code).toBe(0);
+    expect(secret.out).not.toContain(key);
+    expect(JSON.parse(secret.out) as unknown).toEqual({
+      items: [{ key: "pointers.apiKey", value: "<redacted>", source: "env" }],
+    });
+  });
+
   it("rejects removed RPC flags and environment, and explicitly resets legacy configuration without changing pins", async () => {
     const configPath = join(work.root, "store.json");
     await writeFile(configPath, JSON.stringify(work.store.configuration));

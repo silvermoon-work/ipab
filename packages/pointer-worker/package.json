@@ -2,7 +2,7 @@
   "name": "@ipab/pointer-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Signed pointer Worker: one optimistic-locked HEAD value per swarm, Ed25519 requests and delegation certificates.",
+  "description": "Signed publication pointers with owner-issued member certificates and atomic revision CAS.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -18,12 +18,12 @@
     "cli": "tsx scripts/cli.ts"
   },
   "dependencies": {
-    "@ipab/bundle": "workspace:*"
+    "@ipab/bundle": "workspace:*",
+    "multiformats": "catalog:"
   },
   "devDependencies": {
     "@ipab/cli": "workspace:*",
     "@ipld/car": "catalog:",
-    "multiformats": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

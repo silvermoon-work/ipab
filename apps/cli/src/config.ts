@@ -10,6 +10,8 @@ export type ConfigKey =
   | "swarm.service"
   | "swarm.provider"
   | "store.gateway"
+  | "pointers.service"
+  | "pointers.apiKey"
   | "history.enabled"
   | "history.limit"
   | "output.retention"
@@ -32,6 +34,8 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "swarm.service": null,
   "swarm.provider": "http://127.0.0.1:5001",
   "store.gateway": null,
+  "pointers.service": null,
+  "pointers.apiKey": null,
   "history.enabled": true,
   "history.limit": 20,
   "output.retention": "history",
@@ -42,6 +46,8 @@ const environments: Record<ConfigKey, string> = {
   "swarm.service": "IPAB_SWARM_SERVICE",
   "swarm.provider": "IPAB_SWARM_PROVIDER",
   "store.gateway": "IPAB_STORE_GATEWAY",
+  "pointers.service": "IPAB_POINTERS_SERVICE",
+  "pointers.apiKey": "IPAB_POINTERS_API_KEY",
   "history.enabled": "IPAB_HISTORY_ENABLED",
   "history.limit": "IPAB_HISTORY_LIMIT",
   "output.retention": "IPAB_OUTPUT_RETENTION",
@@ -76,6 +82,40 @@ export function publicUrl(value: string): string {
   return url.toString();
 }
 
+export function pointerService(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    syntax(
+      "Pointer service must be a canonical HTTPS origin (HTTP loopback allowed).",
+    );
+  }
+  if (
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== "/" ||
+    (url.protocol !== "https:" &&
+      !(
+        url.protocol === "http:" &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      )) ||
+    value !== url.origin
+  )
+    syntax(
+      "Pointer service must be a canonical HTTPS origin (HTTP loopback allowed).",
+    );
+  return url.origin;
+}
+
+export function visibleConfig(item: ConfigItem): ConfigItem {
+  return item.key === "pointers.apiKey" && item.value !== null
+    ? { ...item, value: "<redacted>" }
+    : item;
+}
+
 export function parseValue(
   key: ConfigKey,
   value: unknown,
@@ -89,7 +129,28 @@ export function parseValue(
     }
     if (key === "history.limit" && /^[1-9]\d*$/.test(value))
       value = Number(value);
-    if (key === "store.gateway" && value === "default") return null;
+    if (
+      ["store.gateway", "pointers.service", "pointers.apiKey"].includes(key) &&
+      value === "default"
+    )
+      return null;
+  }
+  if (key === "pointers.service" || key === "pointers.apiKey") {
+    if (value === null) return null;
+    if (key === "pointers.service" && typeof value === "string")
+      return pointerService(value);
+    if (
+      key === "pointers.apiKey" &&
+      typeof value === "string" &&
+      /^[A-Za-z0-9_-]{43}$/.test(value) &&
+      Buffer.from(value, "base64url").toString("base64url") === value
+    )
+      return value;
+    syntax(
+      key === "pointers.apiKey"
+        ? "Invalid pointers.apiKey; expected a canonical base64url encoding of 32 bytes."
+        : "Invalid pointers.service; expected a canonical HTTPS origin or default.",
+    );
   }
   if (key.startsWith("swarm.") && value === null) return null;
   if (key === "swarm.default" && typeof value === "string") {

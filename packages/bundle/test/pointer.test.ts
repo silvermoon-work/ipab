@@ -18,6 +18,14 @@ vi.mock(
   "@ipab/bundle/pointer/client",
   async () => import("../src/pointer/client.js"),
 );
+vi.mock(
+  "@ipab/bundle/pointer/protected-files",
+  async () => import("../src/pointer/protected-files.js"),
+);
+vi.mock(
+  "@ipab/bundle/pointer/node-runtime",
+  async () => import("../src/pointer/node-runtime.js"),
+);
 
 await import(
   new URL("../../pointer-worker/test/core.test.ts", import.meta.url).href
@@ -27,4 +35,11 @@ await import(
 );
 await import(
   new URL("../../pointer-worker/test/service.test.ts", import.meta.url).href
+);
+await import(
+  new URL("../../pointer-worker/test/lifecycle.test.ts", import.meta.url).href
+);
+await import(
+  new URL("../../pointer-worker/test/protected-files.test.ts", import.meta.url)
+    .href
 );

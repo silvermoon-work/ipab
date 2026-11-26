@@ -10,21 +10,20 @@ in an existing directory are errors, never a reason to silently rotate identity.
 Unix ownership/0700/0600 and Windows account-only ACLs are checked before use.
 Changing a project or `--state-dir` does not create another identity.
 
-The confirmed `origin/main:docs/pointers-service.md` (ab24887) supersedes the
+Canonical upstream `d39cddd` implements the confirmed pointer API and supersedes the
 earlier transient administrator-key flow. Creation now requires persistent,
 account-protected and explicitly origin-bound cfg:
 
 ```sh
 ipab config set pointers.service https://service.example
 # Pipe the operator's key using safe stdin; never put it in command arguments.
-ipab config set pointers.apiKey --stdin
+ipab config set pointers.apiKey -
 ipab swarm create
 ```
 
-Cfg is `HOME/.ipab/pointers.json`, protected by Unix account
-ownership/permissions or Windows account-only ACL. API-key queries and
-confirmations are masked. Changing the bound service requires explicitly
-resetting the old API key first. Keys are sent only on POST to that configured
+Cfg reuses upstream's account-protected State SQLite storage and `config-secret`
+helpers, rather than a second credential configuration file. API-key queries and
+confirmations are masked. Keys are sent only on POST to the explicitly configured
 origin, never on GET/PUT, from a Descriptor-selected origin, or through
 redirects. The owner signs POST body `{owner,root}`. The service allocates the
 opaque ID; no client-selected variables or administrator-key fallback remain in
@@ -43,25 +42,25 @@ Portable client/cryptography/certificate/protocol code now lives under
 second protocol. The publishable CLI does not depend on a private Worker
 package. The CLI now uses only `/v1/pointers/` POST and `/v1/pointers/{id}`
 GET/PUT, `{root,revision}` responses, and strong revision-string ETags. The
-legacy `client.ts`/Worker routes are retained only pending the independent
-service migration; they are not silently used as a new-API fallback.
+canonical upstream client and Worker use the same shared source; old variable and
+administrator endpoints are not retained as a fallback.
 
-**Necessary shared protocol handoff:** `pointer/pointers.ts` exports
-`pointerSigningMessage` and `PointerProof`. Its unambiguous UTF-8 signing
+**Canonical shared protocol:** `pointer/protocol.ts` exports
+`requestSigningMessage` and `RequestProof`. Its unambiguous UTF-8 signing
 message is the JSON array:
-`["IPAB-POINTERS/1",origin,id,method,path,bodySha256,ifMatch,idempotencyKey,timestamp,nonce,subject]`.
-The independent service implementation must adopt exactly that shared encoder;
-the API design alone does not define matching signature bytes. This is an
+`["IPAB-POINTER/2",service,pointerId,method,path,bodySha256,ifMatch,idempotencyKey,timestamp,nonce,subject]`.
+Both the actual Worker and CLI consume this one encoder. This is an
 intentional breaking API/envelope change, not backward compatibility with
 `/v1/value`. Member certificates retain the existing signed certificate envelope
-with `aud` bound to the full `origin/v1/pointers/id` URI and `ca:false`; the
-service must verify the same encoder, pinned owner and target.
+as `{v:2,service,pointerId,owner,member,cid,iat,exp}` and share
+`certificateSigningMessage`, binding the full owner/member keys, target and
+validity without delegation, aliases or fingerprints.
 
 Network retries issue fresh nonce/timestamp proofs with the same operation key.
 A rebase that creates a different CAS candidate receives a new operation key.
 Server-pinned origin, atomic nonce/CAS/idempotency persistence, capacity
-rejection, and recovery remain the independent service thread's responsibility;
-no competing server implementation or deployment is added here.
+rejection, and recovery are preserved from canonical upstream. The integration
+does not add a second server implementation or deploy anything.
 
 Owners sign directly without self-membership certificates. Members need both an
 owner-signed, non-delegating certificate and possession proof on every request.

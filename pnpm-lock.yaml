@@ -604,6 +604,9 @@ importers:
       '@ipab/bundle':
         specifier: workspace:*
         version: link:../bundle
+      multiformats:
+        specifier: 'catalog:'
+        version: 14.0.5
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
@@ -620,9 +623,6 @@ importers:
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 5.1.0(vitest@5.1.0)
-      multiformats:
-        specifier: 'catalog:'
-        version: 14.0.5
       tsx:
         specifier: 'catalog:'
         version: 4.23.15

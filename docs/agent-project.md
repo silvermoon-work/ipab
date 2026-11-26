@@ -42,10 +42,13 @@ private
 根 test-package-smoke 调用其 CLI，scripts/package-smoke.mjs 负责项目特有验证。
 该试验包不加入五个 npm 交付项。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
-private `@ipab/pointer-worker` 迁入本机 signed-pointer 服务：每个 pointer 名一个
-Durable Object，值≤256 UTF-8 字节，Ed25519 直接签名或成员证书链签名，
-`If-Match` 版本号做乐观锁，管理面只用固定公钥增删／轮换。
-它是个人 swarm 的 HEAD 指针候选实现，尚未接入 CLI 同步流程，也不进入 npm 交付。
+private `@ipab/pointer-worker` 是 swarm root
+pointer 服务：POST 创建服务端随机 ID，
+GET／PUT 按 ID 读取和 CAS 更新 root；每个 pointer 一个 Durable Object。
+API key 只允许创建，owner Ed25519 直接签名或 owner 签发的 member 证书授权
+日常读写；请求绑定服务 origin、pointer ID、nonce、时间戳与 CAS／幂等参数。
+旧具名变量、管理面与成员 CA 委托接口已移除；目标契约见
+docs/pointers-service.md。服务尚未接入完整 CLI 入群与同步流程，不进入 npm 交付。
 测试在 Node 中以内存 DurableObjectState 运行 Worker 路由与 DO，
 `cloudflare:workers` 由共享 Vitest 配置别名到测试桩；不启动 workerd。
 private `@ipab/check-spec` 迁入 okr-agent 的 MIT React 定义查看器；

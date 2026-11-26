@@ -15,7 +15,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(runBundleViewer).mockReset();
 });
-describe("Check App startup", () => {
+describe("Check App startup", { tags: ["mock"] }, () => {
   it("accepts explicit folder watch mode without treating the path as a CID", async () => {
     vi.resetModules();
     process.argv = [

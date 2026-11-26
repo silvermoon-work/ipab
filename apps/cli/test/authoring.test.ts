@@ -49,7 +49,7 @@ async function car(path: string) {
     },
   };
 }
-describe("bundle development CLI", () => {
+describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let source: string;
   beforeEach(async () => {

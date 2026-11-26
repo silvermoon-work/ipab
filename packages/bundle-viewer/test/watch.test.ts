@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 it.each(["valid", "invalid"])(
   "updates local Markdown from %s startup without rebuilding, hides invalid edits and recovers",
-  { timeout: 15_000 },
+  { tags: ["release-e2e"], timeout: 15_000 },
   async (initial) => {
     folder = await mkdtemp(join(tmpdir(), "ipab-watch-"));
     const schema = {

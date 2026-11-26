@@ -5,7 +5,7 @@ import { typescriptProjectDesignSpec } from "../src/typescript-project-design.js
 import type { CheckBundleSpec } from "../src/spec.js";
 import { orderedSpec } from "./fixtures.js";
 
-describe("Spec v1 validation", () => {
+describe("Spec v1 validation", { tags: ["unit"] }, () => {
   it("accepts shipped definitions with one task Target and preserves checkpoint and rule order", () => {
     for (const spec of [
       typescriptProjectSpec,

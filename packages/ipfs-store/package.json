@@ -49,7 +49,7 @@
     "lint-package": "publint --strict",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "test": "vitest run --root . --config ../../vitest.config.ts",
-    "test-ci": "vitest run --root . --config ../../vitest.config.ts --tags-filter \"!release-e2e\"",
+    "test-ci": "vitest run --root . --config ../../vitest.config.ts --tags-filter \"(unit or mock) and !release-e2e\"",
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage"
   },
   "dependencies": {

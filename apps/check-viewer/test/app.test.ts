@@ -12,7 +12,7 @@ import { viewer } from "../src/shared/viewer.js";
 import definition from "../schemas/check.json" with { type: "json" };
 import { checkSpecDefinition } from "@ipab/check-spec/bundle";
 
-describe("built Check viewer App", () => {
+describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
   it("renders the shared Check component using real definition data", () => {
     expect(definition).toEqual(checkSpecDefinition);
     const html = renderToString(

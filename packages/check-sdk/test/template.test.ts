@@ -45,7 +45,7 @@ async function project() {
 
 it(
   "builds and runs the generated Check App with STDIN and reuses the original model DAG in both outcomes",
-  { timeout: 120_000 },
+  { tags: ["release-e2e"], timeout: 120_000 },
   async () => {
     const { work, root } = await project();
     const stateDir = join(work, "state");
@@ -259,7 +259,7 @@ async function command(
 
 it(
   "rejects invalid model exports, colliding resources and nonempty output without overwriting files",
-  { timeout: 30_000 },
+  { tags: ["release-e2e"], timeout: 30_000 },
   async () => {
     const { root, work } = await project();
     try {

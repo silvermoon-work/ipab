@@ -82,7 +82,7 @@ async function start(overrides: Partial<RunBundleViewerOptions> = {}) {
   return { url, diagnostics };
 }
 
-describe("React Content Bundle server", () => {
+describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
   it("requires exactly one explicit content source", async () => {
     const configured = options();
     const withoutCid = { ...configured };

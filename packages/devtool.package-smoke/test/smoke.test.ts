@@ -69,40 +69,51 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-it("uses active pnpm, skips private packages, installs tarballs and cleans the independent consumer", async () => {
-  expect(
-    await packageSmoke({
-      root,
-      verify: "verify.mjs",
-      pnpm,
-      allowBuilds: ["esbuild"],
-    }),
-  ).toBe(1);
-  const install = spawn.mock.calls.find((call) => call[1]?.includes("install"));
-  expect(install?.[2]).toMatchObject({ shell: false, timeout: 300_000 });
-  expect(install?.[2]?.env?.COREPACK_ENABLE_NETWORK).toBe("0");
-  expect(consumer).not.toContain(root);
-  await expect(readFile(join(consumer!, "package.json"))).rejects.toMatchObject(
-    { code: "ENOENT" },
-  );
-  expect(spawn.mock.calls.some((call) => call[1]?.includes("publish"))).toBe(
-    false,
-  );
-});
-it("supports Node-based pnpm without replacing it with another package manager", async () => {
-  native = false;
-  expect(
-    await packageSmoke({
-      root,
-      verify: "verify.mjs",
-      pnpm: join(tmpdir(), "pnpm.cjs"),
-      timeout: 10_000,
-    }),
-  ).toBe(1);
-  expect(spawn.mock.calls[0]?.[0]).toBe(process.execPath);
-});
+it(
+  "uses active pnpm, skips private packages, installs tarballs and cleans the independent consumer",
+  { tags: ["mock"] },
+  async () => {
+    expect(
+      await packageSmoke({
+        root,
+        verify: "verify.mjs",
+        pnpm,
+        allowBuilds: ["esbuild"],
+      }),
+    ).toBe(1);
+    const install = spawn.mock.calls.find((call) =>
+      call[1]?.includes("install"),
+    );
+    expect(install?.[2]).toMatchObject({ shell: false, timeout: 300_000 });
+    expect(install?.[2]?.env?.COREPACK_ENABLE_NETWORK).toBe("0");
+    expect(consumer).not.toContain(root);
+    await expect(
+      readFile(join(consumer!, "package.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(spawn.mock.calls.some((call) => call[1]?.includes("publish"))).toBe(
+      false,
+    );
+  },
+);
+it(
+  "supports Node-based pnpm without replacing it with another package manager",
+  { tags: ["mock"] },
+  async () => {
+    native = false;
+    expect(
+      await packageSmoke({
+        root,
+        verify: "verify.mjs",
+        pnpm: join(tmpdir(), "pnpm.cjs"),
+        timeout: 10_000,
+      }),
+    ).toBe(1);
+    expect(spawn.mock.calls[0]?.[0]).toBe(process.execPath);
+  },
+);
 it.each(["pack", "install", "verify"] as const)(
   "stops on %s failure without claiming success",
+  { tags: ["mock"] },
   async (stage) => {
     failure = stage;
     await expect(
@@ -114,7 +125,7 @@ it.each(["pack", "install", "verify"] as const)(
       ).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
-it("propagates subprocess launch errors", async () => {
+it("propagates subprocess launch errors", { tags: ["mock"] }, async () => {
   spawn.mockImplementationOnce(() => ({
     pid: 0,
     output: [],
@@ -133,13 +144,18 @@ it.each([
   { pnpm: "npm" },
   { verify: "file.ts" },
   { allowBuilds: ["esbuild@latest"] },
-])("rejects invalid invocation options %j", async (change) => {
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm, ...change }),
-  ).rejects.toThrow();
-});
+])(
+  "rejects invalid invocation options %j",
+  { tags: ["mock"] },
+  async (change) => {
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm, ...change }),
+    ).rejects.toThrow();
+  },
+);
 it.each([null, {}, [{ path: "relative" }]])(
   "rejects malformed workspace listing %j",
+  { tags: ["mock"] },
   async (listing) => {
     members = listing;
     await expect(
@@ -147,51 +163,63 @@ it.each([null, {}, [{ path: "relative" }]])(
     ).rejects.toThrow();
   },
 );
-it("rejects a workspace containing only private packages", async () => {
-  members = [{ path: root }];
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm }),
-  ).rejects.toThrow("No non-private");
-});
-it("rejects package manager mismatch, duplicate identities and invalid manifests", async () => {
-  await writeFile(
-    join(root, "package.json"),
-    JSON.stringify({ private: true, packageManager: "pnpm@1.0.0" }),
-  );
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm }),
-  ).rejects.toThrow("packageManager");
-  await writeFile(
-    join(root, "package.json"),
-    JSON.stringify({ private: true, packageManager: "pnpm@11.28.12" }),
-  );
-  members = [{ path: join(root, "member") }, { path: join(root, "member") }];
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm }),
-  ).rejects.toThrow("Duplicate");
-  await writeFile(
-    join(root, "member", "package.json"),
-    JSON.stringify({ name: "../bad", version: "1.0.0" }),
-  );
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm }),
-  ).rejects.toThrow("valid name");
-  await writeFile(join(root, "package.json"), "null");
-  await expect(
-    packageSmoke({ root, verify: "verify.mjs", pnpm }),
-  ).rejects.toThrow("object");
-});
-it("shows help without subprocesses and accepts a real verification option", async () => {
-  expect(await main([])).toBe(0);
-  expect(await main(["--help"])).toBe(0);
-  expect(await main(["-h"])).toBe(0);
-  expect(spawn).not.toHaveBeenCalled();
-  expect(await main(["--version"])).toBe(0);
-  expect(
-    await main(["--verify", "verify.mjs", "--allow-build", "esbuild"]),
-  ).toBe(0);
-});
-it("the bin entry actually invokes the CLI", async () => {
+it(
+  "rejects a workspace containing only private packages",
+  { tags: ["mock"] },
+  async () => {
+    members = [{ path: root }];
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm }),
+    ).rejects.toThrow("No non-private");
+  },
+);
+it(
+  "rejects package manager mismatch, duplicate identities and invalid manifests",
+  { tags: ["mock"] },
+  async () => {
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ private: true, packageManager: "pnpm@1.0.0" }),
+    );
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm }),
+    ).rejects.toThrow("packageManager");
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ private: true, packageManager: "pnpm@11.28.12" }),
+    );
+    members = [{ path: join(root, "member") }, { path: join(root, "member") }];
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm }),
+    ).rejects.toThrow("Duplicate");
+    await writeFile(
+      join(root, "member", "package.json"),
+      JSON.stringify({ name: "../bad", version: "1.0.0" }),
+    );
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm }),
+    ).rejects.toThrow("valid name");
+    await writeFile(join(root, "package.json"), "null");
+    await expect(
+      packageSmoke({ root, verify: "verify.mjs", pnpm }),
+    ).rejects.toThrow("object");
+  },
+);
+it(
+  "shows help without subprocesses and accepts a real verification option",
+  { tags: ["mock"] },
+  async () => {
+    expect(await main([])).toBe(0);
+    expect(await main(["--help"])).toBe(0);
+    expect(await main(["-h"])).toBe(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(await main(["--version"])).toBe(0);
+    expect(
+      await main(["--verify", "verify.mjs", "--allow-build", "esbuild"]),
+    ).toBe(0);
+  },
+);
+it("the bin entry actually invokes the CLI", { tags: ["mock"] }, async () => {
   const argv = process.argv;
   const exitCode = process.exitCode;
   try {
@@ -210,14 +238,22 @@ it.each([
   ["--allow-build", "esbuild"],
   ["--verify", "verify.mjs", "--verify", "other.mjs"],
   ["--verify", "--helpful"],
-])("reports invalid CLI arguments %j", async (...args: string[]) => {
-  expect(await main(args)).toBe(1);
-  expect(console.error).toHaveBeenCalled();
-});
-it("reports unavailable pnpm context and execution failures", async () => {
-  vi.stubEnv("npm_execpath", "");
-  expect(await main(["--verify", "verify.mjs"])).toBe(1);
-  vi.stubEnv("npm_execpath", pnpm);
-  failure = "install";
-  expect(await main(["--verify", "verify.mjs"])).toBe(1);
-});
+])(
+  "reports invalid CLI arguments %j",
+  { tags: ["mock"] },
+  async (...args: string[]) => {
+    expect(await main(args)).toBe(1);
+    expect(console.error).toHaveBeenCalled();
+  },
+);
+it(
+  "reports unavailable pnpm context and execution failures",
+  { tags: ["mock"] },
+  async () => {
+    vi.stubEnv("npm_execpath", "");
+    expect(await main(["--verify", "verify.mjs"])).toBe(1);
+    vi.stubEnv("npm_execpath", pnpm);
+    failure = "install";
+    expect(await main(["--verify", "verify.mjs"])).toBe(1);
+  },
+);

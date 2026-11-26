@@ -144,7 +144,7 @@ async function loadCar(path: string) {
   });
 }
 
-describe("App-first authoring", () => {
+describe("App-first authoring", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let project: string;
   let buildSignal: AbortSignal;

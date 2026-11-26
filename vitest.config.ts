@@ -4,9 +4,18 @@ export default defineConfig({
   test: {
     tags: [
       {
+        name: "unit",
+        description: "Isolated unit tests without real application execution",
+      },
+      {
+        name: "mock",
+        description:
+          "Tests with mocked external execution and service boundaries",
+      },
+      {
         name: "release-e2e",
         description:
-          "Repeated real compiler/build variants validated before release",
+          "Real builds, application execution and service/storage integration validated before release",
       },
     ],
     coverage: {

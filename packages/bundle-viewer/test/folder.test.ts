@@ -19,7 +19,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
-describe("bounded local folder snapshot", () => {
+describe("bounded local folder snapshot", { tags: ["unit"] }, () => {
   it("reads cached exact bytes, verifies stability and detects atomic saves", async () => {
     await writeFile(join(root, "entry.md"), "one");
     const snapshot = await folderSnapshot(root, signal());

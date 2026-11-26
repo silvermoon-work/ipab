@@ -24,7 +24,8 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check-ci
+      - name: Static checks and unit/mock tests only
+        run: pnpm check-ci
   compatibility:
     name: Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
@@ -42,7 +43,8 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check-ci
+      - name: Static checks and unit/mock tests only
+        run: pnpm check-ci
   ci-verification:
     name: CI verification (v2)
     needs: [check, compatibility]

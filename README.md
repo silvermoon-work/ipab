@@ -128,8 +128,9 @@ ipab --help
   校验 frontmatter 元数据；[可构建示例](examples/agent-skill)。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)
-- [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check-ci`、全量
-  `pnpm check` 与发布前只读 `pnpm check-release`。
+- [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check`／`pnpm check-ci`
+  只跑 unit/mock；发布前只读 `pnpm check-release`
+  保留完整测试、覆盖率与安装验证。
 
 ## 许可证
 

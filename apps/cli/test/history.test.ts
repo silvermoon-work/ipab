@@ -21,7 +21,7 @@ import {
   seedDisplayPin,
 } from "./helpers.js";
 
-describe("history and durable retention", () => {
+describe("history and durable retention", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let state: State;
   beforeEach(async () => {

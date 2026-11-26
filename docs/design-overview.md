@@ -85,10 +85,12 @@ CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，�
 用户短名由具名 pin 统一管理，不再维护独立 Alias 与 pin 开关。
 `pin add/delete/list/show/rename` 详见 [使用说明](reference.md#具名-pin)。
 pin 不是执行或信任授权，删除只释放本记录保留，不删除 block 或执行 GC。
-支持 Bundle、独立 Schema 和 Store 可验证的普通内容；add 保存经过验证的
-类别、完整 Bundle 类型名和准确 schema CID，list/show 不联网，普通内容没有
-类型元数据。`--kind bundle|schema` 和 `--type CID|Schema短名|builtin` 过滤
-这些登记信息，按 AND 组合；App 元数据名称不是 Bundle 类型身份。
+只接受完整 Bundle；add 保存经过验证的非空 Bundle 类型名和准确类型 CID，
+list/show 不联网。`--kind` 已移除，`--type CID|Bundle短名` 按类型 CID 过滤；
+Bundle 短名取其类型而非内容 CID，App 元数据名称不是 Bundle 类型身份。
+内置模板是只读 Bundle pin，内置类型 block 不再充当 pin。
+旧的非 Bundle pin 原记录及保留不变，list 将其单列 invalid，不能解析或改名；
+只有用户显式 delete 才解除其原 owner 的保留责任。
 
 具名记录使用独立稳定 owner，原后端配置与 holds 共同持久化。SQLite 的
 `named_pins` 事务先预留名称与 hold，再执行 Store retain；类型与 roots 提交后

@@ -113,7 +113,7 @@ describe("bounded IPC streams on real writable Store", () => {
       cid,
       owner: "test-pin",
       status: "ready",
-      metadata: { kind: "schema", typeName: "App", schemaCid: cid },
+      metadata: { kind: "bundle", typeName: "App", schemaCid: cid },
     });
     expect(await client.context.resolvePin("check")).toBe(cid);
     expect(await client.context.resolvePin("absent")).toBeUndefined();
@@ -130,7 +130,19 @@ describe("bounded IPC streams on real writable Store", () => {
     await expect(client.context.resolvePin("")).rejects.toThrow("1..256");
     const invalid = await raw(transport, 900, "resolvePin", 42);
     expect(invalid.error).toContain("1..256");
-    expect(await client.context.resolvePin("builtin:node-app.v1")).toBe(cid);
+    expect(
+      await client.context.resolvePin("builtin:node-app.v1"),
+    ).toBeUndefined();
+    state.savePin({
+      name: "legacy",
+      cid,
+      owner: "legacy-pin",
+      status: "ready",
+      metadata: { kind: "schema", typeName: "App", schemaCid: cid },
+    });
+    await expect(client.context.resolvePin("legacy")).rejects.toThrow(
+      "not a Bundle pin",
+    );
   });
   it("supports read backpressure, streamed writes and UnixFS links without Bundle validation", async () => {
     expect(() => client.context.appCid).toThrow("not initialized");

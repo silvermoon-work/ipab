@@ -135,6 +135,9 @@ pnpm exec turbo run test --filter=<package-name>
 前后端类型检查顺序与源码变化后的产物保护分别验证，避免将多轮真实编译
 叠加到单个用例的超时预算。相关构建绑定 Vitest 用例取消信号；
 清理项目之前等待在途构建及其子进程关闭，覆盖率仍采集所有子进程。
+Pin 崩溃恢复用例在 suite setup 中用现有 esbuild 预构建真实子进程驱动，
+保留 inline source map、真实 Store／SQLite 和原用例超时，避免每次恢复验证
+都重新读取大量依赖文件；用例取消后先等待子进程退出再清理目录。
 
 日常仍保留真实 strict tsc/依赖打包/CAR/独立源码 Bundle 冒烟、
 构建后 pin/rename/exec、动态依赖及不安全路径拒绝、编译流错误回归，

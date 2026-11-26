@@ -42,11 +42,10 @@ export interface Hold {
   session: string | null;
   recordId: string | null;
 }
-export interface PinMetadata {
-  kind: "bundle" | "schema" | "content";
-  typeName: string | null;
-  schemaCid: string | null;
-}
+export type PinMetadata =
+  | { kind: "bundle"; typeName: string; schemaCid: string }
+  | { kind: "schema"; typeName: string; schemaCid: string }
+  | { kind: "content"; typeName: null; schemaCid: null };
 export interface NamedPin {
   name: string;
   cid: string;
@@ -54,6 +53,17 @@ export interface NamedPin {
   status: "pending" | "ready" | "deleting";
   metadata: PinMetadata | null;
   builtin?: true;
+}
+export function bundlePinMetadata(pin: NamedPin) {
+  if (pin.status !== "ready" || !pin.metadata)
+    throw new HostError(
+      `Pin "${pin.name}" is ${pin.status}; retry pin add/delete before using it.`,
+    );
+  if (pin.metadata.kind !== "bundle")
+    throw new HostError(
+      `Pin "${pin.name}" is not a Bundle pin. Its retention is preserved; run ipab pin delete ${pin.name}, then wrap the content in a Bundle before adding a new pin.`,
+    );
+  return pin.metadata;
 }
 
 export function exactCid(value: string, schema = false): string {
@@ -196,10 +206,8 @@ export class State {
       } catch {
         const pin = this.pin(value);
         if (pin) {
-          if (pin.status !== "ready")
-            throw new HostError(
-              `Pin "${value}" is ${pin.status}; retry pin add/delete before using it.`,
-            );
+          const metadata = bundlePinMetadata(pin);
+          if (schema) return metadata.schemaCid;
           return exactCid(pin.cid, schema);
         }
         throw new HostError(
@@ -212,10 +220,7 @@ export class State {
   resolvePin(name: string): string | undefined {
     const pin = this.pin(name);
     if (!pin) return undefined;
-    if (pin.status !== "ready")
-      throw new HostError(
-        `Pin "${name}" is ${pin.status}; retry pin add/delete before using it.`,
-      );
+    bundlePinMetadata(pin);
     return exactCid(pin.cid);
   }
   pins(): NamedPin[] {
@@ -260,6 +265,7 @@ export class State {
         if (
           (value.kind !== "bundle" && value.kind !== "schema") ||
           typeof value.typeName !== "string" ||
+          !value.typeName.trim() ||
           typeof value.schemaCid !== "string"
         )
           throw new HostError("Invalid persisted pin type metadata.");

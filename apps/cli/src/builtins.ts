@@ -1,7 +1,6 @@
-import { appBuiltinAlias, builtinAppSchema } from "./app-definition.js";
+import { builtinAppSchema } from "./app-definition.js";
 import {
   builtinTemplateSchema,
-  templateBuiltinAlias,
   templateSchema,
   templateSchemaCid,
 } from "./template-definition.js";
@@ -25,17 +24,12 @@ async function loadBuiltins(): Promise<{
       builtin: true,
     });
   };
-  for (const [name, schema] of [
-    [appBuiltinAlias, await builtinAppSchema()],
-    [templateBuiltinAlias, await builtinTemplateSchema()],
-  ] as const) {
+  for (const schema of [
+    await builtinAppSchema(),
+    await builtinTemplateSchema(),
+  ]) {
     const cid = schema.cid.toString();
     blocks.set(cid, schema.bytes);
-    add(name, cid, {
-      kind: "schema",
-      typeName: schema.manifest.name,
-      schemaCid: cid,
-    });
   }
   for (const [name, selector] of builtinTemplateNames) {
     const template = await builtinTemplateSource(selector);

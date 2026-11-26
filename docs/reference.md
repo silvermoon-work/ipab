@@ -84,7 +84,7 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   也接受离线内置类型 alias
   `builtin:node-app.v1`，set/remove 都解析并保存准确 CID。
   不接受 UnixFS 目录 CID 或旧 builtin 注册键；builtin 不是 App 执行目标。
-- 用户短名由具名 pin 提供；内置 Schema／模板也以只读 built-in pin
+- 用户短名由具名 Bundle pin 提供；内置模板也以只读 built-in pin
   出现在 `pin list` 中，用户不能占用、删除或改名；其离线解析能力不变。
   `register list/set/remove` 保存解析后的准确 CID。改变已有关联需要
   `--replace`；
@@ -136,7 +136,7 @@ GC 仅处理本轮开始时已枚举的 block。
 不能本身是 CID，不能占用 builtin 名字。不同名字允许指向同一 CID，各有独立
 且不依赖可变名称的 Store owner。
 
-内置 pin 的内容由 IPAB 安装提供，按相同 Bundle／Schema 协议计算并验证 CID；
+内置 pin 的内容由 IPAB 安装提供，按相同 Bundle 协议计算并验证 CID；
 无需联网或额外建立用户 Store owner，也不冒充 Kubo 的物理 pin。
 它们始终只读，不能 `pin add/delete/rename`；安装升级可更新内置模板的准确 CID。
 `pin list/show` 的 SOURCE 标明 `built-in (read-only)`，JSON 额外标记
@@ -144,12 +144,13 @@ GC 仅处理本轮开始时已枚举的 block。
 内置内容可直接用名字或准确 CID 供 Bundle 检查／模板初始化读取，
 不需要先导入用户 Store：
 
-| 内置 pin                      | 类别   | 内容                         |
-| ----------------------------- | ------ | ---------------------------- |
-| `builtin:node-app.v1`         | schema | Node App Bundle 完整类型定义 |
-| `builtin:project-template.v1` | schema | Template Bundle 完整类型定义 |
-| `builtin:template.node`       | bundle | 默认 Node 项目模板           |
-| `builtin:template.web-app`    | bundle | 前后端 Web App 项目模板      |
+| 内置 pin                   | 类型名                | 内容                    |
+| -------------------------- | --------------------- | ----------------------- |
+| `builtin:template.node`    | IPAB Project Template | 默认 Node 项目模板      |
+| `builtin:template.web-app` | IPAB Project Template | 前后端 Web App 项目模板 |
+
+内置 App／Template 类型 block 仍是离线类型定义来源，但不是 pin，
+不会出现在 `pin list/show` 或 `resolvePin` 中。
 
 ```sh
 ipab build
@@ -165,7 +166,9 @@ ipab init dashboard --template builtin:template.web-app
 ```
 
 - `pin add NAME CID` 要求未占用名字和准确 CID，不支持覆盖、replace 或名称链。
-  通过本地 Store 获取、验证完整 DAG、建立持久保留；
+  CID 必须指向完整 Bundle，先校验定义、入口及完整 DAG，再建立持久保留。
+  裸文件、无定义的目录、单独类型 block 或普通 DAG-CBOR 均拒绝；
+  图片等非结构化文件需与 `.bundle.yaml` 一起包装为 Bundle。
   owner／retain／confirm 协调仅作用于本地。没有可获取内容的来源、缺块、损坏、类型
   校验或存储失败均非零，不凭空登记为成功。
 - `pin delete NAME` 释放该记录在**原后端**的保留责任并删除名字；不存在则失败。
@@ -173,19 +176,17 @@ ipab init dashboard --template builtin:template.web-app
   运行、历史或外部参与者的保留。后续改变 Store 配置不改变旧记录的释放目标。
 - `pin rename OLD_NAME NEW_NAME` 原子地修改名字；冲突失败，不覆盖。CID、类型
   元数据、owner、register 和历史不变，不重新获取，也不执行 unpin → pin。
-- `pin list [--kind bundle|schema] [--type TYPE]` 只列 IPAB 管理的具名 pin，
-  不冒充上游节点的 pin 清单。`pin show NAME` 显示完整名字、CID 和对象类别；
-  Bundle／Schema 另显示完整类型定义中的类型名和准确 schema CID。
-  普通文件、无 Bundle 定义的 Space 和普通 DAG-CBOR 可保留，类别为 `content`，
-  明确没有 Bundle 类型元数据；依照过滤接口约定，`--kind` 只接受
-  `bundle`／`schema`，未过滤时仍显示普通内容。
-- `--type` 接受准确 schema CID、Schema pin 的短名或只读 builtin 快捷名。
-  匹配 Bundle 的 schema CID 和 Schema 自身 CID；与 `--kind` 按 AND 组合。
+- `pin list [--type TYPE]` 只列 IPAB 管理的可用 Bundle pin，
+  不冒充上游节点的 pin 清单。`pin show NAME` 显示完整名字、CID、
+  非空类型名和准确类型 CID；`--kind` 已移除。
+- `--type` 接受准确类型 CID或可用 Bundle pin 的名称，名称解析为该 Bundle 的
+  类型 CID，不是其内容 CID；可使用内置模板 pin。
   不以可能重复的类型名称作为身份，不使用 `app.json` 的应用名称代替类型名。
-  例如 `ipab pin list --kind bundle --type builtin:node-app.v1`。
-- 类型识别复用 Bundle／Schema 解析校验：根目录有 `.bundle.yaml` 就必须通过
-  Bundle 校验；独立 DAG-CBOR 的 `entry` 字段声明类型定义，声明但不合法则失败，
-  不 catch 降级为普通内容。其他 DAG-CBOR 不强制视作 Schema。
+  例如 `ipab pin list --type reader` 或
+  `ipab pin list --type builtin:template.node`。
+- 类型识别复用 Bundle 校验，类型名来自完整定义的 `name`，不是 App 显示名；
+  不 catch 校验失败并降级为普通内容。存储完整性通过不表示未知 MIME
+  的入口业务校验已执行，具体能力仍遵循 Bundle 的校验报告。
   add 保存校验得到的类型元数据；list/show 只读用户登记与内置内容，不隐式联网或宣称刚
   在线验证了节点状态。
 - SQLite 在 Store 操作前原子预留名称、稳定 owner、原后端与恢复记录；
@@ -197,9 +198,15 @@ ipab init dashboard --template builtin:template.web-app
   活跃并发操作明确拒绝，执行／历史的临时 owner 清理不会释放具名 pin。
 
 pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 daemon、不自动换后端。
-`--json pin list` 返回 `items`、`pending`；成功项包含完整
-`name`、`cid`、`kind`、`typeName`、`schemaCid`，普通内容最后两字段为 `null`；
+`--json pin list` 返回 `items`、`pending`、`invalid`；成功项包含完整
+`name`、`cid`、`kind: "bundle"`、非空 `typeName` 和准确 `schemaCid`；
 内置项另有 `builtin: true`，用户项保持原字段形状。
+
+旧版本的非 Bundle pin 不自动删除、转换或解除保留，list 将其单列为
+`invalid: [{ name, cid, kind, reason }]` 并在 stderr 提示清理。
+它们不能解析、show、rename 或作为 `--type` 来源；只能显式 `pin delete NAME`
+释放该 owner 的原保留，再将内容包装为 Bundle 并建立新 pin。
+查询和执行／历史恢复都不改变旧记录或保留责任。
 
 旧 Alias 功能和数据兼容已彻底移除。打开状态库时删除旧 `aliases` 表，
 不解析、展示或迁移其内容，JSON 不再返回 `legacyAliases`。
@@ -208,8 +215,9 @@ pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 dae
 ## App 开发（上层 Node profile）
 
 Node App 的 `ipab.resolvePin(name)` 提供只读宿主具名 pin 查询（名称最多 256
-字符）：ready 用户／内置 pin 返回准确 CID，不存在返回 undefined；
-pending/deleting、损坏状态及 IPC 错误明确拒绝。它不读取旧 Alias、不联网、
+字符）：ready 用户／内置 Bundle pin 返回准确 CID，不存在返回 undefined；
+旧非 Bundle
+pin、pending/deleting、损坏状态及 IPC 错误明确拒绝。它不读取旧 Alias、不联网、
 不保留内容，也不改写 App argv。需要此能力的 App 应使用新版宿主。
 Viewer 模板用它实现目录／具名 pin／CID 的单参数自动识别；目录仍优先，
 同名 pin 只解析一次，不自动跟随重命名或内容变化。

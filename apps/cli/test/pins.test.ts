@@ -1,17 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import * as dagPb from "@ipld/dag-pb";
 import { UnixFS } from "ipfs-unixfs";
 import { encodeSchema } from "@ipab/bundle";
+import { CarBlockIterator } from "@ipld/car/iterator";
+import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { addPin, deletePin, pinDetails, renamePin } from "../src/pins.js";
-import { State, type NamedPin } from "../src/state.js";
+import { State, type NamedPin, type PinMetadata } from "../src/state.js";
 import { appSchema, appSchemaCid } from "../src/app-definition.js";
 import { builtinContent } from "../src/builtins.js";
 import {
@@ -57,8 +71,46 @@ describe("named pins", () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let state: State;
   let builtinPins: ReturnType<typeof pinDetails>[];
+  let pendingProcess: Promise<unknown> | undefined;
+  let driverDirectory: string | undefined;
+  let recoveryDriver: string;
+  beforeAll(async () => {
+    driverDirectory = await mkdtemp(join(tmpdir(), "ipab-pin-driver-"));
+    recoveryDriver = join(driverDirectory, "pin-recovery.mjs");
+    const script = `
+      import { IpfsStore } from ${JSON.stringify(fileURLToPath(new URL("../../../packages/ipfs-store/dist/index.js", import.meta.url)))};
+      import { State } from ${JSON.stringify(fileURLToPath(new URL("../dist/state.js", import.meta.url)))};
+      import { addPin } from ${JSON.stringify(fileURLToPath(new URL("../dist/pins.js", import.meta.url)))};
+      async function main() {
+        const state = new State(process.argv[2]);
+        await addPin(state, "interrupted", process.argv[3], JSON.parse(process.argv[4]), config => {
+          const store = new IpfsStore(config);
+          store.confirmRetained = async () => { process.exit(42); };
+          return store;
+        });
+      }
+      void main();
+    `;
+    await build({
+      stdin: { contents: script, resolveDir: process.cwd() },
+      outfile: recoveryDriver,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      banner: {
+        js: 'import { createRequire as createPinDriverRequire } from "node:module"; const require = createPinDriverRequire(import.meta.url);',
+      },
+      sourcemap: "inline",
+      target: "node22",
+    });
+  });
+  afterAll(async () => {
+    if (driverDirectory)
+      await rm(driverDirectory, { recursive: true, force: true });
+  });
   beforeEach(async () => {
     work = await fixture();
+    pendingProcess = undefined;
     state = new State(work.stateDir);
     builtinPins = (await builtinContent()).pins.map(pinDetails);
     const config = join(work.root, "store.json");
@@ -66,6 +118,7 @@ describe("named pins", () => {
     vi.stubEnv("TASK_CONTENT_CONFIG", config);
   });
   afterEach(async () => {
+    if (pendingProcess) await Promise.allSettled([pendingProcess]);
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     state.close();
@@ -81,8 +134,50 @@ describe("named pins", () => {
     await work.store.put(cid, bytes);
     return cid.toString();
   }
+  async function bundle(value: string) {
+    const encoded = await encodeBundleCar(
+      memoryTree(
+        new Map([
+          [
+            ".bundle.yaml",
+            new TextEncoder().encode(
+              JSON.stringify({
+                name: "File",
+                entry: { path: "file.txt", contentType: "text/plain" },
+              }),
+            ),
+          ],
+          ["file.txt", new TextEncoder().encode(value)],
+        ]),
+      ),
+    );
+    try {
+      const blocks = await CarBlockIterator.fromIterable(encoded.stream);
+      for await (const block of blocks)
+        await work.store.put(block.cid, block.bytes);
+      return encoded.cid.toString();
+    } finally {
+      await encoded.close();
+    }
+  }
+  async function publish(
+    root: string,
+    upstream: ReturnType<typeof gatewayFixture>,
+  ) {
+    const pending = [root];
+    while (pending.length) {
+      const cid = pending.pop()!;
+      if (upstream.blocks.has(cid)) continue;
+      const bytes = await work.store.block.get(cid);
+      upstream.blocks.set(cid, bytes);
+      if (CID.parse(cid).code === 0x70)
+        pending.push(
+          ...dagPb.decode(bytes).Links.map((link) => link.Hash.toString()),
+        );
+    }
+  }
 
-  it("classifies Bundle, standalone Schema and ordinary content without substituting App names", async () => {
+  it("requires a Bundle and gives every usable pin its verified type name", async () => {
     const root = await app(work.store, "throw new Error('must not execute');");
     const schema = await encodeSchema(appSchema);
     await work.store.put(schema.cid, schema.bytes);
@@ -108,8 +203,11 @@ describe("named pins", () => {
       ),
       0x70,
     );
+    expect(
+      (await cli(work.stateDir, ["pin", "add", "reader", root])).code,
+    ).toBe(0);
+    const retain = vi.spyOn(IpfsStore.prototype, "retain");
     for (const [name, cid] of [
-      ["reader", root],
       ["node-type", schema.cid.toString()],
       ["file", raw],
       ["space", space],
@@ -118,20 +216,12 @@ describe("named pins", () => {
       ["empty", empty],
     ])
       expect((await cli(work.stateDir, ["pin", "add", name!, cid!])).code).toBe(
-        0,
+        1,
       );
+    expect(retain).not.toHaveBeenCalled();
     const listing = await jsonCli(["pin", "list"]);
     expect(listing).toMatchObject({
       items: [
-        { name: "empty", kind: "content", typeName: null, schemaCid: null },
-        { name: "file", cid: raw, kind: "content" },
-        { name: "generic", kind: "content" },
-        {
-          name: "node-type",
-          kind: "schema",
-          typeName: "IPAB Node App",
-          schemaCid: schema.cid.toString(),
-        },
         {
           name: "reader",
           cid: root,
@@ -139,11 +229,17 @@ describe("named pins", () => {
           typeName: "IPAB Node App",
           schemaCid: schema.cid.toString(),
         },
-        { name: "space", kind: "content" },
-        { name: "unixfs-file", kind: "content" },
         ...builtinPins,
       ],
-      pending: [],
+      pending: [
+        { name: "empty" },
+        { name: "file" },
+        { name: "generic" },
+        { name: "node-type" },
+        { name: "space" },
+        { name: "unixfs-file" },
+      ],
+      invalid: [],
     });
     const human = await cli(work.stateDir, ["pin", "list"]);
     expect(human.out).toContain("BUNDLE TYPE");
@@ -158,90 +254,121 @@ describe("named pins", () => {
       typeName: "IPAB Node App",
       schemaCid: schema.cid.toString(),
     });
-    expect((await cli(work.stateDir, ["pin", "show", "file"])).out).toContain(
-      "no Bundle type metadata",
-    );
+    expect((await cli(work.stateDir, ["pin", "show", "file"])).code).toBe(1);
   }, 15_000);
 
-  it("filters local metadata by kind and exact type or Schema pin/builtin name, with AND semantics", async () => {
+  it("filters by exact type CID or a Bundle pin name without Store access", async () => {
     const root = await app(work.store, "");
     const other = await content(work.store);
     const schema = await encodeSchema(appSchema);
-    await work.store.put(schema.cid, schema.bytes);
     await addPin(state, "reader", root, work.store.configuration);
-    await addPin(
-      state,
-      "node-type",
-      schema.cid.toString(),
-      work.store.configuration,
-    );
     await addPin(state, "note", other.root, work.store.configuration);
-    await addPin(
-      state,
-      "ordinary",
-      await put(Buffer.from("file")),
-      work.store.configuration,
-    );
     // Queries must not invoke the Store, including with an unreachable current backend.
     const reads = vi
       .spyOn(IpfsStore.prototype, "prepare")
       .mockRejectedValue(new Error("unexpected network"));
-    for (const type of [
-      schema.cid.toString(),
-      "node-type",
-      "builtin:node-app.v1",
-    ])
+    for (const type of [schema.cid.toString(), "reader"])
       expect(
         await jsonCli([
           "--store-gateway",
           "http://127.0.0.1:1",
           "pin",
           "list",
-          "--kind",
-          "bundle",
           "--type",
           type,
         ]),
       ).toMatchObject({ items: [{ name: "reader", cid: root }] });
-    expect(await jsonCli(["pin", "list", "--type", "node-type"])).toMatchObject(
-      {
-        items: [
-          { name: "node-type" },
-          { name: "reader" },
-          ...builtinPins.filter(
-            (pin) => pin.schemaCid === schema.cid.toString(),
-          ),
-        ],
-      },
-    );
-    expect(await jsonCli(["pin", "list", "--kind", "schema"])).toMatchObject({
+    expect(await jsonCli(["pin", "list", "--type", "reader"])).toMatchObject({
       items: [
-        { name: "node-type" },
-        ...builtinPins.filter((pin) => pin.kind === "schema"),
+        { name: "reader" },
+        ...builtinPins.filter((pin) => pin.schemaCid === schema.cid.toString()),
       ],
     });
     expect(
-      await jsonCli([
-        "pin",
-        "list",
-        "--kind",
-        "schema",
-        "--type",
-        other.schema,
-      ]),
-    ).toMatchObject({ items: [] });
+      (await cli(work.stateDir, ["pin", "list", "--kind", "bundle"])).code,
+    ).toBe(2);
+    expect(
+      await jsonCli(["pin", "list", "--type", other.schema]),
+    ).toMatchObject({ items: [{ name: "note" }] });
     expect(
       (await cli(work.stateDir, ["pin", "list", "--type", "ordinary"])).code,
     ).toBe(1);
-    expect(
-      (await cli(work.stateDir, ["pin", "list", "--type", "reader"])).err,
-    ).toContain("Schema pin");
     expect(
       (await cli(work.stateDir, ["pin", "list", "--type", "missing"])).code,
     ).toBe(1);
     expect((await cli(work.stateDir, ["pin", "show", "reader"])).code).toBe(0);
     expect(reads).not.toHaveBeenCalled();
   }, 15_000);
+
+  it("quarantines legacy non-Bundle pins without releasing retention or rewriting records", async () => {
+    const type = await encodeSchema(appSchema);
+    await work.store.put(type.cid, type.bytes);
+    const raw = await put(Buffer.from("legacy raw file"));
+    const legacy: { name: string; cid: string; metadata: PinMetadata }[] = [
+      {
+        name: "raw",
+        cid: raw,
+        metadata: { kind: "content", typeName: null, schemaCid: null },
+      },
+      {
+        name: "type",
+        cid: type.cid.toString(),
+        metadata: {
+          kind: "schema",
+          typeName: appSchema.name,
+          schemaCid: type.cid.toString(),
+        },
+      },
+    ];
+    for (const pin of legacy) {
+      const owner = `legacy:${pin.name}`;
+      await work.store.retain(owner, [pin.cid]);
+      await work.store.confirmRetained(owner, [pin.cid]);
+      state.saveHold({
+        owner,
+        backend: work.store.configuration,
+        roots: [pin.cid],
+        pid: null,
+        session: null,
+        recordId: null,
+      });
+      state.savePin({ ...pin, owner, status: "ready" });
+    }
+    state.close();
+    state = new State(work.stateDir);
+    await recoverInactive(state);
+    const listed = await cli(work.stateDir, ["--json", "pin", "list"]);
+    expect(listed.code).toBe(0);
+    expect(JSON.parse(listed.out) as unknown).toMatchObject({
+      items: builtinPins,
+      invalid: [
+        { name: "raw", cid: raw, kind: "content" },
+        { name: "type", cid: type.cid.toString(), kind: "schema" },
+      ],
+      pending: [],
+    });
+    expect(listed.err).toContain("Retention is unchanged");
+    for (const pin of legacy) {
+      expect(state.pin(pin.name)?.metadata).toEqual(pin.metadata);
+      expect(state.hold(`legacy:${pin.name}`)?.roots).toEqual([pin.cid]);
+      expect(work.store.pins()).toContain(pin.cid);
+      expect(() => state.resolve(pin.name)).toThrow("not a Bundle pin");
+      expect(() => state.resolvePin(pin.name)).toThrow("not a Bundle pin");
+      expect(() => state.resolve(pin.name, true)).toThrow("not a Bundle pin");
+      expect(() => renamePin(state, pin.name, "new")).toThrow(
+        "not a Bundle pin",
+      );
+      expect((await cli(work.stateDir, ["pin", "show", pin.name])).code).toBe(
+        1,
+      );
+      expect(
+        (await cli(work.stateDir, ["pin", "list", "--type", pin.name])).code,
+      ).toBe(1);
+      await deletePin(state, pin.name);
+      expect(state.pin(pin.name)).toBeUndefined();
+      expect(work.store.pins()).not.toContain(pin.cid);
+    }
+  });
 
   it("rejects conflicts, chains and missing names and atomically renames without Store calls or CID rewrites", async () => {
     const root = await app(work.store, "");
@@ -287,7 +414,8 @@ describe("named pins", () => {
   });
 
   it("keeps independent owners after restart and execution/history cleanup, and deletes only its own responsibility", async () => {
-    const root = await put(Buffer.from("shared content"));
+    const root = await bundle("shared content");
+    const rootBytes = await work.store.block.get(root);
     await addPin(state, "first", root, work.store.configuration);
     await addPin(state, "second", root, work.store.configuration);
     const first = state.pin("first")!;
@@ -315,9 +443,7 @@ describe("named pins", () => {
       garbageCollectionGuaranteed: false,
     });
     expect(work.store.pins()).not.toContain(root);
-    expect(await work.store.block.get(root)).toEqual(
-      Uint8Array.from(Buffer.from("shared content")),
-    );
+    expect(await work.store.block.get(root)).toEqual(rootBytes);
   });
 
   it("fails on unavailable content and explicit invalid Bundle/schema declarations without downgrading", async () => {
@@ -383,7 +509,7 @@ describe("named pins", () => {
     ).rejects.toThrow("incomplete");
     expect(state.pin("incomplete")?.status).toBe("pending");
     await deletePin(state, "incomplete");
-    const root = await put(Buffer.from("migrate"));
+    const root = await bundle("migrate");
     expect(() => state.resolve("legacy")).toThrow("Unknown");
     expect(state.pins()).toEqual([]);
     await addPin(state, "legacy", root, work.store.configuration);
@@ -394,7 +520,7 @@ describe("named pins", () => {
   it.each(["recoverOwner", "retain", "confirmRetained", "close"] as const)(
     "preserves and retries failed add at %s using its stable owner and original backend",
     async (method) => {
-      const root = await put(Buffer.from("retry"));
+      const root = await bundle("retry");
       vi.spyOn(IpfsStore.prototype, method).mockRejectedValueOnce(
         new Error("injected failure"),
       );
@@ -419,7 +545,7 @@ describe("named pins", () => {
   it.each(["recoverOwner", "reconcile", "close"] as const)(
     "does not report a failed delete at %s as complete and supports retry",
     async (method) => {
-      const root = await put(Buffer.from("delete retry"));
+      const root = await bundle("delete retry");
       await addPin(state, "retry", root, work.store.configuration);
       const owner = state.pin("retry")!.owner;
       vi.spyOn(IpfsStore.prototype, method).mockRejectedValueOnce(
@@ -439,7 +565,7 @@ describe("named pins", () => {
   );
 
   it("reserves names transactionally under concurrency and protects active operations", async () => {
-    const root = await put(Buffer.from("concurrent"));
+    const root = await bundle("concurrent");
     const competing = new State(work.stateDir);
     let resume!: () => void;
     let entered!: () => void;
@@ -500,7 +626,7 @@ describe("named pins", () => {
   });
 
   it("recovers add after interrupted metadata/ready commits without losing Store intents", async () => {
-    const root = await put(Buffer.from("commit recovery"));
+    const root = await bundle("commit recovery");
     const save = state.savePin.bind(state);
     vi.spyOn(state, "savePin").mockImplementation((pin) => {
       if (pin.status === "ready") throw new Error("ready commit failed");
@@ -510,7 +636,7 @@ describe("named pins", () => {
       addPin(state, "recover", root, work.store.configuration),
     ).rejects.toThrow("commit failed");
     const pin = state.pin("recover")!;
-    expect(pin.metadata?.kind).toBe("content");
+    expect(pin.metadata?.kind).toBe("bundle");
     expect(state.hold(pin.owner)?.roots).toEqual([root]);
     vi.restoreAllMocks();
     state.close();
@@ -533,7 +659,7 @@ describe("named pins", () => {
   });
 
   it("lists a consistent local snapshot when another connection deletes a name during the read", async () => {
-    const root = await put(Buffer.from("snapshot"));
+    const root = await bundle("snapshot");
     await addPin(state, "snapshot", root, work.store.configuration);
     const pin = state.pin("snapshot")!;
     const competing = new State(work.stateDir);
@@ -556,26 +682,21 @@ describe("named pins", () => {
     }
   });
 
-  it("recovers after an actual child process exits between reference commit and confirmation", async () => {
-    const root = await put(Buffer.from("process interruption"));
-    const script = `
-      import { IpfsStore } from ${JSON.stringify(new URL("../../../packages/ipfs-store/dist/index.js", import.meta.url).href)};
-      import { State } from ${JSON.stringify(new URL("../dist/state.js", import.meta.url).href)};
-      import { addPin } from ${JSON.stringify(new URL("../dist/pins.js", import.meta.url).href)};
-      const state = new State(${JSON.stringify(work.stateDir)});
-      await addPin(state, "interrupted", ${JSON.stringify(root)}, ${JSON.stringify(work.store.configuration)}, config => {
-        const store = new IpfsStore(config);
-        store.confirmRetained = async () => { process.exit(42); };
-        return store;
-      });
-    `;
-    await expect(
-      promisify(execFile)(process.execPath, [
-        "--input-type=module",
-        "--eval",
-        script,
-      ]),
-    ).rejects.toMatchObject({ code: 42 });
+  it("recovers after an actual child process exits between reference commit and confirmation", async ({
+    signal,
+  }) => {
+    const root = await bundle("process interruption");
+    pendingProcess = promisify(execFile)(
+      process.execPath,
+      [
+        recoveryDriver,
+        work.stateDir,
+        root,
+        JSON.stringify(work.store.configuration),
+      ],
+      { signal },
+    );
+    await expect(pendingProcess).rejects.toMatchObject({ code: 42 });
     const pin = state.pin("interrupted")!;
     expect(pin.status).toBe("pending");
     expect(state.hold(pin.owner)?.roots).toEqual([root]);
@@ -587,7 +708,7 @@ describe("named pins", () => {
   });
 
   it("preserves journals on Store construction failure and blocks missing/corrupt retention metadata", async () => {
-    const root = await put(Buffer.from("construction"));
+    const root = await bundle("construction");
     const fail = () => {
       throw new Error("Store configuration failure");
     };
@@ -640,13 +761,17 @@ describe("named pins", () => {
     };
     const replica = new IpfsStore(config);
     try {
-      const root = await put(Buffer.from("LAN shared"));
-      upstream.blocks.set(root, await work.store.block.get(root));
+      const root = await bundle("LAN shared");
+      await publish(root, upstream);
+      const bytes = [...upstream.blocks.values()].reduce(
+        (sum, block) => sum + block.length,
+        0,
+      );
       await addPin(state, "first", root, config);
       await addPin(state, "second", root, config);
       expect(await replica.usage()).toEqual({
-        cachedBytes: 10,
-        pinnedBytes: 10,
+        cachedBytes: bytes,
+        pinnedBytes: bytes,
       });
       const calls = upstream.calls.length;
       renamePin(state, "first", "renamed");
@@ -661,8 +786,8 @@ describe("named pins", () => {
       expect(replica.pins()).toEqual([]);
       expect(upstream.blocks.has(root)).toBe(true);
       expect(await replica.gc()).toEqual({
-        removedBlocks: 1,
-        reclaimedBytes: 10,
+        removedBlocks: upstream.blocks.size,
+        reclaimedBytes: bytes,
       });
       expect(upstream.calls).toHaveLength(calls);
     } finally {
@@ -679,7 +804,8 @@ describe("named pins", () => {
       gateway: upstream.gateway,
     };
     try {
-      const root = await put(Buffer.from("uncertain"));
+      const root = await bundle("uncertain");
+      await publish(root, upstream);
       upstream.blocks.set(root, Buffer.from("wrong hash"));
       await expect(addPin(state, "uncertain", root, config)).rejects.toThrow(
         "incomplete",
@@ -689,7 +815,7 @@ describe("named pins", () => {
       await addPin(state, "uncertain", root, config);
       expect(state.pin("uncertain")?.owner).toBe(owner);
       await deletePin(state, "uncertain");
-      const missing = await put(Buffer.from("missing upstream"));
+      const missing = await bundle("missing upstream");
       await expect(addPin(state, "offline", missing, config)).rejects.toThrow(
         "incomplete",
       );
@@ -699,7 +825,7 @@ describe("named pins", () => {
     }
   });
   it("refuses legacy Kubo retention cleanup without changing the original responsibility or calling RPC", async () => {
-    const root = await put(Buffer.from("legacy"));
+    const root = await bundle("legacy");
     await addPin(state, "legacy", root, work.store.configuration);
     const pin = state.pin("legacy")!;
     const hold = state.hold(pin.owner)!;

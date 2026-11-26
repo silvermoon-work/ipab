@@ -212,17 +212,22 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   web-app 是预构建 Template Bundle；旧 ipab-template.json 仅临时兼容；
   同时有 .bundle.yaml 必须走新类型校验，不能降级到旧映射。
 - 用户 Alias 由具名 pin 替代；打开状态库时删除旧 aliases 表，
-  不兼容、解析、展示或迁移旧数据，pin list JSON 仅返回 items/pending。
-  pin add 验证完整 DAG 与适用 Bundle/Schema 类型信息，使用稳定随机 owner 和
+  不兼容、解析、展示或迁移旧数据。pin list JSON 返回 items/pending/invalid。
+  pin add 仅接受完整 Bundle，验证后再 retain；每个可用 pin 都有非空类型名及
+  准确类型 CID。裸文件／无定义目录／独立类型 block 不可新增 pin。
+  旧非 Bundle pin 保留原记录与保留责任，单列 invalid 并提示显式 delete，
+  不可解析／show／rename／用作类型来源；不能自动解除保留或修改 CID。
+  使用稳定随机 owner 和
   原后端 hold；pending/deleting 操作可重试，ready 才解析。rename 只原子改名，
   不触发 Store 操作，不改 register/历史 CID。执行/历史恢复必须跳过 named pin
-  owner。list/show 合并只读内置 pin 与用户本地登记；内置 Schema／模板来自
+  owner。list/show 合并只读内置模板 pin 与用户本地登记；内置类型／模板来自
   安装包，计算并验证准确 CID，提供离线 block 源，不伪造用户 Store owner。
-  builtin:node-app.v1、builtin:project-template.v1、builtin:template.node、
-  builtin:template.web-app 显示 built-in 来源与 builtin:true；保留 builtin
+  只有 builtin:template.node、builtin:template.web-app 为可见只读 Bundle pin，
+  显示 built-in 来源与 builtin:true；内置类型 block 仍供离线使用但不伪装成 pin。
+  保留 builtin
   命名空间，禁止 add/delete/rename，普通用户 pin 的持久保留规则不变。
-  --kind 只接受 bundle/schema，普通 content
-  仍可 pin；--type 支持准确 schema CID、Schema pin 短名与 builtin，按 AND 过滤。
+  --kind 已移除；--type 支持准确类型 CID 或 Bundle pin 名称，
+  名称取其类型 CID 而非内容 CID，类型显示名不作为身份。
 - history list 使用逐条记录显示完整 CID，argv 仅 join 空格后转义控制字符，
   不截断或用 pin 替代 CID。exec --log APP / open --log CONTENT 是按次调试开关，
   要求 history 开启；默认 stdio inherit，日志模式只接管 stdout/stderr，

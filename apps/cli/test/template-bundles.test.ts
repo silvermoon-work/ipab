@@ -208,12 +208,7 @@ describe("Data-only Template Bundles", () => {
   });
   it("exposes complete read-only builtin pins and resolves their content without a Store", async () => {
     const builtins = await builtinContent();
-    const names = [
-      "builtin:node-app.v1",
-      "builtin:project-template.v1",
-      "builtin:template.node",
-      "builtin:template.web-app",
-    ];
+    const names = ["builtin:template.node", "builtin:template.web-app"];
     expect(builtins.pins.map((pin) => pin.name)).toEqual(names);
     const offline = ["--store-gateway", "http://127.0.0.1:1", "--json"];
     const listed = await cli(work.stateDir, [...offline, "pin", "list"]);
@@ -221,6 +216,7 @@ describe("Data-only Template Bundles", () => {
     expect(JSON.parse(listed.out) as unknown).toEqual({
       items: builtins.pins.map(pinDetails),
       pending: [],
+      invalid: [],
     });
     const state = new State(work.stateDir, builtins.pins);
     try {
@@ -273,10 +269,8 @@ describe("Data-only Template Bundles", () => {
       ...offline,
       "pin",
       "list",
-      "--kind",
-      "bundle",
       "--type",
-      templateBuiltinAlias,
+      "builtin:template.node",
     ]);
     expect(JSON.parse(filtered.out) as unknown).toMatchObject({
       items: [

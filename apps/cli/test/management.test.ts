@@ -224,13 +224,14 @@ describe("management contract", () => {
         {
           name: "reader",
           cid: another,
-          kind: "content",
-          typeName: null,
-          schemaCid: null,
+          kind: "bundle",
+          typeName: "IPAB Node App",
+          schemaCid: schema,
         },
         ...builtinPins,
       ],
       pending: [],
+      invalid: [],
     });
     const registered = await cli(work.stateDir, ["register", "list"]);
     expect(registered.out).toMatch(/^SCHEMA CID\s+APP CID\s+ARGV\n/);
@@ -809,20 +810,21 @@ describe("management contract", () => {
         {
           name: "a",
           cid: schema,
-          kind: "content",
-          typeName: null,
-          schemaCid: null,
+          kind: "bundle",
+          typeName: "IPAB Node App",
+          schemaCid: schema,
         },
         {
           name: "z",
           cid: another,
-          kind: "content",
-          typeName: null,
-          schemaCid: null,
+          kind: "bundle",
+          typeName: "IPAB Node App",
+          schemaCid: schema,
         },
         ...builtinPins,
       ],
       pending: [],
+      invalid: [],
     });
     expect(listed.err).toBe("");
     for (const name of ["1x", "../x", schema])
@@ -857,7 +859,8 @@ describe("management contract", () => {
   it("builtin pins stay offline, are visible and cannot be changed", async () => {
     const listed = await cli(work.stateDir, ["pin", "list"]);
     expect(listed.code).toBe(0);
-    expect(listed.out).toContain(appBuiltinAlias);
+    expect(listed.out).toContain("builtin:template.node");
+    expect(listed.out).not.toContain(appBuiltinAlias);
     expect(listed.out).toContain("built-in (read-only)");
     expect(
       (await cli(work.stateDir, ["register", "set", appBuiltinAlias, another]))
@@ -885,10 +888,17 @@ describe("management contract", () => {
       JSON.parse(
         (await cli(work.stateDir, ["--json", "pin", "list"])).out,
       ) as unknown,
-    ).toEqual({ items: builtinPins, pending: [] });
-    const shown = await cli(work.stateDir, ["pin", "show", appBuiltinAlias]);
+    ).toEqual({ items: builtinPins, pending: [], invalid: [] });
+    const shown = await cli(work.stateDir, [
+      "pin",
+      "show",
+      "builtin:template.node",
+    ]);
     expect(shown.code).toBe(0);
     expect(shown.out).toContain("content bundled with IPAB");
+    expect(
+      (await cli(work.stateDir, ["pin", "show", appBuiltinAlias])).code,
+    ).toBe(1);
   });
 
   it("registrations validate full-token templates and require deliberate replacement", async () => {

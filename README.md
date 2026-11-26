@@ -57,7 +57,9 @@ ipab exec reader --help
 ipab exec reader
 ```
 
-`pin add` 获取、验证并保留内容，同时设置短名；它不会运行应用或安装依赖。
+`pin add` 只接受完整 Bundle，获取、验证并保留它，同时设置短名和类型信息；
+裸文件需先与 `.bundle.yaml` 包装，独立类型 block 不能 pin。
+它不会运行应用或安装依赖。
 `exec` 也可以直接接受 App CID，应用名之后的参数会原样传给应用。
 
 如果拿到的是本地 CAR 文件，先导入，再用返回的 CID 执行上述步骤：

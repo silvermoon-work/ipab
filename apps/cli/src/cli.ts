@@ -74,7 +74,7 @@ const commands: Record<string, string> = {
   open: "open [--log] CONTENT",
   "pin add": "pin add NAME CID",
   "pin delete": "pin delete NAME",
-  "pin list": "pin list [--kind bundle|schema] [--type TYPE]",
+  "pin list": "pin list [--type TYPE]",
   "pin show": "pin show NAME",
   "pin rename": "pin rename OLD_NAME NEW_NAME",
   "register list": "register list",
@@ -224,14 +224,14 @@ const commandHelp: Record<
     ],
   },
   "pin add": {
-    summary: "Verify, retain and name content",
+    summary: "Verify, retain and name a Bundle",
     arguments: [
       "NAME  Unused short name.",
-      "CID   Exact content CID, not another pin name.",
+      "CID   Exact Bundle CID, not another pin name or a standalone type block.",
     ],
     examples: ["ipab pin add reader APP_CID"],
     notes: [
-      "Verifies the full DAG and retains it in the configured Store.",
+      "Validates a complete Bundle and retains its full DAG in the configured Store.",
       "Does not execute or trust Apps, install dependencies or start a daemon.",
       "The builtin namespace is read-only.",
     ],
@@ -247,15 +247,12 @@ const commandHelp: Record<
   "pin list": {
     summary: "List user and built-in pins",
     options: [
-      "--kind bundle|schema  Filter by kind; omit to include ordinary content.",
-      "--type TYPE           Exact schema CID, Schema pin or builtin shortcut.",
+      "--type TYPE  Exact type CID or the name of a Bundle pin of that type.",
     ],
-    examples: [
-      "ipab pin list",
-      "ipab pin list --kind bundle --type builtin:node-app.v1",
-    ],
+    examples: ["ipab pin list", "ipab pin list --type reader"],
     notes: [
-      "Filters combine with AND. Unfinished user operations are reported separately.",
+      "Unfinished operations and legacy non-Bundle pins are reported separately.",
+      "Legacy retention is preserved; use pin delete to explicitly release it.",
       "Reads local registrations and packaged built-ins, not live node status.",
     ],
   },
@@ -667,7 +664,7 @@ export function parse(argv: readonly string[]): Parsed {
           : result.path === "history remove"
             ? ["app", "status", "since", "until"]
             : result.path === "pin list"
-              ? ["kind", "type"]
+              ? ["type"]
               : [];
   while (tokens.length) {
     const value = tokens.shift()!;
@@ -740,11 +737,6 @@ export function parse(argv: readonly string[]): Parsed {
     if (result.path === "pin add") exactCid(result.positional[1]!);
     if (result.path === "pin rename") pinName(result.positional[1]!);
   }
-  if (
-    result.options.kind !== undefined &&
-    !["bundle", "schema"].includes(String(result.options.kind))
-  )
-    syntax("--kind must be bundle or schema.");
   if (result.path.startsWith("config ") && result.positional[0]) {
     if (
       !(result.path === "config get" && result.positional[0] === "state-dir") &&
@@ -997,26 +989,28 @@ async function performCli(
         break;
       }
       case "pin list": {
-        if (typeof parsed.options.type === "string") {
-          const named = state.pin(parsed.options.type);
-          if (named && pinDetails(named).kind !== "schema")
-            throw new HostError(
-              "--type short names must identify a Schema pin.",
-            );
-        }
         const type =
           typeof parsed.options.type === "string"
-            ? state.resolve(schemaAlias(parsed.options.type), true)
+            ? state.resolve(parsed.options.type, true)
             : undefined;
         const pins = state.pins();
         const listed = pins
-          .filter((pin) => pin.status === "ready")
-          .map(pinDetails)
           .filter(
-            (pin) =>
-              (!parsed.options.kind || pin.kind === parsed.options.kind) &&
-              (type === undefined || pin.schemaCid === type),
-          );
+            (pin) => pin.status === "ready" && pin.metadata?.kind === "bundle",
+          )
+          .map(pinDetails)
+          .filter((pin) => type === undefined || pin.schemaCid === type);
+        const invalid = pins
+          .filter(
+            (pin) => pin.status === "ready" && pin.metadata?.kind !== "bundle",
+          )
+          .map(({ name, cid, metadata }) => ({
+            name,
+            cid,
+            kind: metadata?.kind,
+            reason:
+              "Not a Bundle pin; retention is preserved. Use pin delete to release it.",
+          }));
         const pending = pins
           .filter((pin) => pin.status !== "ready")
           .map(({ name, cid, status }) => ({ name, cid, status }));
@@ -1024,15 +1018,19 @@ async function performCli(
           io.err(
             `Unfinished pin operations (not usable pins): ${JSON.stringify(pending)}. Retry pin add/delete.`,
           );
+        if (invalid.length)
+          io.err(
+            `Legacy non-Bundle pins (not usable pins): ${JSON.stringify(invalid)}. Retention is unchanged; delete explicitly and wrap content in a Bundle before pinning again.`,
+          );
         emit(
-          { items: listed, pending },
+          { items: listed, pending, invalid },
           table(
             ["NAME", "CID", "KIND", "BUNDLE TYPE", "SOURCE"],
             listed.map((pin) => [
               pin.name,
               pin.cid,
               pin.kind,
-              pin.typeName ?? "(no Bundle type metadata)",
+              pin.typeName,
               pin.builtin ? "built-in (read-only)" : "user",
             ]),
             "No named pins.",
@@ -1050,7 +1048,7 @@ async function performCli(
         );
         emit(
           result,
-          `${result.name} → ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}`,
+          `${result.name} → ${result.cid}\nBundle type: ${printable(result.typeName)}`,
         );
         break;
       }
@@ -1071,7 +1069,7 @@ async function performCli(
         const result = pinDetails(pin);
         emit(
           result,
-          `Name: ${printable(result.name)}\nCID: ${result.cid}\nKind: ${result.kind}\nBundle type: ${printable(result.typeName ?? "(no Bundle type metadata)")}${result.schemaCid ? `\nSchema CID: ${result.schemaCid}` : ""}\nSource: ${result.builtin ? "built-in (read-only; content bundled with IPAB)" : "local registration (not live node verification)"}`,
+          `Name: ${printable(result.name)}\nCID: ${result.cid}\nBundle type: ${printable(result.typeName)}\nSchema CID: ${result.schemaCid}\nSource: ${result.builtin ? "built-in (read-only; content bundled with IPAB)" : "local registration (not live node verification)"}`,
         );
         break;
       }

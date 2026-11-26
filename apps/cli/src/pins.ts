@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { CID } from "multiformats/cid";
 import { IpfsStore } from "@ipab/ipfs-store";
-import { declaresBundleSchema, openBundle, openSchema } from "@ipab/bundle";
+import { openBundle } from "@ipab/bundle";
 import { HostError, message } from "./errors.js";
 import { alive, type StoreFactory } from "./history.js";
 import {
   exactCid,
   pinName,
+  bundlePinMetadata,
   type NamedPin,
   type PinMetadata,
   type State,
@@ -20,7 +21,7 @@ export function pinDetails(pin: NamedPin) {
   return {
     name: pin.name,
     cid: pin.cid,
-    ...pin.metadata,
+    ...bundlePinMetadata(pin),
     ...(pin.builtin ? { builtin: true as const } : {}),
   };
 }
@@ -46,34 +47,19 @@ function idleHold(state: State, pin: NamedPin) {
   return hold;
 }
 
-async function classify(cid: string, store: IpfsStore): Promise<PinMetadata> {
+async function classify(
+  cid: string,
+  store: IpfsStore,
+): Promise<Extract<PinMetadata, { kind: "bundle" }>> {
   const root = CID.parse(cid);
   const resolveCid = (cid: CID, options: { signal?: AbortSignal }) =>
     store.block.get(cid.toString(), options);
-  if (root.code === 0x71 && declaresBundleSchema(await store.block.get(cid))) {
-    const schema = await openSchema(root, { resolveCid });
-    return {
-      kind: "schema",
-      typeName: schema.manifest.name,
-      schemaCid: schema.cid.toString(),
-    };
-  }
-  if (root.code === 0x70) {
-    const node = await store.read(root);
-    if (node.type === "directory") {
-      for await (const entry of node.entries()) {
-        if (entry.name === ".bundle.yaml") {
-          const bundle = await openBundle(root, { resolveCid });
-          return {
-            kind: "bundle",
-            typeName: bundle.manifest.name,
-            schemaCid: bundle.schemaKey,
-          };
-        }
-      }
-    }
-  }
-  return { kind: "content", typeName: null, schemaCid: null };
+  const bundle = await openBundle(root, { resolveCid });
+  return {
+    kind: "bundle",
+    typeName: bundle.manifest.name,
+    schemaCid: bundle.schemaKey,
+  };
 }
 
 export async function addPin(
@@ -121,8 +107,8 @@ export async function addPin(
   try {
     store = factory(state.hold(pin.owner)!.backend);
     await store.recoverOwner(pin.owner, () => state.hold(pin.owner)!.roots);
-    await store.retain(pin.owner, [cid]);
     const metadata = await classify(cid, store);
+    await store.retain(pin.owner, [cid]);
     state.transaction(() => {
       state.savePin({ ...pin, metadata });
       state.saveHold({ ...state.hold(pin.owner)!, roots: [cid] });

@@ -16,7 +16,7 @@ import {
 } from "@ipld/car/buffer-writer";
 import { importer } from "ipfs-unixfs-importer";
 import type { CID } from "multiformats/cid";
-import { appSchema } from "../src/space.js";
+import { appSchema, appSchemaCid } from "../src/space.js";
 import type { RunRecord, State } from "../src/state.js";
 import { runCli, type IO } from "../src/cli.js";
 
@@ -159,7 +159,11 @@ export function seedDisplayPin(state: State, name: string, cid: string): void {
     cid,
     owner: `display-fixture:${name}`,
     status: "ready",
-    metadata: { kind: "content", typeName: null, schemaCid: null },
+    metadata: {
+      kind: "bundle",
+      typeName: appSchema.name,
+      schemaCid: appSchemaCid.toString(),
+    },
   });
 }
 

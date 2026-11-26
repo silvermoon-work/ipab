@@ -121,6 +121,8 @@ ipab --help
   对应的签名指针服务见 [pointer-worker](packages/pointer-worker)。
 - [签名指针服务](packages/pointer-worker)：每个 swarm 一个可变 HEAD，
   Ed25519 签名请求与成员证书，`If-Match` 版本乐观锁。
+- [Pointers service API](docs/pointers-service.md)：服务端分配 pointer ID，
+  API key 创建、owner/member 签名读写与 nonce 防重放（改造目标）。
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。
 - [创建应用](docs/reference.md#app-开发上层-node-profile)：Node / Web
   App 模板与构建。

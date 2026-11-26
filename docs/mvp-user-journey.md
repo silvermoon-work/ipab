@@ -90,15 +90,16 @@ MVP 必须明确将 Bundle blocks 导入并保留于可达的私网内容提供�
 
 1. 用户选定一个可用的中心服务。MVP 可使用已部署的服务；
    是否由 IPAB 提供默认服务、是否支持自行部署，尚未确认。
-   创建时由服务引导用户完成本次授权，IPAB 只在本次操作中使用临时服务凭据，
-   不保存服务登录状态，也不静默复用上一次授权。
+   用户预先取得服务运营者生成的 API key，连同明确绑定的服务 URL 保存到 cfg。
+   创建时复用该 key，不要求服务登录或一次性创建许可；
+   key 只允许创建资源，不代替 owner/member 身份，也不发送给其他服务。
    此服务授权不同于 owner 根身份或 member 身份；无人值守且无法完成授权时明确停止。
 2. 用户在受控的本地环境初始化当前 OS 账号身份，密钥保存在账号 HOME 中。
    已有账号身份直接复用，不因创建 swarm、切换项目或状态目录生成另一身份。
    用户以该身份创建 swarm，
    保管私钥并取得 Swarm Bundle 的 CID，作为该 swarm 的标识。
    该公钥成为此 swarm 的 owner 根公钥；
-   创建过程只向服务提交公钥和持钥证明，
+   创建过程向服务提交 API key、公钥和带随机 nonce、时间戳的持钥证明，
    注册初始 HEAD；不能把根私钥复制给远端服务或写进对话、日志。
    创建成功只返回 Swarm Bundle CID；JSON 模式只含 cid。
    服务地址、变量与公钥在描述 Bundle 中，HEAD 和指纹不重复作为主要返回结果。
@@ -142,6 +143,8 @@ member 仍须证书验证，统一账号密钥不意味着拥有所有 swarm 的
 日常操作自动使用账号身份及对应 swarm 的成员证书。
 
 具体成员认证与共享 HEAD 的要求见[创建与授权需求](swarm-authorization.md)。
+服务端分配 pointer ID 后再构建 Swarm Bundle；描述中的 variable 就是该 ID。
+三个 HTTP 接口及创建顺序见 [Pointers service API](pointers-service.md)。
 中心服务每个 swarm 仅维护一个 HEAD，不为每个 Name 建立独立变量。
 HEAD 引用发布记录与 Merkle DAG 状态；其中保存 Name → CID 映射。
 可变的 properties（例如 swarm 名称和描述）也保存在共享 State 中，

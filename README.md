@@ -117,7 +117,10 @@ ipab --help
 
 - [MVP 主链路](docs/mvp-user-journey.md)：两台设备按同一个正式名称运行、修改并验证 App
   Bundle（目标场景）。
-- [个人 swarm 的创建与授权需求](docs/swarm-authorization.md)：设备入群、成员身份验证和共享发布根的更新（需求草案）。
+- [个人 swarm 的创建与授权需求](docs/swarm-authorization.md)：设备入群、成员身份验证和共享发布根的更新（需求草案）；
+  对应的签名指针服务见 [pointer-worker](packages/pointer-worker)。
+- [签名指针服务](packages/pointer-worker)：每个 swarm 一个可变 HEAD，
+  Ed25519 签名请求与成员证书，`If-Match` 版本乐观锁。
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。
 - [创建应用](docs/reference.md#app-开发上层-node-profile)：Node / Web
   App 模板与构建。
@@ -133,8 +136,9 @@ ipab --help
   校验 frontmatter 元数据；[可构建示例](examples/agent-skill)。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)
-- [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check-ci`、全量
-  `pnpm check` 与发布前只读 `pnpm check-release`。
+- [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check`／`pnpm check-ci`
+  只跑 unit/mock；发布前只读 `pnpm check-release`
+  保留完整测试、覆盖率与安装验证。
 
 ## 许可证
 

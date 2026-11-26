@@ -29,7 +29,7 @@ import {
   seedDisplayPin,
 } from "./helpers.js";
 
-describe("management contract", () => {
+describe("management contract", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let builtinPins: ReturnType<typeof pinDetails>[];
   beforeEach(async () => {

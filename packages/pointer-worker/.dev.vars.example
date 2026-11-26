@@ -1,0 +1,6 @@
+# Pinned Ed25519 public key of the admin key allowed to manage pointers.
+# Generate a key and print its public half with:
+#   pnpm cli keygen --subject admin --out .keys/admin.json
+POINTER_ADMIN_PUBLIC_KEY=replace-me
+# Optional: only set if a browser client on another origin must call the API.
+# ALLOWED_ORIGIN=https://example.com

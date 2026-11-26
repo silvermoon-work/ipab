@@ -11,7 +11,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
-describe("Check content SSR", () => {
+describe("Check content SSR", { tags: ["unit"] }, () => {
   it.each([false, true])(
     "hydrates identical SSR nodes before adapting to mobile=%s",
     async (mobile) => {

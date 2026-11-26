@@ -45,7 +45,7 @@ const viewer: BundleViewer = ({ data }) => {
 function markup(data: unknown = "SSR") {
   document.body.innerHTML = `<div id="ipab-viewer">${renderToString(createElement(viewer, { data }), { identifierPrefix: "ipab-viewer-" })}</div><script id="ipab-viewer-state" type="application/json">${JSON.stringify(data)}</script>`;
 }
-describe("isomorphic hydration", () => {
+describe("isomorphic hydration", { tags: ["mock"] }, () => {
   it("updates in-place, preserves component state while hiding errors, and stops polling on close", async () => {
     vi.useFakeTimers();
     markup("Initial");

@@ -63,7 +63,8 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check-release
+      - name: Full coverage, real E2E and package installation
+        run: pnpm check-release
   release-verification:
     name: Release verification (v2)
     needs: [evidence, full]

@@ -59,7 +59,7 @@ const tree = (
     ]),
   );
 
-describe("Data-only Template Bundles", () => {
+describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   beforeEach(async () => {
     work = await fixture();

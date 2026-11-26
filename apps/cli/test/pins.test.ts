@@ -67,7 +67,7 @@ function gatewayFixture() {
   };
 }
 
-describe("named pins", () => {
+describe("named pins", { tags: ["release-e2e"] }, () => {
   let work: Awaited<ReturnType<typeof fixture>>;
   let state: State;
   let builtinPins: ReturnType<typeof pinDetails>[];

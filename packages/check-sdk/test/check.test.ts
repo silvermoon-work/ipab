@@ -58,121 +58,133 @@ const create = (checkpoints = [good()]) =>
   });
 const json = (value: unknown) => memoryFile(canonicalJson(value));
 
-it("composes ordered checkpoints and retains typed execution-local output identity", async () => {
-  const output = { map: new Map<string, string>(), self: {} as object };
-  output.self = output;
-  const first = defineCheckpoint({
-    ...documentation,
-    output: {
-      description: "Execution-local facts.",
-      fields: [{ name: "map", description: "Shared capability." }],
-    },
-    check: () => ({ pass: true, output }),
-  });
-  let retained: CheckpointContext | undefined;
-  const foreign = good("foreign");
-  const second = defineCheckpoint({
-    ...documentation,
-    id: "second",
-    check: (_input: Input, context) => {
-      retained = context;
-      const observed = context.outputOf(first);
-      expectTypeOf(observed).toEqualTypeOf<Readonly<typeof output>>();
-      expect(observed).toBe(output);
-      expect(observed.map).toBe(output.map);
-      expect(() => {
-        context.outputOf(second);
-      }).toThrow("not available");
-      expect(() => context.outputOf(foreign)).toThrow("not available");
-      return { pass: true, output: undefined };
-    },
-  });
-  const check = defineCheck({
-    name: "Composed Check",
-    description: "Read facts in order.",
-    parameters,
-    checkpoints: [first, second],
-  });
-  expect(await executeCheck(check, { text: "hello" }, signal())).toEqual({
-    check: "check",
-    checkpoint: "second",
-    pass: true,
-  });
-  expect(() => retained?.outputOf(first)).toThrow("not available");
-  await executeCheck(check, { text: "hello" }, signal());
-  expect(output.self).toBe(output);
-});
+it(
+  "composes ordered checkpoints and retains typed execution-local output identity",
+  { tags: ["mock"] },
+  async () => {
+    const output = { map: new Map<string, string>(), self: {} as object };
+    output.self = output;
+    const first = defineCheckpoint({
+      ...documentation,
+      output: {
+        description: "Execution-local facts.",
+        fields: [{ name: "map", description: "Shared capability." }],
+      },
+      check: () => ({ pass: true, output }),
+    });
+    let retained: CheckpointContext | undefined;
+    const foreign = good("foreign");
+    const second = defineCheckpoint({
+      ...documentation,
+      id: "second",
+      check: (_input: Input, context) => {
+        retained = context;
+        const observed = context.outputOf(first);
+        expectTypeOf(observed).toEqualTypeOf<Readonly<typeof output>>();
+        expect(observed).toBe(output);
+        expect(observed.map).toBe(output.map);
+        expect(() => {
+          context.outputOf(second);
+        }).toThrow("not available");
+        expect(() => context.outputOf(foreign)).toThrow("not available");
+        return { pass: true, output: undefined };
+      },
+    });
+    const check = defineCheck({
+      name: "Composed Check",
+      description: "Read facts in order.",
+      parameters,
+      checkpoints: [first, second],
+    });
+    expect(await executeCheck(check, { text: "hello" }, signal())).toEqual({
+      check: "check",
+      checkpoint: "second",
+      pass: true,
+    });
+    expect(() => retained?.outputOf(first)).toThrow("not available");
+    await executeCheck(check, { text: "hello" }, signal());
+    expect(output.self).toBe(output);
+  },
+);
 
-it("stops at the first failure and preserves all problem contexts without documents", async () => {
-  const last = vi.fn(() => ({
-    pass: true as const,
-    output: undefined,
-  }));
-  const failure = defineCheckpoint({
-    ...documentation,
-    id: "failure",
-    check: () => ({
+it(
+  "stops at the first failure and preserves all problem contexts without documents",
+  { tags: ["mock"] },
+  async () => {
+    const last = vi.fn(() => ({
+      pass: true as const,
+      output: undefined,
+    }));
+    const failure = defineCheckpoint({
+      ...documentation,
+      id: "failure",
+      check: () => ({
+        pass: false,
+        problems: [
+          { code: "text-valid", context: { actual: "one" } },
+          { code: "text-valid", context: { actual: "two" } },
+        ],
+      }),
+    });
+    const check = defineCheck({
+      name: "Failing Check",
+      description: "Check in order.",
+      parameters,
+      checkpoints: [
+        good(),
+        failure,
+        defineCheckpoint({ ...documentation, id: "last", check: last }),
+      ],
+    });
+    expect(await executeCheck(check, { text: "hello" }, signal())).toEqual({
+      check: "check",
+      checkpoint: "failure",
       pass: false,
       problems: [
         { code: "text-valid", context: { actual: "one" } },
         { code: "text-valid", context: { actual: "two" } },
       ],
-    }),
-  });
-  const check = defineCheck({
-    name: "Failing Check",
-    description: "Check in order.",
-    parameters,
-    checkpoints: [
-      good(),
-      failure,
-      defineCheckpoint({ ...documentation, id: "last", check: last }),
-    ],
-  });
-  expect(await executeCheck(check, { text: "hello" }, signal())).toEqual({
-    check: "check",
-    checkpoint: "failure",
-    pass: false,
-    problems: [
-      { code: "text-valid", context: { actual: "one" } },
-      { code: "text-valid", context: { actual: "two" } },
-    ],
-  });
-  expect(last).not.toHaveBeenCalled();
-});
+    });
+    expect(last).not.toHaveBeenCalled();
+  },
+);
 
-it("accepts a single checkpoint and validates global parameters before invoking it", async () => {
-  const check = defineCheck({
-    name: "Single Check",
-    description: "Single step.",
-    parameters,
-    checkpoints: good(),
-  });
-  expectTypeOf(
-    check.parameters.parse({ text: "hello" }),
-  ).toEqualTypeOf<Input>();
-  expect((await executeCheck(check, { text: "hello" }, signal())).pass).toBe(
-    true,
-  );
-  for (const input of [{}, { text: 1 }, { text: "hello", secret: true }])
-    await expect(executeCheck(check, input, signal())).rejects.toThrow(
-      "Invalid Check input",
+it(
+  "accepts a single checkpoint and validates global parameters before invoking it",
+  { tags: ["mock"] },
+  async () => {
+    const check = defineCheck({
+      name: "Single Check",
+      description: "Single step.",
+      parameters,
+      checkpoints: good(),
+    });
+    expectTypeOf(
+      check.parameters.parse({ text: "hello" }),
+    ).toEqualTypeOf<Input>();
+    expect((await executeCheck(check, { text: "hello" }, signal())).pass).toBe(
+      true,
     );
-  const broken = defineCheck({
-    name: "Parser Check",
-    description: "Parser errors propagate.",
-    parameters: {
-      ...parameters,
-      parse() {
-        throw new Error("parser failed");
+    for (const input of [{}, { text: 1 }, { text: "hello", secret: true }])
+      await expect(executeCheck(check, input, signal())).rejects.toThrow(
+        "Invalid Check input",
+      );
+    const broken = defineCheck({
+      name: "Parser Check",
+      description: "Parser errors propagate.",
+      parameters: {
+        ...parameters,
+        parse() {
+          throw new Error("parser failed");
+        },
       },
-    },
-    checkpoints: good(),
-  });
-  await expect(
-    executeCheck(broken, { text: "hello" }, signal()),
-  ).rejects.toThrow("parser failed");
-});
+      checkpoints: good(),
+    });
+    await expect(
+      executeCheck(broken, { text: "hello" }, signal()),
+    ).rejects.toThrow("parser failed");
+  },
+);
 
 it.each([
   { id: "CON" },
@@ -197,7 +209,7 @@ it.each([
       ],
     },
   },
-])("rejects invalid author metadata: %j", (override) => {
+])("rejects invalid author metadata: %j", { tags: ["mock"] }, (override) => {
   expect(() =>
     defineCheckpoint({
       ...documentation,
@@ -209,49 +221,57 @@ it.each([
   ).toThrow();
 });
 
-it("rejects empty/duplicate compositions and invalid parameter schemas", () => {
-  const base = { name: "Check", description: "Check input.", parameters };
-  expect(() => defineCheck({ ...base, checkpoints: [] })).toThrow("requires");
-  expect(() => defineCheck({ ...base, checkpoints: [good(), good()] })).toThrow(
-    "Duplicate",
-  );
-  expect(() =>
-    defineCheck({
-      ...base,
-      parameters: { ...parameters, schema: { type: "array" } },
-      checkpoints: good(),
-    }),
-  ).toThrow("object JSON Schema");
-  expect(() =>
-    defineCheck({
-      ...base,
-      parameters: {
-        ...parameters,
-        schema: { type: "object", $ref: "missing" },
-      },
-      checkpoints: good(),
-    }),
-  ).toThrow();
-});
+it(
+  "rejects empty/duplicate compositions and invalid parameter schemas",
+  { tags: ["mock"] },
+  () => {
+    const base = { name: "Check", description: "Check input.", parameters };
+    expect(() => defineCheck({ ...base, checkpoints: [] })).toThrow("requires");
+    expect(() =>
+      defineCheck({ ...base, checkpoints: [good(), good()] }),
+    ).toThrow("Duplicate");
+    expect(() =>
+      defineCheck({
+        ...base,
+        parameters: { ...parameters, schema: { type: "array" } },
+        checkpoints: good(),
+      }),
+    ).toThrow("object JSON Schema");
+    expect(() =>
+      defineCheck({
+        ...base,
+        parameters: {
+          ...parameters,
+          schema: { type: "object", $ref: "missing" },
+        },
+        checkpoints: good(),
+      }),
+    ).toThrow();
+  },
+);
 
-it("copies and freezes the global schema so later author mutations cannot change the model", async () => {
-  const schema = structuredClone(parameters.schema);
-  const check = defineCheck({
-    name: "Stable parameters",
-    description: "Stable model and validation.",
-    parameters: { ...parameters, schema },
-    checkpoints: good(),
-  });
-  schema.properties.text.type = "number";
-  expect((await executeCheck(check, { text: "hello" }, signal())).pass).toBe(
-    true,
-  );
-  expect(modelOf(check).parameter.schema).not.toEqual(schema);
-  expect(() => {
-    Reflect.set(check.parameters.schema, "type", "array");
-  }).not.toThrow();
-  expect(check.parameters.schema.type).toBe("object");
-});
+it(
+  "copies and freezes the global schema so later author mutations cannot change the model",
+  { tags: ["mock"] },
+  async () => {
+    const schema = structuredClone(parameters.schema);
+    const check = defineCheck({
+      name: "Stable parameters",
+      description: "Stable model and validation.",
+      parameters: { ...parameters, schema },
+      checkpoints: good(),
+    });
+    schema.properties.text.type = "number";
+    expect((await executeCheck(check, { text: "hello" }, signal())).pass).toBe(
+      true,
+    );
+    expect(modelOf(check).parameter.schema).not.toEqual(schema);
+    expect(() => {
+      Reflect.set(check.parameters.schema, "type", "array");
+    }).not.toThrow();
+    expect(check.parameters.schema.type).toBe("object");
+  },
+);
 
 it.each([
   null,
@@ -263,6 +283,7 @@ it.each([
   { pass: false, problems: [{ code: "text-valid", context: { value: NaN } }] },
 ])(
   "treats invalid callback output as an execution error: %j",
+  { tags: ["mock"] },
   async (value) => {
     const step = defineCheckpoint({
       ...documentation,
@@ -283,6 +304,7 @@ it.each([
 
 it.each(["before", "during", "throw"] as const)(
   "propagates %s cancellation or execution errors",
+  { tags: ["mock"] },
   async (mode) => {
     const abort = new AbortController();
     const cause = new Error("stopped");
@@ -316,31 +338,35 @@ it.each(["before", "during", "throw"] as const)(
   },
 );
 
-it("bounds and strictly parses STDIN, cancelling oversized streams", async () => {
-  expect(await readJson(json({ text: "hello" }), signal())).toEqual({
-    text: "hello",
-  });
-  for (const source of [
-    '{"text":"one","text":"two"}',
-    '{"text":"hello"}{}',
-    "",
-  ])
+it(
+  "bounds and strictly parses STDIN, cancelling oversized streams",
+  { tags: ["mock"] },
+  async () => {
+    expect(await readJson(json({ text: "hello" }), signal())).toEqual({
+      text: "hello",
+    });
+    for (const source of [
+      '{"text":"one","text":"two"}',
+      '{"text":"hello"}{}',
+      "",
+    ])
+      await expect(
+        readJson(memoryFile(Buffer.from(source)), signal()),
+      ).rejects.toThrow();
     await expect(
-      readJson(memoryFile(Buffer.from(source)), signal()),
+      readJson(memoryFile(Uint8Array.of(0xff)), signal()),
     ).rejects.toThrow();
-  await expect(
-    readJson(memoryFile(Uint8Array.of(0xff)), signal()),
-  ).rejects.toThrow();
-  const cancel = vi.fn();
-  const oversized = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new Uint8Array(1024 * 1024 + 1));
-    },
-    cancel,
-  });
-  await expect(readJson(oversized, signal())).rejects.toThrow("1 MiB");
-  expect(cancel).toHaveBeenCalledOnce();
-});
+    const cancel = vi.fn();
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+      },
+      cancel,
+    });
+    await expect(readJson(oversized, signal())).rejects.toThrow("1 MiB");
+    expect(cancel).toHaveBeenCalledOnce();
+  },
+);
 
 function host(check = create()) {
   const cid = "bafybeiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -376,25 +402,29 @@ function host(check = create()) {
   return { check, cid, context, files, written };
 }
 
-it("writes the result entry and real model link without publishing execution-local output", async () => {
-  const fixture = host();
-  const abortSignal = signal();
-  const result = await runCheck(fixture.check, {
-    context: fixture.context,
-    input: json({ text: "hello" }),
-    signal: abortSignal,
-  });
-  expect(fixture.context.output.link).toHaveBeenCalledWith(
-    "check",
-    fixture.cid,
-    { signal: abortSignal },
-  );
-  expect(fixture.written.get("result.json")).toEqual(result);
-  expect(JSON.stringify(fixture.written.get("result.json"))).not.toContain(
-    "output",
-  );
-  expect(fixture.written.has(".bundle.yaml")).toBe(true);
-});
+it(
+  "writes the result entry and real model link without publishing execution-local output",
+  { tags: ["mock"] },
+  async () => {
+    const fixture = host();
+    const abortSignal = signal();
+    const result = await runCheck(fixture.check, {
+      context: fixture.context,
+      input: json({ text: "hello" }),
+      signal: abortSignal,
+    });
+    expect(fixture.context.output.link).toHaveBeenCalledWith(
+      "check",
+      fixture.cid,
+      { signal: abortSignal },
+    );
+    expect(fixture.written.get("result.json")).toEqual(result);
+    expect(JSON.stringify(fixture.written.get("result.json"))).not.toContain(
+      "output",
+    );
+    expect(fixture.written.has(".bundle.yaml")).toBe(true);
+  },
+);
 
 it.each([
   "metadata",
@@ -407,6 +437,7 @@ it.each([
   "write",
 ] as const)(
   "does not turn %s faults into a successful result",
+  { tags: ["mock"] },
   async (mode) => {
     const fixture = host();
     if (mode === "metadata")
@@ -453,78 +484,90 @@ it.each([
   },
 );
 
-it("uses the global IPAB context and removes owned signal handlers on completion", async () => {
-  const fixture = host();
-  const before = [
-    process.listenerCount("SIGINT"),
-    process.listenerCount("SIGTERM"),
-  ];
-  vi.stubGlobal("ipab", fixture.context);
-  try {
-    await runCheck(fixture.check, { input: json({ text: "hello" }) });
-    expect([
+it(
+  "uses the global IPAB context and removes owned signal handlers on completion",
+  { tags: ["mock"] },
+  async () => {
+    const fixture = host();
+    const before = [
       process.listenerCount("SIGINT"),
       process.listenerCount("SIGTERM"),
-    ]).toEqual(before);
-  } finally {
-    vi.unstubAllGlobals();
-  }
-  await expect(
-    runCheck(fixture.check, { input: json({ text: "hello" }) }),
-  ).rejects.toThrow("IPAB context");
-});
-
-it("enforces the inclusive Bundle result-entry byte limit before output operations", async () => {
-  const header = {
-    check: "check",
-    checkpoint: "text",
-    pass: false,
-    problems: [{ code: "text-valid", context: "" }],
-  };
-  const size = 8 * 1024 * 1024;
-  const overhead = canonicalJson(header).byteLength;
-  for (const extra of [0, 1]) {
-    const step = defineCheckpoint({
-      ...documentation,
-      check: () => ({
-        pass: false,
-        problems: [
-          { code: "text-valid", context: "x".repeat(size - overhead + extra) },
-        ],
-      }),
-    });
-    const check = defineCheck({
-      name: "Result budget",
-      description: "Keep the entry loadable.",
-      parameters,
-      checkpoints: step,
-    });
-    const fixture = host(check);
-    vi.mocked(fixture.context.output.writeFile).mockImplementation(
-      async (path, stream) => {
-        fixture.written.set(path, null);
-        await stream.pipeTo(new WritableStream<Uint8Array>());
-        return fixture.cid;
-      },
-    );
-    const run = runCheck(check, {
-      context: fixture.context,
-      input: json({ text: "hello" }),
-      signal: signal(),
-    });
-    if (extra === 0) {
-      expect((await run).pass).toBe(false);
-      expect(fixture.context.output.link).toHaveBeenCalledOnce();
-    } else {
-      await expect(run).rejects.toThrow("8 MiB");
-      expect(fixture.context.output.link).not.toHaveBeenCalled();
-      expect(fixture.context.output.writeFile).not.toHaveBeenCalled();
+    ];
+    vi.stubGlobal("ipab", fixture.context);
+    try {
+      await runCheck(fixture.check, { input: json({ text: "hello" }) });
+      expect([
+        process.listenerCount("SIGINT"),
+        process.listenerCount("SIGTERM"),
+      ]).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
     }
-  }
-});
+    await expect(
+      runCheck(fixture.check, { input: json({ text: "hello" }) }),
+    ).rejects.toThrow("IPAB context");
+  },
+);
+
+it(
+  "enforces the inclusive Bundle result-entry byte limit before output operations",
+  { tags: ["mock"] },
+  async () => {
+    const header = {
+      check: "check",
+      checkpoint: "text",
+      pass: false,
+      problems: [{ code: "text-valid", context: "" }],
+    };
+    const size = 8 * 1024 * 1024;
+    const overhead = canonicalJson(header).byteLength;
+    for (const extra of [0, 1]) {
+      const step = defineCheckpoint({
+        ...documentation,
+        check: () => ({
+          pass: false,
+          problems: [
+            {
+              code: "text-valid",
+              context: "x".repeat(size - overhead + extra),
+            },
+          ],
+        }),
+      });
+      const check = defineCheck({
+        name: "Result budget",
+        description: "Keep the entry loadable.",
+        parameters,
+        checkpoints: step,
+      });
+      const fixture = host(check);
+      vi.mocked(fixture.context.output.writeFile).mockImplementation(
+        async (path, stream) => {
+          fixture.written.set(path, null);
+          await stream.pipeTo(new WritableStream<Uint8Array>());
+          return fixture.cid;
+        },
+      );
+      const run = runCheck(check, {
+        context: fixture.context,
+        input: json({ text: "hello" }),
+        signal: signal(),
+      });
+      if (extra === 0) {
+        expect((await run).pass).toBe(false);
+        expect(fixture.context.output.link).toHaveBeenCalledOnce();
+      } else {
+        await expect(run).rejects.toThrow("8 MiB");
+        expect(fixture.context.output.link).not.toHaveBeenCalled();
+        expect(fixture.context.output.writeFile).not.toHaveBeenCalled();
+      }
+    }
+  },
+);
 
 it.each(["SIGINT", "SIGTERM"] as const)(
   "cancels on %s without writing a result and removes owned listeners",
+  { tags: ["mock"] },
   async (event) => {
     const fixture = host();
     const before = process.listenerCount(event);

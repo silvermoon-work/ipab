@@ -10,7 +10,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(hydrateBundleViewer).mockReset();
 });
-describe("Check browser entry", () => {
+describe("Check browser entry", { tags: ["mock"] }, () => {
   it("hydrates the shared Check view without replacing SSR markup", async () => {
     vi.resetModules();
     document.body.innerHTML = "<main>Existing SSR</main>";

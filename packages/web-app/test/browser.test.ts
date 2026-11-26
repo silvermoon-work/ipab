@@ -65,7 +65,7 @@ async function connected() {
   return { client: await promise, port };
 }
 
-describe("browser port client", () => {
+describe("browser port client", { tags: ["mock"] }, () => {
   it("accepts only the parent handshake and cleans up cancellation and timeout", async () => {
     const port = new Port();
     const promise = connectWebApp();

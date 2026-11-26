@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defineWebAppMethod } from "../src/index.js";
 import { json, name, object } from "../src/protocol.js";
 
-describe("bounded JSON", () => {
+describe("bounded JSON", { tags: ["unit"] }, () => {
   it("accepts plain finite JSON and rejects unsafe values", () => {
     expect(json({ x: [null, true, 1, "text", {}] })).toEqual({
       x: [null, true, 1, "text", {}],

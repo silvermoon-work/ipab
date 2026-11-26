@@ -27,6 +27,12 @@ private
 根 test-package-smoke 调用其 CLI，scripts/package-smoke.mjs 负责项目特有验证。
 该试验包不加入五个 npm 交付项。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
+private `@ipab/pointer-worker` 迁入本机 signed-pointer 服务：每个 pointer 名一个
+Durable Object，值≤256 UTF-8 字节，Ed25519 直接签名或成员证书链签名，
+`If-Match` 版本号做乐观锁，管理面只用固定公钥增删／轮换。
+它是个人 swarm 的 HEAD 指针候选实现，尚未接入 CLI 同步流程，也不进入 npm 交付。
+测试在 Node 中以内存 DurableObjectState 运行 Worker 路由与 DO，
+`cloudflare:workers` 由共享 Vitest 配置别名到测试桩；不启动 workerd。
 private `@ipab/check-spec` 迁入 okr-agent 的 MIT React 定义查看器；
 `apps/check-viewer` 由 bundle-viewer 模板初始化，为独立 private App。
 Check 类型入口 check.yaml，instructions 为正文或显式 {path} Markdown 引用；
@@ -71,11 +77,20 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   `--root . --config ../../vitest.config.ts` 运行。
 - 全部四项覆盖率门槛为 90%，包含未测试源码，失败必须传播。
 - 提交前执行 `pnpm check`；局部验证使用成员命令或 Turbo filter。
-- 日常 PR/main 使用 `pnpm check-ci`，保留关键真实行为但不生成部分覆盖率；
-  只有重复编译的构建变体带 `release-e2e` tag。完整 `pnpm check` 不过滤测试，
-  发布前 `pnpm check-release`
-  再加入真实 pnpm 安装验证。门禁详情见 CONTRIBUTING.md。
+- 日常 PR/main 的 `pnpm check-ci` 与本地 `pnpm check` 只跑 unit/mock，
+  保留静态 build/typecheck/lint/format 和包检查，不跑 E2E、不生成部分覆盖率。
+  成员以 `(unit or mock) and !release-e2e` 显式白名单选测试；
+  每个用例或 suite 必须分类，未分类的新测试不能自动混入 CI。
+  隔离解析、组件、内存 CAR、本地文件适配器可标 unit；
+  真正替换外部执行／服务／存储端口的测试可标 mock，spy 后真实执行不算 mock。
+  真实编译构建链、启动构建结果／CLI 子进程、App exec/open、
+  HTTP 服务、Store／SQLite 持久保留与恢复等集成测试必须标 release-e2e，
+  不按快慢挑选。混合文件逐用例分类，不为提速删断言、加 skip 或提高 timeout。
+  发布前 `pnpm check-release` 独立执行全部静态检查、未过滤的完整 test-coverage
+  及四项 90% 门槛、包检查和真实安装 smoke。门禁详情见 CONTRIBUTING.md。
 - 当前设备的 registry 由设备配置决定，不在仓库中写镜像或凭据。
+- Cloudflare Worker 成员保留 `wrangler.toml`／DO 迁移与空的管理公钥占位，
+  不提交个人域名、线上实例地址或 `.dev.vars`／`.keys` 私钥材料。
 - 只在实际交付成员声明 `lint-package: publint --strict`，根通过 Turbo 调用。
 - 不复制参考工程的业务包、历史生命周期记录、发布授权或个人配置。
 - 新成员 minimum engines.node 为 22.15.0，所有适用成员保持同一 minimum；
@@ -257,6 +272,11 @@ test-ci 直接调用 Turbo。成员直接运行 tsc、Vitest、publint；
 这与标准 `AGENTS.md` 的固定同名脚本接口条款存在已知差异，
 不是标准检查已通过或可删除标准条款的声明。标准文件完整保留；
 项目选择只记录在本文件。不要通过修改标准或未来 Check 资产掩盖这一差异。
+
+2026-11-26 用户确认日常 CI 只做 unit/mock，所有真实应用／构建执行及服务／
+持久存储集成验证放到发布前。本地 check 同样是日常入口；
+完整覆盖率与 E2E 门槛转由 check-release 强制执行，不降低四项 90% 门槛。
+这也是对标准中根 check 全量验证位置的项目特定差异，不修改标准 AGENTS.md。
 
 ## Node selection
 

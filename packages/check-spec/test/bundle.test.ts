@@ -20,7 +20,7 @@ function source(files: ReadonlyMap<string, Uint8Array>) {
     }),
   };
 }
-describe("explicit Check content conversion", () => {
+describe("explicit Check content conversion", { tags: ["mock"] }, () => {
   it("rejects generated resource paths beyond the loader's path budget", () => {
     const spec = orderedSpec();
     spec.checkpoints[0]!.id = "a".repeat(1024);

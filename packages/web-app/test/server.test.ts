@@ -119,7 +119,7 @@ async function start(overrides: Partial<RunWebAppOptions> = {}) {
   return { url, page, secret, post, session, paths, controller, finished };
 }
 
-describe("local server", () => {
+describe("local server", { tags: ["release-e2e"] }, () => {
   it("renders only the frontend index and keeps static assets immutable", async () => {
     const renderFrontend = vi
       .fn()

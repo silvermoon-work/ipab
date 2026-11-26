@@ -7,13 +7,18 @@ pnpm install
 pnpm check
 ```
 
-根 check 依次执行格式、构建、类型、全仓库 lint、成员完整覆盖率
-和交付包检查，仍是提交前的全量质量验证。
+根 check 依次执行格式、构建、类型、全仓库 lint、成员 unit/mock 测试
+和交付包检查，是提交前的日常质量验证，与 CI 使用的 check-ci 范围一致。
+真实构建／执行链路和服务／持久存储集成测试只在发布前完整验证中执行；
+check-release 保留全部测试、四项 90% 覆盖率门槛和交付安装 smoke。
 不能通过排除源码、删除测试、放宽门槛或吞掉错误来取得通过结果。
 五个 code package 显式登记为 npm 交付项，当前候选统一为 `0.1.0-rc.1`；
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
+private `@ipab/pointer-worker` 是个人 swarm 的签名指针服务（Cloudflare
+Worker），
+不属于 npm 交付项；它只提供 HEAD 指针，尚未接入 CLI 的设备授权与同步流程。
 Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告
 提交，以及原始 Check model 根 CID 在 App／Result 中的准确复用。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，
@@ -30,21 +35,21 @@ Builder 的各测试任务将 Skill 示例
 
 ## 工程命令
 
-| 命令                 | 用途                                                    |
-| -------------------- | ------------------------------------------------------- |
-| `pnpm build`         | Turbo 按依赖顺序构建成员                                |
-| `pnpm typecheck`     | 检查根配置及所有成员类型                                |
-| `pnpm lint`          | 全仓库 lint，包括根配置、成员源码与测试                 |
-| `pnpm format-check`  | 只读格式检查                                            |
-| `pnpm format`        | 有意修改格式时使用                                      |
-| `pnpm test`          | 单轮成员测试，不开启覆盖率                              |
-| `pnpm test-ci`       | 日常成员测试，显式不选 `release-e2e`，不开覆盖率        |
-| `pnpm test-coverage` | 成员覆盖率及四项门槛检查                                |
-| `pnpm lint-package`  | 构建并检查声明该命令的交付包                            |
-| `pnpm check-ci`      | 日常完整静态检查与关键行为验证                          |
-| `pnpm check`         | 全部静态检查、完整覆盖率与包检查                        |
-| `pnpm check-release` | `pnpm check` 后执行 `pnpm test-package-smoke`，失败即停 |
-| `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出           |
+| 命令                 | 用途                                                     |
+| -------------------- | -------------------------------------------------------- |
+| `pnpm build`         | Turbo 按依赖顺序构建成员                                 |
+| `pnpm typecheck`     | 检查根配置及所有成员类型                                 |
+| `pnpm lint`          | 全仓库 lint，包括根配置、成员源码与测试                  |
+| `pnpm format-check`  | 只读格式检查                                             |
+| `pnpm format`        | 有意修改格式时使用                                       |
+| `pnpm test`          | 单轮成员测试，不开启覆盖率                               |
+| `pnpm test-ci`       | 日常成员 unit/mock 白名单，不开覆盖率                    |
+| `pnpm test-coverage` | 成员覆盖率及四项门槛检查                                 |
+| `pnpm lint-package`  | 构建并检查声明该命令的交付包                             |
+| `pnpm check-ci`      | 日常完整静态检查与关键行为验证                           |
+| `pnpm check`         | 与 check-ci 相同的日常静态检查、unit/mock 与包检查       |
+| `pnpm check-release` | 静态检查、全部测试及覆盖率、包检查、安装 smoke，失败即停 |
+| `pnpm clean`         | 清理根和直接成员的 dist、coverage、Turbo 输出            |
 
 ## 依赖安装与集成验证
 
@@ -90,7 +95,7 @@ CLI 的 test 与 test-coverage 先构建自身以准备资源。
 - 测试用共享 `vitest.config.ts`，在成员目录显式指定
   `--root . --config ../../vitest.config.ts`。
 - `pnpm test` 为单轮非 coverage 测试，`pnpm test-coverage` 执行覆盖率。
-  同一个 worktree 的 `pnpm check`／`pnpm test-coverage` 必须顺序运行；
+  同一个 worktree 的 `pnpm check-release`／`pnpm test-coverage` 必须顺序运行；
   Vitest 对共享 coverage 目录加锁，另一轮运行未结束时不要删除锁或报告目录。
   需要并行验证时使用独立 worktree，或直接调用 Vitest 并明确指定独立
   `--coverage.reportsDirectory`；这不替代提交前的根 check。
@@ -99,7 +104,7 @@ CLI 的 test 与 test-coverage 先构建自身以准备资源。
   这只限制并发，不改变测试选择、timeout 或覆盖率门槛。
 - 全部四项全局覆盖率门槛为 90%，包含未测试源码，不使用 `passWithNoTests`
   隐藏缺失测试。日常测试不生成部分 coverage 报告或将其冒充全量覆盖率；
-  完整门槛由 `pnpm check` 和发布前验证执行。
+  完整门槛由 `pnpm test-coverage` 和 `pnpm check-release` 执行。
 - 根检查编排使用固定的 `npm-run-all2@8.0.4` 提供的 `run-s`：
   按参数顺序执行，首项失败立即停止并返回非零；不并行、不吞掉失败。
   该稳定版本兼容 Node 22.15.0；9.x 要求更高的 Node，不能自动升级。
@@ -126,33 +131,35 @@ pnpm exec turbo run test --filter=<package-name>
 ### 日常快速验证
 
 所有 PR 和 main push 执行冻结安装与 `pnpm check-ci`，保留默认 Node、
-22.15.0、24.11.1 三个环境及全部格式、构建、严格类型、type-aware lint、
-门禁脚本回归与包检查。`CI verification (v2)` 要求全部 job/matrix 成功，
-不是完整发布证据。
+22.15.0、24.11.1 三个环境及全部格式、构建、严格类型、type-aware lint
+与包检查。`CI verification (v2)` 要求全部 job/matrix 成功，不是完整发布证据。
+本地 `pnpm check` 使用同一日常范围，不再运行 E2E 或完整覆盖率。
 
-成员 `test-ci` 使用同一共享 Vitest 配置、相同的成员 root，
-通过 `--tags-filter '!release-e2e'` 选择测试；新测试默认进入日常验证。
-只有反复编译的构建变体标记为 `release-e2e`：
-重复构建与类型错误后的产物保护、YAML/JSON Schema 集合确定性、
-完整 Web/Vite 模板、prebuild 各类输出拒绝、源码输出开关、前后端多配置编译。
-这些测试保留所有原断言、超时和完整执行入口，不通过 `skip` 或环境变量隐藏。
-前后端类型检查顺序与源码变化后的产物保护分别验证，避免将多轮真实编译
-叠加到单个用例的超时预算。相关构建绑定 Vitest 用例取消信号；
-清理项目之前等待在途构建及其子进程关闭，覆盖率仍采集所有子进程。
-Pin 崩溃恢复用例在 suite setup 中用现有 esbuild 预构建真实子进程驱动，
-保留 inline source map、真实 Store／SQLite 和原用例超时，避免每次恢复验证
-都重新读取大量依赖文件；用例取消后先等待子进程退出再清理目录。
+成员 `test-ci` 使用同一共享 Vitest 配置和成员 root，
+通过 `--tags-filter '(unit or mock) and !release-e2e'` 显式允许 unit/mock。
+未标记的新测试不会自动进入 CI；每个测试必须在用例或 suite 上声明分类。
+分类依据测试边界，不依据耗时或文件名：
 
-日常仍保留真实 strict tsc/依赖打包/CAR/独立源码 Bundle 冒烟、
-构建后 pin/rename/exec、动态依赖及不安全路径拒绝、编译流错误回归，
-以及全部 runtime、子进程取消、IPC、持久保留、Schema/模板、Bundle、
-Builder 和 Store 集成测试（包括 Node 22 GC deadline 回归）。
-不按 integration 文件名或目录整体排除。Store 已统一为本地存储与只读上游
-HTTP Gateway，已移除 Kubo RPC 后端及其专用测试；不访问共享 daemon 管理接口。
+- `unit`：隔离函数、解析／校验、内存数据结构、组件及本地文件适配器单元测试。
+  可以用临时文件、内存 CAR 和模拟 DOM；不启动真实应用、服务或构建链路。
+- `mock`：外部进程、网络／服务、应用 context 或存储端口被替换的测试。
+  例如 package-smoke 的 spawn mock、浏览器 bridge mock 和内存 Store source。
+  spy 后继续调用真实 spawn／服务不算 mock。
+- `release-e2e`：真实 tsc/esbuild/Vite 构建链路、启动构建结果或 CLI 子进程、
+  App exec/open、真实 HTTP 服务、Store／SQLite 持久保留及恢复等集成验证。
+  不论快慢都只在发布前测试中跑；不能标 unit/mock 来绕过此边界。
 
-Turbo 为 `test-ci` 单独缓存，依赖成员自身 `build`，确保 CLI 子进程使用当前
-dist；测试源码、成员脚本与共享 Vitest 配置参与缓存失效。
-它不写 coverage，也不与完整 `test-coverage` 共享任务缓存。
+混合文件逐用例分类，纯同类 suite 可以继承分类。CI 的显式 E2E 排除优先于
+unit/mock 标签，避免被错误双标的测试进入日常验证。
+全部原断言、超时和完整执行入口保留，不通过 skip、删测试或降低覆盖率提速。
+完整执行使用 `pnpm check-release`；开发时可以显式用 `pnpm test` 或
+`pnpm test-coverage` 调试完整测试，它们不是日常 CI 入口。
+相关构建保留取消信号，清理前等待在途子进程关闭；不访问共享 daemon 管理接口。
+
+Turbo 为 `test-ci` 单独缓存，依赖成员自身 `build`，确保导入当前构建资源；
+测试源码、成员脚本与共享 Vitest 配置参与缓存失效。
+它不写 coverage，也不与完整 `test-coverage` 共享任务缓存；
+测试分类、成员过滤命令和共享配置变化均使缓存失效。
 
 ### 发布前完整验证（只读）
 
@@ -165,8 +172,9 @@ dist；测试源码、成员脚本与共享 Vitest 配置参与缓存失效。
    完整验证不重新实现日常 CI 证据门禁；两个 workflow 的最新执行结果
    在实际发布生命周期中由固定已发布的 publish-gate 统一检查。
 2. 冻结安装，在默认 Node、22.15.0、24.11.1 上执行真实
-   `pnpm check-release`：完整 `pnpm check`（不带 tag filter，所有测试及四项
-   90% 覆盖率门槛）加五包 tarball 安装、JS 入口加载和 CLI 版本 smoke。
+   `pnpm check-release`：格式、构建、类型、lint、完整 test-coverage
+   （不带 tag filter，所有测试及四项 90% 覆盖率门槛）、包检查，
+   最后五包 tarball 安装、JS 入口加载和 CLI 版本 smoke。
 3. 只有目标检查与全部完整矩阵成功，才产生 `Release verification (v2)`。
    旧 `Release verification (v1)` 及新的日常汇总均不能单独作为完整发布证据。
 

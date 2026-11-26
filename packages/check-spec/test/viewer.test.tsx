@@ -53,7 +53,7 @@ function heading() {
   return details().querySelector("h3")!;
 }
 
-describe("ordered checkpoint navigation", () => {
+describe("ordered checkpoint navigation", { tags: ["unit"] }, () => {
   it.each([false, true])(
     "renders a flat ordered list without a fake task checkpoint (mobile: %s)",
     (mobile) => {
@@ -233,7 +233,7 @@ describe("ordered checkpoint navigation", () => {
   });
 });
 
-describe("opt-in checkpoint URL navigation", () => {
+describe("opt-in checkpoint URL navigation", { tags: ["unit"] }, () => {
   it("keeps oversized portable IDs readable without emitting an unbounded navigation fragment", () => {
     const spec = orderedSpec();
     spec.checkpoints[0]!.id = "a".repeat(4096);
@@ -385,7 +385,7 @@ describe("opt-in checkpoint URL navigation", () => {
   });
 });
 
-describe("safe Markdown and shared task parameters", () => {
+describe("safe Markdown and shared task parameters", { tags: ["unit"] }, () => {
   it("renders descriptive Markdown, plain rule codes and literal schema JSON", () => {
     const spec = orderedSpec();
     spec.checkpoints[0]!.description =
@@ -523,7 +523,7 @@ describe("safe Markdown and shared task parameters", () => {
   });
 });
 
-describe("native mobile navigation pane", () => {
+describe("native mobile navigation pane", { tags: ["unit"] }, () => {
   it.each([
     [true, false],
     [false, true],
@@ -646,7 +646,7 @@ describe("native mobile navigation pane", () => {
   });
 });
 
-describe("invalid input and spec replacement", () => {
+describe("invalid input and spec replacement", { tags: ["unit"] }, () => {
   it("preserves valid live checkpoint selection but resets a deleted checkpoint", () => {
     const spec = orderedSpec();
     act(() => {

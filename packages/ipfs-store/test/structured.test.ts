@@ -74,321 +74,345 @@ async function car(root: CID, blocks: ContentBlocks): Promise<Uint8Array> {
   return collecting;
 }
 
-test("local: mixed-codec CAR staging, strong retention and fresh closure validation", async () => {
-  const directory = resolve(".cache", `structured-${randomUUID()}`);
-  const store = new IpfsStore({ dataDir: directory });
-  const { graph, root, raw } = await mixedGraph();
-  const reachable = new ContentBlocks(graph);
-  await reachable.prepare(root);
-  assert.deepEqual(
-    new Set(reachable.blocks.keys()),
-    new Set(graph.blocks.keys()),
-  );
-  const reader = await CarReader.fromBytes(await car(root, reachable));
-  assert.ok((await reader.getRoots())[0]!.equals(root));
-  try {
-    store.registerOwner("owner", []);
-    const rootBlock = await reader.get(root);
-    assert.ok(rootBlock);
-    await store.stageBlock("owner/import", root, rootBlock.bytes);
-    await assert.rejects(
-      store.finishImport("owner/import", root),
-      /unfinished/,
-    );
-    assert.equal(
-      store.pins().includes(root.toString()),
-      false,
-      "A root alone is not a complete import.",
-    );
-    for await (const block of reader.blocks())
-      if (!block.cid.equals(root))
-        await store.stageBlock("owner/import", block.cid, block.bytes);
-    await store.finishImport("owner/import", root, "owner");
-    await store.confirmRetained("owner", [root.toString()]);
-    await store.prepare(root);
-    assert.ok(store.pins().includes(root.toString()));
-    const exported = new ContentBlocks(store);
-    await exported.prepare(root);
-    const restored = new ContentBlocks();
-    const exportedCar = await CarReader.fromBytes(await car(root, exported));
-    for await (const block of exportedCar.blocks())
-      await restored.put(block.cid, block.bytes);
-    await restored.prepare(root);
+test(
+  "local: mixed-codec CAR staging, strong retention and fresh closure validation",
+  { tags: ["release-e2e"] },
+  async () => {
+    const directory = resolve(".cache", `structured-${randomUUID()}`);
+    const store = new IpfsStore({ dataDir: directory });
+    const { graph, root, raw } = await mixedGraph();
+    const reachable = new ContentBlocks(graph);
+    await reachable.prepare(root);
     assert.deepEqual(
-      new Set(restored.blocks.keys()),
+      new Set(reachable.blocks.keys()),
       new Set(graph.blocks.keys()),
     );
+    const reader = await CarReader.fromBytes(await car(root, reachable));
+    assert.ok((await reader.getRoots())[0]!.equals(root));
+    try {
+      store.registerOwner("owner", []);
+      const rootBlock = await reader.get(root);
+      assert.ok(rootBlock);
+      await store.stageBlock("owner/import", root, rootBlock.bytes);
+      await assert.rejects(
+        store.finishImport("owner/import", root),
+        /unfinished/,
+      );
+      assert.equal(
+        store.pins().includes(root.toString()),
+        false,
+        "A root alone is not a complete import.",
+      );
+      for await (const block of reader.blocks())
+        if (!block.cid.equals(root))
+          await store.stageBlock("owner/import", block.cid, block.bytes);
+      await store.finishImport("owner/import", root, "owner");
+      await store.confirmRetained("owner", [root.toString()]);
+      await store.prepare(root);
+      assert.ok(store.pins().includes(root.toString()));
+      const exported = new ContentBlocks(store);
+      await exported.prepare(root);
+      const restored = new ContentBlocks();
+      const exportedCar = await CarReader.fromBytes(await car(root, exported));
+      for await (const block of exportedCar.blocks())
+        await restored.put(block.cid, block.bytes);
+      await restored.prepare(root);
+      assert.deepEqual(
+        new Set(restored.blocks.keys()),
+        new Set(graph.blocks.keys()),
+      );
 
-    await store.retain("other", [root.toString()]);
-    await store.confirmRetained("other", [root.toString()]);
-    await store.reconcile("owner", []);
-    assert.ok(
-      store.pins().includes(root.toString()),
-      "Another owner preserves the strong graph.",
-    );
-    const stale = Buffer.from("now missing or corrupt");
-    const rawPath = join(directory, "blocks", raw.toString());
-    const original = await readFile(rawPath);
-    await rm(rawPath);
-    await assert.rejects(store.pin(root), /unfinished/);
-    await assert.rejects(
-      store.retain("owner", [root.toString()]),
-      /unfinished/,
-    );
-    await assert.rejects(store.reconcile("owner", []), /unfinished/);
-    await writeFile(rawPath, stale);
-    await assert.rejects(store.pin(root), /unfinished/);
-    await writeFile(rawPath, original);
-    await store.recoverOwner("owner", []);
-    await store.reconcile("owner", []);
-    assert.ok(store.pins().includes(root.toString()));
-    await store.reconcile("other", []);
-    assert.equal(store.pins().includes(root.toString()), false);
-    assert.deepEqual(
-      await store.block.get(root.toString()),
-      Uint8Array.from(rootBlock.bytes),
-      "Unpin is not physical deletion.",
-    );
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+      await store.retain("other", [root.toString()]);
+      await store.confirmRetained("other", [root.toString()]);
+      await store.reconcile("owner", []);
+      assert.ok(
+        store.pins().includes(root.toString()),
+        "Another owner preserves the strong graph.",
+      );
+      const stale = Buffer.from("now missing or corrupt");
+      const rawPath = join(directory, "blocks", raw.toString());
+      const original = await readFile(rawPath);
+      await rm(rawPath);
+      await assert.rejects(store.pin(root), /unfinished/);
+      await assert.rejects(
+        store.retain("owner", [root.toString()]),
+        /unfinished/,
+      );
+      await assert.rejects(store.reconcile("owner", []), /unfinished/);
+      await writeFile(rawPath, stale);
+      await assert.rejects(store.pin(root), /unfinished/);
+      await writeFile(rawPath, original);
+      await store.recoverOwner("owner", []);
+      await store.reconcile("owner", []);
+      assert.ok(store.pins().includes(root.toString()));
+      await store.reconcile("other", []);
+      assert.equal(store.pins().includes(root.toString()), false);
+      assert.deepEqual(
+        await store.block.get(root.toString()),
+        Uint8Array.from(rootBlock.bytes),
+        "Unpin is not physical deletion.",
+      );
+    } finally {
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
-test("mixed graphs reject unsupported codecs/hashes, missing/corrupt blocks and exceeded budgets", async () => {
-  const { graph, root, raw } = await mixedGraph();
-  const bytes = await graph.block.get(raw.toString());
-  const unknown = CID.createV1(0x1234, await sha256.digest(bytes));
-  await graph.put(unknown, bytes);
-  const unsupportedRoot = await structured(graph, { child: unknown });
-  const unsupportedHash = CID.createV1(0x55, await sha512.digest(bytes));
-  const hashRoot = await structured(graph, { child: unsupportedHash });
-  const missing = CID.createV1(
-    0x55,
-    await sha256.digest(Buffer.from("missing")),
-  );
-  const missingRoot = await structured(graph, { child: missing });
-  for (const [candidate, reason] of [
-    [unsupportedRoot, /codec/],
-    [hashRoot, /hash/],
-    [missingRoot, /Missing/],
-  ] as const) {
-    const source = {
+test(
+  "mixed graphs reject unsupported codecs/hashes, missing/corrupt blocks and exceeded budgets",
+  { tags: ["mock"] },
+  async () => {
+    const { graph, root, raw } = await mixedGraph();
+    const bytes = await graph.block.get(raw.toString());
+    const unknown = CID.createV1(0x1234, await sha256.digest(bytes));
+    await graph.put(unknown, bytes);
+    const unsupportedRoot = await structured(graph, { child: unknown });
+    const unsupportedHash = CID.createV1(0x55, await sha512.digest(bytes));
+    const hashRoot = await structured(graph, { child: unsupportedHash });
+    const missing = CID.createV1(
+      0x55,
+      await sha256.digest(Buffer.from("missing")),
+    );
+    const missingRoot = await structured(graph, { child: missing });
+    for (const [candidate, reason] of [
+      [unsupportedRoot, /codec/],
+      [hashRoot, /hash/],
+      [missingRoot, /Missing/],
+    ] as const) {
+      const source = {
+        block: {
+          get: (value: string) =>
+            value === unsupportedHash.toString()
+              ? Promise.resolve(bytes)
+              : graph.block.get(value),
+        },
+      };
+      const memory = new ContentBlocks(source);
+      const store = IpfsStore.fromClient(source);
+      try {
+        await assert.rejects(memory.prepare(candidate), reason);
+        await assert.rejects(store.prepare(candidate), reason);
+      } finally {
+        await memory.close();
+        await store.close();
+      }
+    }
+    for (const limits of [
+      { blocks: 1 },
+      { bytes: 1 },
+      { blockBytes: 1 },
+      { depth: 1 },
+    ]) {
+      const memory = new ContentBlocks(graph, limits);
+      const store = IpfsStore.fromClient(graph, limits);
+      try {
+        await assert.rejects(memory.prepare(root), /capacity/);
+        await assert.rejects(store.prepare(root), /capacity/);
+      } finally {
+        await memory.close();
+        await store.close();
+      }
+    }
+    const corrupt = {
       block: {
-        get: (value: string) =>
-          value === unsupportedHash.toString()
-            ? Promise.resolve(bytes)
+        get: async (value: string) =>
+          value === raw.toString()
+            ? Buffer.from("corrupt")
             : graph.block.get(value),
       },
     };
-    const memory = new ContentBlocks(source);
+    const store = IpfsStore.fromClient(corrupt);
+    try {
+      await assert.rejects(store.prepare(root), /verification/);
+    } finally {
+      await store.close();
+    }
+    assert.throws(
+      () => contentLinks(root, Uint8Array.of(0xff)),
+      /Unexpected|decode|CBOR|data/i,
+    );
+  },
+);
+
+test(
+  "shared subgraphs cannot hide over-depth paths after a shallower traversal",
+  { tags: ["mock"] },
+  async () => {
+    const graph = new ContentBlocks();
+    const leaf = CID.createV1(0x55, await sha256.digest(Uint8Array.of(1)));
+    await graph.put(leaf, Uint8Array.of(1));
+    const shared = await structured(graph, [leaf]);
+    const branch = await structured(graph, [shared]);
+    const root = await structured(graph, [shared, branch]);
+    for (const depth of [2, 3]) {
+      const store = IpfsStore.fromClient(graph, { depth });
+      const memory = new ContentBlocks(graph, { depth });
+      try {
+        if (depth === 2) {
+          await assert.rejects(store.prepare(root), /depth/);
+          await assert.rejects(memory.prepare(root), /depth/);
+        } else {
+          await store.prepare(root);
+          await memory.prepare(root);
+        }
+      } finally {
+        await store.close();
+        await memory.close();
+      }
+    }
+  },
+);
+
+test(
+  "CID access streams the shared file/directory DU and only resolves resource paths",
+  { tags: ["mock"] },
+  async () => {
+    const { graph, directory, root, data } = await mixedGraph();
+    const store = IpfsStore.fromClient(graph);
+    try {
+      const node = await store.readContent(directory);
+      assert.equal(node.kind, "directory");
+      const entries = [];
+      for await (const entry of node.entries) entries.push(entry);
+      assert.deepEqual(
+        entries.map(({ name, kind }) => ({ name, kind })),
+        [{ name: "nested", kind: "directory" }],
+      );
+      const fileCid = await store.resolveContent(directory, "nested/file");
+      const file = await store.readContent(fileCid);
+      assert.ok(file.kind === "file");
+      const reader = file.content.getReader();
+      const parts: Uint8Array[] = [];
+      for (;;) {
+        const item = await reader.read();
+        if (item.done) break;
+        parts.push(item.value);
+      }
+      assert.deepEqual(Buffer.concat(parts), data);
+      assert.ok((await store.resolveContent(directory, "")).equals(directory));
+      for (const path of [
+        "/nested",
+        "../nested",
+        "nested/",
+        "nested//file",
+        "nested\\file",
+      ])
+        await assert.rejects(store.resolveContent(directory, path), /relative/);
+      await assert.rejects(
+        store.resolveContent(fileCid, "anything"),
+        /through a file/,
+      );
+      await assert.rejects(store.readContent(root), /regular UnixFS/);
+      await assert.rejects(
+        store.resolveContent(root, "payload"),
+        /regular UnixFS/,
+      );
+      const signal = new AbortController();
+      const canceled = await store.readContent(directory, {
+        signal: signal.signal,
+      });
+      assert.ok(canceled.kind === "directory");
+      signal.abort(new Error("stop listing"));
+      await assert.rejects(
+        canceled.entries[Symbol.asyncIterator]().next(),
+        /stop listing/,
+      );
+      const fileSignal = new AbortController();
+      const canceledFile = await store.readContent(fileCid, {
+        signal: fileSignal.signal,
+      });
+      assert.ok(canceledFile.kind === "file");
+      fileSignal.abort(new Error("stop stream"));
+      await assert.rejects(
+        canceledFile.content.getReader().read(),
+        /stop stream/,
+      );
+    } finally {
+      await store.close();
+    }
+  },
+);
+
+test(
+  "canceling a pending Web file stream stops that reader without waiting for its source",
+  { tags: ["mock"] },
+  async () => {
+    const { graph, directory } = await mixedGraph();
+    let began = () => {};
+    const started = new Promise<void>((resolve) => {
+      began = resolve;
+    });
+    const source = {
+      block: {
+        async get(value: string) {
+          if (CID.parse(value).code === 0x55) {
+            began();
+            return new Promise<Uint8Array>(() => {});
+          }
+          return graph.block.get(value);
+        },
+      },
+    };
     const store = IpfsStore.fromClient(source);
     try {
-      await assert.rejects(memory.prepare(candidate), reason);
-      await assert.rejects(store.prepare(candidate), reason);
+      const fileCid = await store.resolveContent(directory, "nested/file");
+      const file = await store.readContent(fileCid);
+      assert.ok(file.kind === "file");
+      const reader = file.content.getReader();
+      const pending = reader.read();
+      await started;
+      await reader.cancel();
+      assert.equal((await pending).done, true);
     } finally {
-      await memory.close();
       await store.close();
     }
-  }
-  for (const limits of [
-    { blocks: 1 },
-    { bytes: 1 },
-    { blockBytes: 1 },
-    { depth: 1 },
-  ]) {
-    const memory = new ContentBlocks(graph, limits);
-    const store = IpfsStore.fromClient(graph, limits);
+  },
+);
+
+test(
+  "putContent stores UnixFS bytes before returning a CID and honors cancel",
+  { tags: ["release-e2e"] },
+  async () => {
+    const directory = resolve(".cache", `put-${randomUUID()}`);
+    const store = new IpfsStore({ dataDir: directory });
     try {
-      await assert.rejects(memory.prepare(root), /capacity/);
-      await assert.rejects(store.prepare(root), /capacity/);
-    } finally {
-      await memory.close();
-      await store.close();
-    }
-  }
-  const corrupt = {
-    block: {
-      get: async (value: string) =>
-        value === raw.toString()
-          ? Buffer.from("corrupt")
-          : graph.block.get(value),
-    },
-  };
-  const store = IpfsStore.fromClient(corrupt);
-  try {
-    await assert.rejects(store.prepare(root), /verification/);
-  } finally {
-    await store.close();
-  }
-  assert.throws(
-    () => contentLinks(root, Uint8Array.of(0xff)),
-    /Unexpected|decode|CBOR|data/i,
-  );
-});
-
-test("shared subgraphs cannot hide over-depth paths after a shallower traversal", async () => {
-  const graph = new ContentBlocks();
-  const leaf = CID.createV1(0x55, await sha256.digest(Uint8Array.of(1)));
-  await graph.put(leaf, Uint8Array.of(1));
-  const shared = await structured(graph, [leaf]);
-  const branch = await structured(graph, [shared]);
-  const root = await structured(graph, [shared, branch]);
-  for (const depth of [2, 3]) {
-    const store = IpfsStore.fromClient(graph, { depth });
-    const memory = new ContentBlocks(graph, { depth });
-    try {
-      if (depth === 2) {
-        await assert.rejects(store.prepare(root), /depth/);
-        await assert.rejects(memory.prepare(root), /depth/);
-      } else {
-        await store.prepare(root);
-        await memory.prepare(root);
-      }
-    } finally {
-      await store.close();
-      await memory.close();
-    }
-  }
-});
-
-test("CID access streams the shared file/directory DU and only resolves resource paths", async () => {
-  const { graph, directory, root, data } = await mixedGraph();
-  const store = IpfsStore.fromClient(graph);
-  try {
-    const node = await store.readContent(directory);
-    assert.equal(node.kind, "directory");
-    const entries = [];
-    for await (const entry of node.entries) entries.push(entry);
-    assert.deepEqual(
-      entries.map(({ name, kind }) => ({ name, kind })),
-      [{ name: "nested", kind: "directory" }],
-    );
-    const fileCid = await store.resolveContent(directory, "nested/file");
-    const file = await store.readContent(fileCid);
-    assert.ok(file.kind === "file");
-    const reader = file.content.getReader();
-    const parts: Uint8Array[] = [];
-    for (;;) {
-      const item = await reader.read();
-      if (item.done) break;
-      parts.push(item.value);
-    }
-    assert.deepEqual(Buffer.concat(parts), data);
-    assert.ok((await store.resolveContent(directory, "")).equals(directory));
-    for (const path of [
-      "/nested",
-      "../nested",
-      "nested/",
-      "nested//file",
-      "nested\\file",
-    ])
-      await assert.rejects(store.resolveContent(directory, path), /relative/);
-    await assert.rejects(
-      store.resolveContent(fileCid, "anything"),
-      /through a file/,
-    );
-    await assert.rejects(store.readContent(root), /regular UnixFS/);
-    await assert.rejects(
-      store.resolveContent(root, "payload"),
-      /regular UnixFS/,
-    );
-    const signal = new AbortController();
-    const canceled = await store.readContent(directory, {
-      signal: signal.signal,
-    });
-    assert.ok(canceled.kind === "directory");
-    signal.abort(new Error("stop listing"));
-    await assert.rejects(
-      canceled.entries[Symbol.asyncIterator]().next(),
-      /stop listing/,
-    );
-    const fileSignal = new AbortController();
-    const canceledFile = await store.readContent(fileCid, {
-      signal: fileSignal.signal,
-    });
-    assert.ok(canceledFile.kind === "file");
-    fileSignal.abort(new Error("stop stream"));
-    await assert.rejects(
-      canceledFile.content.getReader().read(),
-      /stop stream/,
-    );
-  } finally {
-    await store.close();
-  }
-});
-
-test("canceling a pending Web file stream stops that reader without waiting for its source", async () => {
-  const { graph, directory } = await mixedGraph();
-  let began = () => {};
-  const started = new Promise<void>((resolve) => {
-    began = resolve;
-  });
-  const source = {
-    block: {
-      async get(value: string) {
-        if (CID.parse(value).code === 0x55) {
-          began();
-          return new Promise<Uint8Array>(() => {});
-        }
-        return graph.block.get(value);
-      },
-    },
-  };
-  const store = IpfsStore.fromClient(source);
-  try {
-    const fileCid = await store.resolveContent(directory, "nested/file");
-    const file = await store.readContent(fileCid);
-    assert.ok(file.kind === "file");
-    const reader = file.content.getReader();
-    const pending = reader.read();
-    await started;
-    await reader.cancel();
-    assert.equal((await pending).done, true);
-  } finally {
-    await store.close();
-  }
-});
-
-test("putContent stores UnixFS bytes before returning a CID and honors cancel", async () => {
-  const directory = resolve(".cache", `put-${randomUUID()}`);
-  const store = new IpfsStore({ dataDir: directory });
-  try {
-    const payload = Buffer.from("put-content-bytes");
-    const cid = await store.putContent(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(payload);
-          controller.close();
-        },
-      }),
-    );
-    const node = await store.readContent(cid);
-    assert.ok(node.kind === "file");
-    const parts: Uint8Array[] = [];
-    const reader = node.content.getReader();
-    for (;;) {
-      const item = await reader.read();
-      if (item.done) break;
-      parts.push(item.value);
-    }
-    assert.deepEqual(Buffer.concat(parts), payload);
-    const canceled = new AbortController();
-    canceled.abort(new Error("stop writer"));
-    await assert.rejects(
-      store.putContent(
+      const payload = Buffer.from("put-content-bytes");
+      const cid = await store.putContent(
         new ReadableStream({
           start(controller) {
-            controller.enqueue(Buffer.alloc(32, 7));
+            controller.enqueue(payload);
             controller.close();
           },
         }),
-        { signal: canceled.signal },
-      ),
-      /stop writer/,
-    );
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+      );
+      const node = await store.readContent(cid);
+      assert.ok(node.kind === "file");
+      const parts: Uint8Array[] = [];
+      const reader = node.content.getReader();
+      for (;;) {
+        const item = await reader.read();
+        if (item.done) break;
+        parts.push(item.value);
+      }
+      assert.deepEqual(Buffer.concat(parts), payload);
+      const canceled = new AbortController();
+      canceled.abort(new Error("stop writer"));
+      await assert.rejects(
+        store.putContent(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.alloc(32, 7));
+              controller.close();
+            },
+          }),
+          { signal: canceled.signal },
+        ),
+        /stop writer/,
+      );
+    } finally {
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

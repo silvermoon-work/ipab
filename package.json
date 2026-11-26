@@ -19,9 +19,9 @@
   "packageManager": "pnpm@11.28.12",
   "scripts": {
     "build": "turbo run build",
-    "check": "run-s format-check build typecheck lint test-coverage lint-package",
+    "check": "run-s format-check build typecheck lint test-ci lint-package",
     "check-ci": "run-s format-check build typecheck lint test-ci lint-package",
-    "check-release": "run-s check test-package-smoke",
+    "check-release": "run-s format-check build typecheck lint test-coverage lint-package test-package-smoke",
     "clean": "rimraf --glob \"{dist,coverage,.turbo}\" \"{apps,packages}/*/{dist,coverage,.turbo}\"",
     "format": "prettier --write .",
     "format-check": "prettier --check .",

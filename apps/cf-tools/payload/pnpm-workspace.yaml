@@ -1,0 +1,10 @@
+packages:
+  - .
+
+engineStrict: true
+strictPeerDependencies: true
+virtualStoreType: global
+
+allowBuilds:
+  esbuild: true
+  workerd: true

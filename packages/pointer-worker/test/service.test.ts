@@ -30,7 +30,7 @@ describe("publication pointer API", { tags: ["mock"] }, () => {
     );
     expect(await read.json()).toEqual({ root: ROOT, revision: "1" });
     expect(read.headers.get("etag")).toBe('"1"');
-    expect(read.headers.get("cache-control")).toBe("no-store");
+    expect(read.headers.get("cache-control")).toBe("no-store, no-transform");
     expect((await service.fetch(`${SERVICE}/v1/pointers/${id}`)).status).toBe(
       401,
     );

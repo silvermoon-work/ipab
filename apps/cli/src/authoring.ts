@@ -518,7 +518,9 @@ export async function initBundle(
       throw new HostError("JSONL default must be an array.");
     value = entry.defaultValue.map((item) => JSON.stringify(item)).join("\n");
     if (value) value += "\n";
-  } else
+  } else if (entry.contentType === "text/markdown")
+    value = `---\n${stringify(entry.defaultValue)}---\n`;
+  else
     value =
       entry.contentType === "application/yaml"
         ? stringify(entry.defaultValue)

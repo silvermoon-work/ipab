@@ -294,6 +294,58 @@ describe("single-block schemas and immutable content", () => {
       message: expect.stringContaining("JSONL line 2") as unknown,
     });
   });
+  it("validates Markdown metadata while preserving the entry body and type identity", async () => {
+    const manifest = definition(
+      {
+        type: "object",
+        required: ["title"],
+        properties: { title: { type: "string" } },
+        additionalProperties: false,
+      },
+      { title: "Untitled" },
+      "note.md",
+      "text/markdown",
+    );
+    const type = await encodeSchema(manifest);
+    const sources = [
+      "---\r\ntitle: Note\r\n---\r\n# Body\r\ninvalid: [\r\n",
+      "---\ntitle: Other\n---\n# Different body\n",
+    ];
+    const roots: string[] = [];
+    for (const source of sources) {
+      const f = await tree({
+        ".bundle.yaml": json(manifest),
+        "note.md": text(source),
+      });
+      const bundle = await openBundle(f.root, f);
+      roots.push(bundle.cid.toString());
+      expect(bundle.schemaKey).toBe(type.cid.toString());
+      expect(await read(await bundle.readFile("note.md"))).toEqual(
+        text(source),
+      );
+      await expect(
+        openBundle(f.root, {
+          ...f,
+          limits: { documentBytes: text(source).byteLength - 1 },
+        }),
+      ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED", path: "note.md" });
+    }
+    expect(roots[0]).not.toBe(roots[1]);
+    for (const [source, pointer] of [
+      ["# No metadata\n", ""],
+      ["---\ntitle: 1\n---\n", "/title"],
+    ] satisfies [string, string][]) {
+      const f = await tree({
+        ".bundle.yaml": json(manifest),
+        "note.md": text(source),
+      });
+      await expect(openBundle(f.root, f)).rejects.toMatchObject({
+        code: "CONTENT_INVALID",
+        path: "note.md",
+        pointer,
+      });
+    }
+  });
   it("leaves dependencies and nested manifests opaque without fetching their schemas", async () => {
     const missing = await encodeSchema(definition({ type: "integer" }, 1));
     const f = await fixture(
@@ -533,6 +585,54 @@ describe("single-block schemas and immutable content", () => {
   });
 });
 describe("closed schema profile and safe parsing", () => {
+  it.each([
+    ["---\ntitle: Note\n---\n# Body\ninvalid: [", { title: "Note" }],
+    ["---\r\ntitle: Note\r\n---\r\n# Body\r\n", { title: "Note" }],
+    ["---\ntitle: Note\n---", { title: "Note" }],
+    ["# No frontmatter\n---\ntitle: body\n---\n", {}],
+    ["", {}],
+    ["---\n---\n# Body", {}],
+    ["---\n# Only a comment\n---\n", {}],
+  ])("parses only leading Markdown frontmatter: %s", (source, expected) => {
+    expect(parseData(text(source), "text/markdown")).toEqual(expected);
+  });
+  it.each([
+    "---",
+    "---\ntitle: Note\n",
+    "---\ntitle: Note\r---\n",
+    "---\ntitle: Note\u2028---\n",
+    "---\ntitle: A\ntitle: B\n---\n",
+    "---\nnull\n---\n",
+    "---\n[]\n---\n",
+    "---\ntext\n---\n",
+    "---\nn: .inf\n---\n",
+    "---\nn: 9007199254740992\n---\n",
+    "---\na: &a { next: *a }\n---\n",
+  ])("rejects invalid Markdown frontmatter: %s", (source) => {
+    expect(() => parseData(text(source), "text/markdown")).toThrow(
+      ContentBundleError,
+    );
+  });
+  it("keeps Markdown parsing bounded and checks UTF-8 even in its opaque body", () => {
+    expect(
+      parseData(
+        text(`---\n#${" ".repeat(100_000)}\ntitle: Note\n---\n`),
+        "text/markdown",
+      ),
+    ).toEqual({ title: "Note" });
+    expect(() =>
+      parseData(text("---\na: 1\n---\n"), "text/markdown", 1),
+    ).toThrow("node");
+    expect(() =>
+      parseData(text("---\na: { b: {} }\n---\n"), "text/markdown", 100, 1),
+    ).toThrow("depth");
+    expect(() =>
+      parseData(
+        Uint8Array.from([...text("---\n{}\n---\n"), 255]),
+        "text/markdown",
+      ),
+    ).toThrow("UTF-8");
+  });
   it("requires complete type metadata and validates default data, including JSONL", async () => {
     const valid = definition({ type: "object" });
     for (const value of [
@@ -544,6 +644,9 @@ describe("closed schema profile and safe parsing", () => {
       { ...valid, entry: { ...valid.entry, defaultValue: 1 } },
       { ...valid, entry: { ...valid.entry, contentType: "text/plain" } },
       { ...valid, entry: { ...valid.entry, contentType: "application/jsonl" } },
+      definition(true, [], "SKILL.md", "text/markdown"),
+      definition(true, null, "SKILL.md", "text/markdown"),
+      definition(true, "", "SKILL.md", "text/markdown"),
       { ...valid, entry: { ...valid.entry, path: "../x" } },
       { ...valid, entry: { ...valid.entry, path: ".bundle.yaml" } },
       { ...valid, entry: { ...valid.entry, schema: 1 } },

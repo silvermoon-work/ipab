@@ -112,6 +112,8 @@ ipab --help
 - [Check Spec 查看器](apps/check-viewer)：查看有序检查定义，长 Instructions
   拆成 Bundle 内的 Markdown 文件；[示例](examples/check-spec)。
 - [Bundle 工具](docs/reference.md#bundle-开发底层)：初始化、构建、检查与导入。
+- [Agent Skill Bundle](docs/reference.md#agent-skill-bundle)：以 Markdown 为入口，
+  校验 frontmatter 元数据；[可构建示例](examples/agent-skill)。
 - [问题反馈](https://github.com/silvermoon-work/ipab/issues) ·
   [参与贡献](CONTRIBUTING.md) · [设计概览](docs/design-overview.md)
 - [验证分层](CONTRIBUTING.md#ci-与交付)：日常 `pnpm check-ci`、全量

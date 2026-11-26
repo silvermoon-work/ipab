@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile, symlink } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { CarBlockIterator } from "@ipld/car/iterator";
 import * as dagPb from "@ipld/dag-pb";
 import type { CID } from "multiformats/cid";
-import { canonicalJson, encodeSchema, openBundle } from "@ipab/bundle";
+import {
+  canonicalJson,
+  encodeSchema,
+  openBundle,
+  parseBundleManifest,
+  parseData,
+} from "@ipab/bundle";
 import {
   encodeBundleCar,
   encodeSchemaCar,
@@ -89,6 +95,73 @@ async function directory() {
   return path;
 }
 describe("deterministic bounded UnixFS CAR construction", () => {
+  it("builds the Agent Skill example with its complete type and unchanged Markdown resources", async () => {
+    const directory = resolve("../../examples/agent-skill");
+    const manifest = parseBundleManifest(
+      await readFile(join(directory, ".bundle.yaml")),
+    );
+    const type = await encodeSchema(manifest);
+    const encoded = await encodeBundleCar(
+      await filesystemTree(directory, {
+        exclude: (path) => path === ".bundle-ignore" || path === "dist",
+      }),
+    );
+    try {
+      const decoded = await decode(await consume(encoded.stream));
+      const bundle = await openBundle(decoded.root, decoded);
+      expect(bundle.schemaKey).toBe(type.cid.toString());
+      expect(decoded.blocks.get(bundle.schemaKey)).toEqual(type.bytes);
+      const source = Uint8Array.from(
+        await readFile(join(directory, "SKILL.md")),
+      );
+      expect(
+        await consume(await bundle.readFile(bundle.manifest.entry.path)),
+      ).toEqual(source);
+      expect(parseData(source, "text/markdown")).toMatchObject({
+        name: "agent-skill",
+        metadata: { version: "1.0" },
+        "allowed-tools": "Read",
+      });
+      expect(
+        await consume(await bundle.readFile("references/WORKFLOW.md")),
+      ).toEqual(
+        Uint8Array.from(
+          await readFile(join(directory, "references", "WORKFLOW.md")),
+        ),
+      );
+    } finally {
+      await encoded.close();
+    }
+    for (const metadata of [
+      { name: "agent-skill" },
+      { name: 1, description: "Wrong name type" },
+      { name: "agent-skill", description: "Unknown field", extra: true },
+      {
+        name: "agent-skill",
+        description: "Wrong metadata value",
+        metadata: { version: 1 },
+      },
+      {
+        name: "agent-skill",
+        description: "Wrong tool type",
+        "allowed-tools": ["Read"],
+      },
+    ]) {
+      await expect(
+        encodeBundleCar(
+          memoryTree(
+            new Map([
+              [".bundle.yaml", canonicalJson(manifest)],
+              [
+                "SKILL.md",
+                text(`---\n${JSON.stringify(metadata)}\n---\n# Body\n`),
+              ],
+            ]),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CONTENT_INVALID", path: "SKILL.md" });
+    }
+  });
   it("repeats identical roots and CAR bytes, root-first, unique binary sorted blocks including the schema", async () => {
     const first = await encodeBundleCar(memoryTree(controls), options);
     const root = first.cid;

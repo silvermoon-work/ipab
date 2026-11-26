@@ -16,6 +16,9 @@ pnpm check
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，
 以及真实 App CAR 读取示例 Content Bundle 后的内容 SSR 与关闭行为。
+Bundle／Builder 测试覆盖 Markdown frontmatter、入口字节保留和 Agent Skill
+示例 CAR；CLI 测试覆盖 Markdown 初始化。Builder 的各测试任务将 Skill 示例
+源文件纳入 Turbo 缓存输入，不将示例生成的 `dist/` 作为输入或资源。
 
 ## 工程命令
 

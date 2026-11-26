@@ -465,6 +465,12 @@ entry:
 | `application/json`  | 一个 JSON-compatible 值    |
 | `application/yaml`  | 一个 JSON-compatible 值    |
 | `application/jsonl` | 按文件行顺序解析得到的数组 |
+| `text/markdown`     | 开头 YAML frontmatter 对象 |
+
+Markdown 的 Schema 只约束 frontmatter 对象，正文保留原始字节并由 App
+解释。无 frontmatter 或空块对应 `{}`；未闭合块及非对象元数据明确失败。
+初始化将对象默认值写为 frontmatter，正文为空；完整约定见
+[Bundle runtime](../packages/bundle/README.md)。
 
 JSONL 保留记录顺序和重复值，不添加 `{records: [...]}` 包装。
 其 Schema 必须显式声明根 `type: array`，校验完整数组而非只校验单条记录。

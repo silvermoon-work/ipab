@@ -130,6 +130,7 @@ describe("bundle development CLI", () => {
     "application/json",
     "application/yaml",
     "application/jsonl",
+    "text/markdown",
   ] as const)(
     "initializes %s from a local type CAR and validates the generated entry",
     async (contentType) => {
@@ -144,7 +145,9 @@ describe("bundle development CLI", () => {
       const path =
         contentType === "application/jsonl"
           ? "nested/events.jsonl"
-          : "nested/data";
+          : contentType === "text/markdown"
+            ? "nested/SKILL.md"
+            : "nested/data";
       const input = {
         ...definition,
         entry: { path, schema, contentType, defaultValue: value },
@@ -178,6 +181,10 @@ describe("bundle development CLI", () => {
           contentType,
         ),
       ).toEqual(value);
+      if (contentType === "text/markdown")
+        expect(
+          await readFile(join(directory, ...path.split("/")), "utf8"),
+        ).toBe("---\ntitle: Untitled\n---\n");
       expect(
         (await cli(work.stateDir, ["bundle", "build", directory])).code,
       ).toBe(0);

@@ -651,6 +651,16 @@ work 预算，拒绝空的已声明 CAR。该声明不解析或改写 argv，exe
 默认数据必须符合入口 Schema。完整定义的 canonical DAG-CBOR CID 用于注册；
 实际数据修改不改变类型 CID。
 
+入口格式支持 `application/json`、`application/yaml`、`application/jsonl` 和
+`text/markdown`。Markdown 的 `entry.schema` 只约束文件开头 YAML frontmatter
+对象，不约束正文。准确 `---` 行包围 frontmatter，支持 LF／CRLF；
+缺省或空 frontmatter 视为 `{}`，能否通过由 Schema 决定。
+未闭合 frontmatter、重复键、非对象数据及非法 YAML 明确失败。
+整个入口（包括正文）仍须符合 UTF-8 和字节预算，正文与链接不触发业务解析或读取。
+Markdown `defaultValue` 必须为符合 Schema 的对象；`bundle init` 将其写为
+frontmatter，正文初始为空。完整语义见
+[Bundle runtime](../packages/bundle/README.md)。
+
 从仓库根体验以下离线闭环（`ipab` 也可以替换为
 `node .\apps\cli\dist\main.js`）：
 
@@ -703,6 +713,41 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
   因此无 ignore 文件时重复默认构建也不会把自己的产物带入。
 - 构建先完整校验／消费输入，再提交完整 CAR；失败／取消清理本次临时文件，
   不清空源目录、`dist` 或共享 Store。再次构建已有产物需显式 `--replace`。
+
+### Agent Skill Bundle
+
+[示例目录](../examples/agent-skill)提供可复用的完整
+[类型定义](../examples/agent-skill/.bundle.yaml)，固定入口为 `SKILL.md`、
+`contentType: text/markdown`，遵循
+[Agent Skills 字段规范](https://agentskills.io/specification)：
+
+- 必填 `name`、`description`，均为字符串。
+- 可选 `license`、`compatibility`、`allowed-tools`，均为字符串。
+- 可选 `metadata`，为字符串值映射。
+- 拒绝未知 frontmatter 字段；自定义元数据放在 `metadata` 中。
+
+Bundle 只做结构校验，不声称完成 Agent Skills 的全部语义校验：
+名称格式／长度、description／compatibility 长度、解包目录名与 skill name
+一致性等由消费端另行检查。正文是 Skill 指令，资源仍为不透明文件。
+`allowed-tools` 是声明，不授予权限；构建／初始化／导入／校验不执行 Skill
+或脚本，也不安装依赖、自动读取引用、注册 builtin 或加载到 Agent。
+Skill 的发现、渐进加载和执行仍由 Agent 适配层负责。
+
+从仓库根构建及检查示例：
+
+```powershell
+ipab bundle build .\examples\agent-skill --no-import
+ipab --json bundle inspect .\examples\agent-skill\dist\bundle.car
+ipab bundle build .\examples\agent-skill\.bundle.yaml --schema-only --no-import
+ipab bundle init .\examples\agent-skill\dist\schema.car .\agent-skill
+```
+
+类型 CAR 可以单独共享。初始化生成完整定义、默认 frontmatter 和忽略规则，
+不会复制示例正文或资源；需自行补充指令和可选
+`scripts/`、`references/`、`assets/`。
+`defaultValue` 也参与类型 CID，复用类型时保持完整定义不变，只修改实际
+`SKILL.md` 的元数据、正文和资源。
+当前 Bundle 仍要求完整 `entry`；无入口资源类型尚未引入。
 
 ## Store、配置与结果
 

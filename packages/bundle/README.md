@@ -33,10 +33,11 @@ its four fields are required; other fields are rejected.
   initialization suggestion. It cannot collide with `.bundle.yaml` or
   `.bundle-ignore` control paths.
 - `schema` is the self-contained structural JSON Schema for entry data only.
-- `contentType` is exactly `application/json`, `application/yaml` or
-  `application/jsonl`.
+- `contentType` is exactly `application/json`, `application/yaml`,
+  `application/jsonl` or `text/markdown`.
 - `defaultValue` is logical JSON-compatible initialization data, not file text.
-  It must satisfy `schema`; JSONL requires an array.
+  It must satisfy `schema`; JSONL requires an array and Markdown requires an
+  object.
 
 The complete normalized definition is directly encoded as canonical DAG-CBOR
 with a CIDv1/DAG-CBOR/SHA-256 identity. That CID is the Schema-to-App
@@ -63,6 +64,24 @@ ordered array, including an empty file as `[]`; CRLF and terminal newlines are
 accepted, blank internal lines are not. Duplicate keys, invalid
 UTF-8/surrogates, nonfinite numbers and unsafe integers are rejected. Files are
 not rewritten.
+
+Markdown decodes only its leading YAML frontmatter object; `entry.schema`
+validates that object, not the instruction body. Frontmatter starts with an
+exact `---` line at the beginning and ends with the next exact `---` line. LF
+and CRLF are supported, including a closing delimiter at EOF. Missing or empty
+frontmatter decodes to `{}`; required fields can still reject it. An opening
+delimiter without a closing delimiter, non-object metadata or invalid YAML is
+rejected using the same strict parsing and work/depth limits. The entire
+Markdown entry, including its body, must be valid UTF-8 and fit the entry byte
+budget. Body syntax, links and referenced resources are not parsed or loaded.
+File reads preserve all original bytes.
+
+`bundle init` writes Markdown `defaultValue` as YAML between `---` delimiters
+with an empty body. It does not put instruction text in the frontmatter or
+invent a body field in the schema. See the
+[Agent Skill example](../../examples/agent-skill) and
+[authoring reference](../../docs/reference.md#agent-skill-bundle) for a complete
+reusable Skill type definition.
 
 The loader verifies the complete selected storage DAG and paths, parses the
 definition, validates default data and validates the actual entry. Resources and

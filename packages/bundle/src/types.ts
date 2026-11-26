@@ -2,7 +2,10 @@ import type { CID } from "multiformats/cid";
 
 export type JsonSchema = boolean | { readonly [key: string]: unknown };
 export type ContentType =
-  "application/json" | "application/yaml" | "application/jsonl";
+  | "application/json"
+  | "application/yaml"
+  | "application/jsonl"
+  | "text/markdown";
 export interface BundleManifest {
   readonly name: string;
   readonly description: string;

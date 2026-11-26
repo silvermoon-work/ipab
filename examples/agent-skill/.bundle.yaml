@@ -1,0 +1,31 @@
+name: IPAB Agent Skill
+description:
+  Agent Skills metadata and Markdown instructions with optional bundled
+  resources.
+entry:
+  path: SKILL.md
+  contentType: text/markdown
+  schema:
+    type: object
+    additionalProperties: false
+    required: [name, description]
+    properties:
+      name:
+        type: string
+      description:
+        type: string
+      license:
+        type: string
+      compatibility:
+        type: string
+      metadata:
+        type: object
+        additionalProperties:
+          type: string
+      allowed-tools:
+        type: string
+  defaultValue:
+    name: agent-skill
+    description:
+      Inspect an IPAB Bundle definition and report its entry contract. Use when
+      explaining a Bundle without running its application or scripts.

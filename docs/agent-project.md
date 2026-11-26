@@ -85,6 +85,12 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 - 当前 Bundle 协议见 packages/bundle/README.md：.bundle.yaml 本身是完整类型定义，
   包含必填 name、缺省为空的 description，以及 entry 的 path/schema/contentType/
   defaultValue；默认数据须符合入口 Schema，固定路径不得碰撞控制文件。
+  `text/markdown` 入口只解析开头 `---` YAML frontmatter 对象并校验，
+  缺省／空块为 `{}`，正文保留原字节，不解析链接；整个文件须有效 UTF-8
+  且受入口字节预算约束。defaultValue 必须为对象，init 生成 frontmatter 和空正文。
+  examples/agent-skill 提供 SKILL.md 完整类型定义与资源示例，标准字段结构
+  校验拒绝未知字段；名称／长度／目录匹配等语义由消费端检查，不注册 builtin
+  或自动加载／执行 Skill。当前仍要求完整 entry。
   完整归一化定义编码为 CIDv1/DAG-CBOR/SHA-256 block，最多 1 MiB，不分块。
   $defs 和本地 JSON Pointer $ref 在 entry.schema 文档内封闭。
   Schema 只约束入口数据，不约束其他资源；不支持 x-content-ref 或递归内容

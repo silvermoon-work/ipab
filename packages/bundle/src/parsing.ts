@@ -187,6 +187,24 @@ export function canonicalJson(
   return new TextEncoder().encode(serialize(value));
 }
 
+function markdownFrontmatter(source: string): string {
+  const opening = /^---(?:\r?\n|$)/u.exec(source);
+  if (!opening) return "{}";
+  const closing = /\n---(?:\r?\n|$)/gu;
+  closing.lastIndex = opening[0].length - 1;
+  const end = closing.exec(source);
+  if (!end)
+    throw new ContentBundleError(
+      "CONTENT_INVALID",
+      "Markdown frontmatter requires a closing --- line.",
+    );
+  const frontmatter = source.slice(opening[0].length, end.index + 1);
+  const empty = frontmatter
+    .split(/\r?\n|\r/u)
+    .every((line) => /^[ \t]*(?:#[^\r\n]*)?$/u.test(line));
+  return empty ? "{}" : frontmatter;
+}
+
 export function parseData(
   bytes: Uint8Array,
   type: ContentType,
@@ -196,7 +214,9 @@ export function parseData(
 ): unknown {
   jsonLimits(nodes, depth);
   try {
-    const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const source =
+      type === "text/markdown" ? markdownFrontmatter(decoded) : decoded;
     let value: unknown;
     if (type === "application/json") value = json(source, depth);
     else if (type === "application/jsonl") {
@@ -253,6 +273,11 @@ export function parseData(
       value = document.toJS({ maxAliasCount: 100 });
     }
     assertJson(value, nodes, depth, charge);
+    if (type === "text/markdown" && !record(value))
+      throw new ContentBundleError(
+        "CONTENT_INVALID",
+        "Markdown frontmatter must be an object.",
+      );
     return value;
   } catch (cause) {
     if (cause instanceof ContentBundleError) throw cause;
@@ -304,11 +329,14 @@ export function normalizeBundleManifest(value: unknown): BundleManifest {
   if (
     contentType !== "application/json" &&
     contentType !== "application/yaml" &&
-    contentType !== "application/jsonl"
+    contentType !== "application/jsonl" &&
+    contentType !== "text/markdown"
   )
     throw new Error("Unsupported content type.");
   if (contentType === "application/jsonl" && !Array.isArray(defaultValue))
     throw new Error("JSONL defaultValue must be an array.");
+  if (contentType === "text/markdown" && !record(defaultValue))
+    throw new Error("Markdown defaultValue must be an object.");
   return Object.freeze({
     name: value.name,
     description: value.description ?? "",

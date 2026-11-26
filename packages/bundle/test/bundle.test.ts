@@ -18,6 +18,8 @@ import {
   safePath,
   schemaBlockBytes,
   validateContentBundle,
+  validateSchemaValue,
+  schemaDialect,
 } from "../src/index.js";
 import type { BundleLimits, JsonSchema } from "../src/index.js";
 
@@ -34,13 +36,12 @@ const text = (value: string) => new TextEncoder().encode(value);
 const json = (value: unknown) => canonicalJson(value);
 const definition = (
   schema: JsonSchema,
-  defaultValue: unknown = {},
   path = "data.json",
   contentType = "application/json",
 ) => ({
   name: "Fixture",
   description: "",
-  entry: { schema, path, contentType, defaultValue },
+  entry: { schema, path, contentType },
 });
 async function tree(files: Record<string, Uint8Array>) {
   const blocks = new Map<string, Uint8Array>();
@@ -74,14 +75,9 @@ async function fixture(
   value: unknown,
   files: Record<string, Uint8Array> = {},
   type = "application/json",
-  defaultValue: unknown = type === "application/jsonl"
-    ? []
-    : type === "application/yaml"
-      ? {}
-      : value,
 ) {
   // Raw encoding lets the loader tests exercise malformed schemas too.
-  const typeDefinition = definition(schema, defaultValue, "data.json", type);
+  const typeDefinition = definition(schema, "data.json", type);
   const bytes = dagCbor.encode(typeDefinition);
   const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
   const f = await tree({
@@ -107,6 +103,60 @@ async function read(stream: ReadableStream<Uint8Array>) {
   return bytes;
 }
 describe("single-block schemas and immutable content", () => {
+  it.each([
+    "image/png",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/cbor",
+    'application/vnd.example+binary; version="1"',
+  ])(
+    "opens a single opaque %s entry without inventing semantic validation",
+    async (contentType) => {
+      const entry = Uint8Array.of(0, 255, 17, 128);
+      for (const extra of [{}, { schema: false }]) {
+        const manifest = {
+          name: "Binary",
+          entry: { path: "file.bin", contentType, ...extra },
+        };
+        const f = await tree({
+          ".bundle.yaml": json(manifest),
+          "file.bin": entry,
+        });
+        const bundle = await openBundle(f.root, f);
+        expect(bundle.validation).toEqual({
+          status: "unsupported",
+          contentType,
+        });
+        expect(bundle.manifest.entry).toEqual(manifest.entry);
+        expect(await read(await bundle.readFile("file.bin"))).toEqual(entry);
+      }
+    },
+  );
+  it("checks structured syntax even without a schema and keeps missing entries invalid", async () => {
+    const manifest = {
+      name: "JSON",
+      entry: { path: "data.json", contentType: "application/json" },
+    };
+    const good = await tree({
+      ".bundle.yaml": json(manifest),
+      "data.json": text("{}"),
+    });
+    expect((await openBundle(good.root, good)).validation.status).toBe(
+      "schema-absent",
+    );
+    const bad = await tree({
+      ".bundle.yaml": json(manifest),
+      "data.json": text("{"),
+    });
+    await expect(openBundle(bad.root, bad)).rejects.toMatchObject({
+      code: "CONTENT_INVALID",
+      path: "data.json",
+    });
+    const missing = await tree({ ".bundle.yaml": json(manifest) });
+    await expect(openBundle(missing.root, missing)).rejects.toMatchObject({
+      code: "CONTENT_UNAVAILABLE",
+      path: "data.json",
+    });
+  });
   it("verifies the entire storage DAG, exact schema block and unchanged streaming attachments", async () => {
     const attachment = new Uint8Array(700_000).fill(17);
     const f = await fixture(
@@ -160,7 +210,7 @@ describe("single-block schemas and immutable content", () => {
     await expect(
       validateContentBundle(
         f.root,
-        await encodeSchema(definition({ type: "string" }, "")),
+        await encodeSchema(definition({ type: "string" })),
         f,
       ),
     ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
@@ -192,26 +242,20 @@ describe("single-block schemas and immutable content", () => {
     },
   );
   it.each([
-    [{ type: "string" }, 2, ""],
-    [{ type: "integer" }, 2.3, 2],
-    [{ const: { a: 1 } }, { b: 1 }, { a: 1 }],
-    [{ enum: [[1], 2] }, [2], 2],
-    [{ required: ["x"] }, {}, { x: 1 }],
-    [{ additionalProperties: false }, { x: 1 }, {}],
-    [{ items: false }, [1], []],
-    [{ properties: { x: false } }, { x: 1 }, {}],
-    [{ anyOf: [false, { type: "string" }] }, 1, ""],
-    [{ $defs: { n: { type: "integer" } }, $ref: "#/$defs/n" }, "3", 3],
-  ] satisfies [JsonSchema, unknown, unknown][])(
+    [{ type: "string" }, 2],
+    [{ type: "integer" }, 2.3],
+    [{ const: { a: 1 } }, { b: 1 }],
+    [{ enum: [[1], 2] }, [2]],
+    [{ required: ["x"] }, {}],
+    [{ additionalProperties: false }, { x: 1 }],
+    [{ items: false }, [1]],
+    [{ properties: { x: false } }, { x: 1 }],
+    [{ anyOf: [false, { type: "string" }] }, 1],
+    [{ $defs: { n: { type: "integer" } }, $ref: "#/$defs/n" }, "3"],
+  ] satisfies [JsonSchema, unknown][])(
     "rejects invalid entry data",
-    async (schema, value, defaultValue) => {
-      const f = await fixture(
-        schema,
-        value,
-        {},
-        "application/json",
-        defaultValue,
-      );
+    async (schema, value) => {
+      const f = await fixture(schema, value);
       await expect(openBundle(f.root, f)).rejects.toMatchObject({
         code: "CONTENT_INVALID",
         path: "data.json",
@@ -294,8 +338,59 @@ describe("single-block schemas and immutable content", () => {
       message: expect.stringContaining("JSONL line 2") as unknown,
     });
   });
+  it("validates Markdown metadata while preserving the entry body and type identity", async () => {
+    const manifest = definition(
+      {
+        type: "object",
+        required: ["title"],
+        properties: { title: { type: "string" } },
+        additionalProperties: false,
+      },
+      "note.md",
+      "text/markdown",
+    );
+    const type = await encodeSchema(manifest);
+    const sources = [
+      "---\r\ntitle: Note\r\n---\r\n# Body\r\ninvalid: [\r\n",
+      "---\ntitle: Other\n---\n# Different body\n",
+    ];
+    const roots: string[] = [];
+    for (const source of sources) {
+      const f = await tree({
+        ".bundle.yaml": json(manifest),
+        "note.md": text(source),
+      });
+      const bundle = await openBundle(f.root, f);
+      roots.push(bundle.cid.toString());
+      expect(bundle.schemaKey).toBe(type.cid.toString());
+      expect(await read(await bundle.readFile("note.md"))).toEqual(
+        text(source),
+      );
+      await expect(
+        openBundle(f.root, {
+          ...f,
+          limits: { documentBytes: text(source).byteLength - 1 },
+        }),
+      ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED", path: "note.md" });
+    }
+    expect(roots[0]).not.toBe(roots[1]);
+    for (const [source, pointer] of [
+      ["# No metadata\n", ""],
+      ["---\ntitle: 1\n---\n", "/title"],
+    ] satisfies [string, string][]) {
+      const f = await tree({
+        ".bundle.yaml": json(manifest),
+        "note.md": text(source),
+      });
+      await expect(openBundle(f.root, f)).rejects.toMatchObject({
+        code: "CONTENT_INVALID",
+        path: "note.md",
+        pointer,
+      });
+    }
+  });
   it("leaves dependencies and nested manifests opaque without fetching their schemas", async () => {
-    const missing = await encodeSchema(definition({ type: "integer" }, 1));
+    const missing = await encodeSchema(definition({ type: "integer" }));
     const f = await fixture(
       {
         properties: {
@@ -469,28 +564,27 @@ describe("single-block schemas and immutable content", () => {
             "application/json",
           ),
         ).schema,
-        "z",
       ),
     );
     const b = await encodeSchema(
-      definition({ enum: ["z", "a"], type: "string" }, "z"),
+      definition({ enum: ["z", "a"], type: "string" }),
     );
     expect(a.cid.equals(b.cid)).toBe(true);
     expect(a.bytes).toEqual(b.bytes);
     expect(dagCbor.decode(a.bytes)).toEqual(
-      definition({ enum: ["z", "a"], type: "string" }, "z"),
+      definition({ enum: ["z", "a"], type: "string" }),
     );
     const changed = await encodeSchema(
-      definition({ enum: ["a", "z"], type: "string" }, "z"),
+      definition({ enum: ["a", "z"], type: "string" }),
     );
     expect(changed.cid.equals(a.cid)).toBe(false);
     const overhead =
       dagCbor.encode({
-        ...definition(true, null),
+        ...definition(true),
         description: "x".repeat(schemaBlockBytes),
       }).length - schemaBlockBytes;
     const schema = {
-      ...definition(true, null),
+      ...definition(true),
       description: "x".repeat(schemaBlockBytes - overhead),
     };
     const exact = await encodeSchema(schema);
@@ -533,7 +627,151 @@ describe("single-block schemas and immutable content", () => {
   });
 });
 describe("closed schema profile and safe parsing", () => {
-  it("requires complete type metadata and validates default data, including JSONL", async () => {
+  it("uses Draft 2020-12 constraints instead of the former structural subset", () => {
+    const schema = inspectSchema({
+      $schema: schemaDialect,
+      type: "object",
+      required: ["name", "values"],
+      properties: {
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 10,
+          pattern: "^[a-z]+$",
+        },
+        values: {
+          type: "array",
+          prefixItems: [{ type: "string" }],
+          items: { type: "integer", minimum: 1 },
+          minItems: 2,
+          uniqueItems: true,
+        },
+        choice: { oneOf: [{ type: "string" }, { type: "number" }] },
+      },
+      unevaluatedProperties: false,
+    });
+    const validate = (value: unknown) => {
+      validateSchemaValue(schema, value, { depth: 64, charge() {} });
+    };
+    expect(() => {
+      validate({ name: "note", values: ["first", 1], choice: "x" });
+    }).not.toThrow();
+    for (const value of [
+      { name: "", values: ["first", 1] },
+      { name: "UPPER", values: ["first", 1] },
+      { name: "note", values: ["first", 0] },
+      { name: "note", values: ["first", 1, 1] },
+      { name: "note", values: ["first", 1], extra: true },
+    ])
+      expect(() => {
+        validate(value);
+      }).toThrow(ContentBundleError);
+  });
+  it("keeps standard annotations inert, resolves local anchors, and bounds interpreted validation", () => {
+    const schema = inspectSchema({
+      $defs: {
+        name: { $anchor: "name", type: ["string", "null"], minLength: 1 },
+      },
+      $ref: "#name",
+      default: "unused",
+      examples: ["example"],
+      format: "email",
+      "x-content-ref": "not a resource access",
+    });
+    expect(() => {
+      validateSchemaValue(schema, "not-an-email", { depth: 64, charge() {} });
+    }).not.toThrow();
+    expect(() => {
+      validateSchemaValue(schema, "", { depth: 64, charge() {} });
+    }).toThrow(ContentBundleError);
+    let work = 0;
+    expect(() => {
+      validateSchemaValue(schema, "name", {
+        depth: 64,
+        charge() {
+          if (++work > 10)
+            throw new ContentBundleError("LIMIT_EXCEEDED", "Work exceeded.");
+        },
+      });
+    }).toThrow("Work exceeded");
+  });
+  it("resolves embedded schema resources without loading external references", () => {
+    const schema = inspectSchema({
+      $id: "https://example.test/root",
+      $defs: {
+        nested: {
+          $id: "nested",
+          $defs: { name: { type: "string", minLength: 1 } },
+          $ref: "#/$defs/name",
+        },
+      },
+      $ref: "nested",
+    });
+    expect(() => {
+      validateSchemaValue(schema, "note", { depth: 64, charge() {} });
+    }).not.toThrow();
+    expect(() => {
+      validateSchemaValue(schema, "", { depth: 64, charge() {} });
+    }).toThrow(ContentBundleError);
+    expect(() =>
+      inspectSchema({ $ref: "https://example.test/external" }),
+    ).toThrow("external loading is disabled");
+    expect(() => inspectSchema({ pattern: "[" })).toThrow("regular expression");
+    expect(() =>
+      inspectSchema({
+        $vocabulary: { "https://example.test/vocab": true },
+      }),
+    ).toThrow("Unsupported required");
+  });
+  it.each([
+    ["---\ntitle: Note\n---\n# Body\ninvalid: [", { title: "Note" }],
+    ["---\r\ntitle: Note\r\n---\r\n# Body\r\n", { title: "Note" }],
+    ["---\ntitle: Note\n---", { title: "Note" }],
+    ["# No frontmatter\n---\ntitle: body\n---\n", {}],
+    ["", {}],
+    ["---\n---\n# Body", {}],
+    ["---\n# Only a comment\n---\n", {}],
+  ])("parses only leading Markdown frontmatter: %s", (source, expected) => {
+    expect(parseData(text(source), "text/markdown")).toEqual(expected);
+  });
+  it.each([
+    "---",
+    "---\ntitle: Note\n",
+    "---\ntitle: Note\r---\n",
+    "---\ntitle: Note\u2028---\n",
+    "---\ntitle: A\ntitle: B\n---\n",
+    "---\nnull\n---\n",
+    "---\n[]\n---\n",
+    "---\ntext\n---\n",
+    "---\nn: .inf\n---\n",
+    "---\nn: 9007199254740992\n---\n",
+    "---\na: &a { next: *a }\n---\n",
+  ])("rejects invalid Markdown frontmatter: %s", (source) => {
+    expect(() => parseData(text(source), "text/markdown")).toThrow(
+      ContentBundleError,
+    );
+  });
+  it("keeps Markdown parsing bounded and checks UTF-8 even in its opaque body", () => {
+    expect(
+      parseData(
+        text(`---\n#${" ".repeat(100_000)}\ntitle: Note\n---\n`),
+        "text/markdown",
+      ),
+    ).toEqual({ title: "Note" });
+    expect(() =>
+      parseData(text("---\na: 1\n---\n"), "text/markdown", 1),
+    ).toThrow("node");
+    expect(() =>
+      parseData(text("---\na: { b: {} }\n---\n"), "text/markdown", 100, 1),
+    ).toThrow("depth");
+    expect(() =>
+      parseData(
+        Uint8Array.from([...text("---\n{}\n---\n"), 255]),
+        "text/markdown",
+      ),
+    ).toThrow("UTF-8");
+  });
+  it("requires an entry media type, permits optional schema, and rejects removed defaults", async () => {
     const valid = definition({ type: "object" });
     for (const value of [
       { ...valid, name: "" },
@@ -541,14 +779,12 @@ describe("closed schema profile and safe parsing", () => {
       { ...valid, name: null },
       { ...valid, description: null },
       { ...valid, extra: true },
-      { ...valid, entry: { ...valid.entry, defaultValue: 1 } },
-      { ...valid, entry: { ...valid.entry, contentType: "text/plain" } },
-      { ...valid, entry: { ...valid.entry, contentType: "application/jsonl" } },
+      { ...valid, entry: { ...valid.entry, defaultValue: {} } },
+      { ...valid, entry: { ...valid.entry, contentType: "not a MIME type" } },
       { ...valid, entry: { ...valid.entry, path: "../x" } },
       { ...valid, entry: { ...valid.entry, path: ".bundle.yaml" } },
       { ...valid, entry: { ...valid.entry, schema: 1 } },
       { ...valid, entry: { path: "x", schema: {} } },
-      definition(false, null),
     ])
       expect(() => inspectBundleSchema(value)).toThrow(ContentBundleError);
     const omitted = { name: valid.name, entry: valid.entry };
@@ -558,34 +794,27 @@ describe("closed schema profile and safe parsing", () => {
     expect(b.manifest.description).toBe("");
     const renamed = await encodeSchema({ ...valid, name: "Other" });
     expect(renamed.cid.equals(a.cid)).toBe(false);
-    const changed = await fixture(
-      valid.entry.schema,
-      { changed: true },
-      {},
-      "application/json",
-      {},
-    );
-    const original = await fixture(
-      valid.entry.schema,
-      {},
-      {},
-      "application/json",
-      {},
-    );
+    const noSchema = {
+      name: valid.name,
+      entry: { path: "image.png", contentType: "image/png" },
+    };
+    const plain = await encodeSchema(noSchema);
+    const explicit = await encodeSchema({
+      ...noSchema,
+      entry: { ...noSchema.entry, schema: true },
+    });
+    expect(plain.manifest.entry).not.toHaveProperty("schema");
+    expect(plain.cid.equals(explicit.cid)).toBe(false);
+    expect(() => inspectBundleSchema(definition(false))).not.toThrow();
+    const changed = await fixture(valid.entry.schema, { changed: true });
+    const original = await fixture(valid.entry.schema, {});
     expect(changed.schemaCid.equals(original.schemaCid)).toBe(true);
     expect(changed.root.equals(original.root)).toBe(false);
   });
   it.each([
-    { pattern: "x" },
     { $defs: [] },
     { $schema: "https://json-schema.org/schema" },
-    { type: ["string"] },
     { type: "unknown" },
-    { oneOf: [true] },
-    { allOf: [true] },
-    { examples: [] },
-    { default: 1 },
-    { properties: { x: { $id: "urn:nested" } } },
     { properties: [] },
     { items: [] },
     { required: ["x", "x"] },
@@ -593,8 +822,6 @@ describe("closed schema profile and safe parsing", () => {
     { required: "x" },
     { anyOf: [] },
     { anyOf: true },
-    { enum: [] },
-    { enum: [1, 1] },
     { title: 2 },
     { description: null },
     { $ref: "#/properties/absent" },
@@ -603,17 +830,13 @@ describe("closed schema profile and safe parsing", () => {
     { $ref: "#anchor" },
     { $ref: "#/$defs/a~2b" },
     { $ref: "#/%61" },
-    { $id: "relative" },
-    { "x-content-ref": true, type: "string" },
-    { "x-content-ref": "bundle", type: "string" },
-    { "x-content-ref": "file:urn:target", type: "string" },
     { additionalProperties: null },
     null,
     [],
     1,
     { const: Infinity },
     { const: new Uint8Array([1]) },
-  ])("rejects unsupported or malformed schema nodes", (schema) => {
+  ])("rejects unsupported or malformed schema nodes: %j", (schema) => {
     expect(() => inspectSchema(schema)).toThrow(ContentBundleError);
   });
   it("does not inspect data or property names as schema keywords and bounds all definitions", () => {

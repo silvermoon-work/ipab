@@ -49,9 +49,11 @@
     "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage"
   },
   "dependencies": {
+    "ajv": "catalog:",
     "@ipld/dag-cbor": "catalog:",
     "@ipab/ipfs-store": "workspace:*",
     "multiformats": "catalog:",
+    "typebox": "catalog:",
     "yaml": "catalog:"
   },
   "devDependencies": {

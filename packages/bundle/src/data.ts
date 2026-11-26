@@ -7,6 +7,7 @@ export {
 export {
   encodeSchema,
   inspectSchema,
+  schemaDialect,
   validateValue as validateSchemaValue,
 } from "./schema.js";
 export type { SchemaOptions, ValidationContext } from "./schema.js";

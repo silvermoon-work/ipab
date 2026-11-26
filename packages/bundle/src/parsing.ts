@@ -1,6 +1,31 @@
 import { isMap, isSeq, parseAllDocuments } from "yaml";
 import { ContentBundleError } from "./errors.js";
-import type { BundleManifest, ContentType } from "./types.js";
+import type { BundleManifest, ContentType, EntryValidation } from "./types.js";
+
+const mimeToken = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
+const mime = new RegExp(
+  `^${mimeToken}/${mimeToken}(?:[ \\t]*;[ \\t]*${mimeToken}[ \\t]*=[ \\t]*(?:${mimeToken}|"(?:[\\x20\\x21\\x23-\\x5b\\x5d-\\x7e]|\\\\[\\x20-\\x7e])*"))*$`,
+  "u",
+);
+const dataTypes = new Set([
+  "application/json",
+  "application/yaml",
+  "application/jsonl",
+  "text/markdown",
+]);
+
+export function entryValidation(
+  entry: BundleManifest["entry"],
+): EntryValidation {
+  return Object.freeze({
+    status: dataTypes.has(entry.contentType.toLowerCase())
+      ? entry.schema === undefined
+        ? "schema-absent"
+        : "validated"
+      : "unsupported",
+    contentType: entry.contentType,
+  });
+}
 
 export function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -187,6 +212,24 @@ export function canonicalJson(
   return new TextEncoder().encode(serialize(value));
 }
 
+function markdownFrontmatter(source: string): string {
+  const opening = /^---(?:\r?\n|$)/u.exec(source);
+  if (!opening) return "{}";
+  const closing = /\n---(?:\r?\n|$)/gu;
+  closing.lastIndex = opening[0].length - 1;
+  const end = closing.exec(source);
+  if (!end)
+    throw new ContentBundleError(
+      "CONTENT_INVALID",
+      "Markdown frontmatter requires a closing --- line.",
+    );
+  const frontmatter = source.slice(opening[0].length, end.index + 1);
+  const empty = frontmatter
+    .split(/\r?\n|\r/u)
+    .every((line) => /^[ \t]*(?:#[^\r\n]*)?$/u.test(line));
+  return empty ? "{}" : frontmatter;
+}
+
 export function parseData(
   bytes: Uint8Array,
   type: ContentType,
@@ -195,8 +238,16 @@ export function parseData(
   charge: () => void = () => {},
 ): unknown {
   jsonLimits(nodes, depth);
+  if (!dataTypes.has(type.toLowerCase()))
+    throw new ContentBundleError(
+      "CONTENT_INVALID",
+      `No data parser is available for content type ${type}.`,
+    );
+  type = type.toLowerCase();
   try {
-    const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const source =
+      type === "text/markdown" ? markdownFrontmatter(decoded) : decoded;
     let value: unknown;
     if (type === "application/json") value = json(source, depth);
     else if (type === "application/jsonl") {
@@ -253,6 +304,11 @@ export function parseData(
       value = document.toJS({ maxAliasCount: 100 });
     }
     assertJson(value, nodes, depth, charge);
+    if (type === "text/markdown" && !record(value))
+      throw new ContentBundleError(
+        "CONTENT_INVALID",
+        "Markdown frontmatter must be an object.",
+      );
     return value;
   } catch (cause) {
     if (cause instanceof ContentBundleError) throw cause;
@@ -269,6 +325,14 @@ export function parseData(
 
 export function normalizeBundleManifest(value: unknown): BundleManifest {
   if (
+    record(value) &&
+    record(value.entry) &&
+    Object.hasOwn(value.entry, "defaultValue")
+  )
+    throw new Error(
+      "entry.defaultValue is no longer supported; initialize content through a Template Bundle.",
+    );
+  if (
     !record(value) ||
     Object.keys(value).some(
       (key) => !["name", "description", "entry"].includes(key),
@@ -279,20 +343,20 @@ export function normalizeBundleManifest(value: unknown): BundleManifest {
       typeof value.description !== "string") ||
     !record(value.entry) ||
     Object.keys(value.entry).some(
-      (key) => !["path", "schema", "contentType", "defaultValue"].includes(key),
+      (key) => !["path", "schema", "contentType"].includes(key),
     )
   )
     throw new Error(
       "Expected name, optional description and a complete entry definition.",
     );
-  const { path, schema, contentType, defaultValue } = value.entry;
+  const { path, schema, contentType } = value.entry;
   if (
     typeof path !== "string" ||
-    (typeof schema !== "boolean" && !record(schema)) ||
-    !Object.hasOwn(value.entry, "defaultValue")
+    (schema !== undefined && typeof schema !== "boolean" && !record(schema)) ||
+    (Object.hasOwn(value.entry, "schema") && schema === undefined)
   )
     throw new Error(
-      "Entry requires path, schema, contentType and defaultValue.",
+      "Entry requires path and contentType, with an optional schema.",
     );
   safePath(path);
   if (
@@ -301,22 +365,15 @@ export function normalizeBundleManifest(value: unknown): BundleManifest {
     )
   )
     throw new Error("Entry path conflicts with a bundle control file.");
-  if (
-    contentType !== "application/json" &&
-    contentType !== "application/yaml" &&
-    contentType !== "application/jsonl"
-  )
-    throw new Error("Unsupported content type.");
-  if (contentType === "application/jsonl" && !Array.isArray(defaultValue))
-    throw new Error("JSONL defaultValue must be an array.");
+  if (typeof contentType !== "string" || !mime.test(contentType))
+    throw new Error("contentType must be a valid MIME type.");
   return Object.freeze({
     name: value.name,
     description: value.description ?? "",
     entry: Object.freeze({
       path,
-      schema,
+      ...(schema === undefined ? {} : { schema }),
       contentType,
-      defaultValue,
     } satisfies BundleManifest["entry"]),
   });
 }

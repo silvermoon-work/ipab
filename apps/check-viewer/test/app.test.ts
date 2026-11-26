@@ -10,11 +10,35 @@ import { encodeSchema, parseBundleManifest } from "@ipab/bundle";
 import { describe, expect, it, vi } from "vitest";
 import { viewer } from "../src/shared/viewer.js";
 import definition from "../schemas/check.json" with { type: "json" };
+import { checkSpecDefinition } from "@ipab/check-spec/bundle";
 
 describe("built Check viewer App", () => {
   it("renders the shared Check component using real definition data", () => {
+    expect(definition).toEqual(checkSpecDefinition);
     const html = renderToString(
-      createElement(viewer, { data: definition.entry.defaultValue }),
+      createElement(viewer, {
+        data: {
+          specVersion: "1.0",
+          name: "Untitled Check",
+          description: "Describe the scope of the check.",
+          parameter: { schema: { type: "object" } },
+          checkpoints: [
+            {
+              id: "review",
+              title: "Review",
+              description: "Review the supplied target.",
+              instructions: "Read the target and report evidence.",
+              output: { description: "Successful output is undefined." },
+              rules: [
+                {
+                  code: "target-valid",
+                  description: "The target meets the documented requirements.",
+                },
+              ],
+            },
+          ],
+        },
+      }),
     );
     expect(html).toContain("Untitled Check");
     expect(html).toContain("Review");

@@ -25,12 +25,7 @@ import {
 import { execute } from "./runtime.js";
 import { validatedBundle } from "./space.js";
 import { exactCid, pinName, State, type RunRecord } from "./state.js";
-import {
-  buildBundle,
-  initBundle,
-  inspectBundle,
-  importBundle,
-} from "./authoring.js";
+import { buildBundle, inspectBundle, importBundle } from "./authoring.js";
 import { buildApp, initApp } from "./app-authoring.js";
 import { schemaAlias } from "./app-definition.js";
 import { addPin, deletePin, pinDetails, renamePin } from "./pins.js";
@@ -72,7 +67,6 @@ export const processIO: IO = {
 const commands: Record<string, string> = {
   init: "init NAME [DIR] [OPTIONS]",
   build: "build [DIR] [OPTIONS]",
-  "bundle init": "bundle init TYPE DIR",
   "bundle build": "bundle build SOURCE [OPTIONS]",
   "bundle inspect": "bundle inspect SOURCE",
   "bundle import": "bundle import FILE.car",
@@ -131,7 +125,7 @@ const commandHelp: Record<
     ],
   },
   init: {
-    summary: "Create a private TypeScript App project",
+    summary: "Create files from a Template Bundle (default: Node App project)",
     arguments: ["NAME  Project name; DIR defaults to NAME (new/empty only)."],
     options: [
       "--template TEMPLATE  node (default), web-app, directory, CAR, CID or pin.",
@@ -163,15 +157,6 @@ const commandHelp: Record<
       "Imports only the App, without pinning; source needs separate import/retention.",
       "Store failures preserve the CAR; retry with ipab bundle import FILE.car.",
     ],
-  },
-  "bundle init": {
-    summary: "Create content from a Bundle type",
-    arguments: [
-      "TYPE  Definition file, type CAR, exact type CID or Schema pin.",
-      "DIR   New or empty destination directory.",
-    ],
-    examples: ["ipab bundle init types\\dist\\schema.car note"],
-    notes: ["Writes .bundle.yaml, .bundle-ignore and the default entry."],
   },
   "bundle build": {
     summary: "Build a content or type CAR without compiling code",
@@ -708,7 +693,6 @@ export function parse(argv: readonly string[]): Parsed {
   const counts: Record<string, [number, number]> = {
     init: [1, 2],
     build: [0, 1],
-    "bundle init": [2, 2],
     "bundle build": [1, 1],
     "bundle inspect": [1, 1],
     "bundle import": [1, 1],
@@ -850,7 +834,6 @@ async function performCli(
       }
       case "init":
       case "build":
-      case "bundle init":
       case "bundle build":
       case "bundle inspect":
       case "bundle import": {
@@ -933,21 +916,19 @@ async function performCli(
                       : {}),
                     outputDir: String(value("bundle.outputDir")),
                   })
-                : parsed.path === "bundle init"
-                  ? await initBundle(source!, second!, request)
-                  : parsed.path === "bundle build"
-                    ? await buildBundle(source!, {
-                        ...request,
-                        schemaOnly: Boolean(parsed.options["schema-only"]),
-                        replace: Boolean(parsed.options.replace),
-                        ...(typeof parsed.options.output === "string"
-                          ? { output: parsed.options.output }
-                          : {}),
-                        outputDir: String(value("bundle.outputDir")),
-                      })
-                    : parsed.path === "bundle import"
-                      ? await importBundle(first!, getStore, request)
-                      : await inspectBundle(source!, request);
+                : parsed.path === "bundle build"
+                  ? await buildBundle(source!, {
+                      ...request,
+                      schemaOnly: Boolean(parsed.options["schema-only"]),
+                      replace: Boolean(parsed.options.replace),
+                      ...(typeof parsed.options.output === "string"
+                        ? { output: parsed.options.output }
+                        : {}),
+                      outputDir: String(value("bundle.outputDir")),
+                    })
+                  : parsed.path === "bundle import"
+                    ? await importBundle(first!, getStore, request)
+                    : await inspectBundle(source!, request);
           const importing = "output" in result && !parsed.options["no-import"];
           if (importing) {
             io.err("Importing build result into Store (without pinning)...");
@@ -971,33 +952,34 @@ async function performCli(
           if ("output" in result)
             emit(
               { ...result, imported: importing },
-              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}${"source" in result ? `\nSource CID: ${result.source.cid}\nSource CAR: ${result.source.output} (not imported or pinned)` : ""}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
+              `CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nCAR: ${result.output}${result.validation !== undefined ? `\nEntry validation: ${result.validation?.status ?? "not-applicable"}` : ""}${"source" in result ? `\nSource CID: ${result.source.cid}\nSource CAR: ${result.source.output} (not imported or pinned)` : ""}\nStore: ${importing ? "imported (not pinned)" : "not imported (--no-import)"}`,
             );
           else if (result.kind === "bundle-import")
             emit(
               result,
-              `Imported CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nBlocks: ${result.blocks}\nCAR: ${result.source}`,
+              `Imported CID: ${result.cid}\nSchema CID: ${result.schemaCid}\nBlocks: ${result.blocks}\nCAR: ${result.source}\nEntry validation: ${result.validation?.status ?? "not-applicable"}`,
             );
-          else if (result.kind === "app-init") {
+          else if (result.kind === "project-init") {
             emit(
               result,
-              `Created App project: ${result.directory}\nSchema CID: ${result.schemaCid}`,
+              `Created project: ${result.directory}${result.templateCid ? `\nTemplate CID: ${result.templateCid}` : ""}`,
             );
-            io.err(
-              `Next: install declared dependencies in ${JSON.stringify(result.directory)}; then ipab build ${JSON.stringify(result.directory)} (requires locally linked ipab).`,
-            );
-          } else if ("directory" in result) {
-            emit(
-              result,
-              `Created: ${result.directory}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})`,
-            );
-            io.err(
-              `Next: ipab bundle build ${JSON.stringify(result.directory)}`,
-            );
+            if (
+              result.files.includes("package.json") &&
+              (result.files.includes("ipab.yaml") ||
+                result.files.includes("ipab.json"))
+            )
+              io.err(
+                `Next: install declared dependencies in ${JSON.stringify(result.directory)}; then ipab build ${JSON.stringify(result.directory)} (requires locally linked ipab).`,
+              );
+            else if (result.files.includes(".bundle.yaml"))
+              io.err(
+                `Next: ipab bundle build ${JSON.stringify(result.directory)}`,
+              );
           } else
             emit(
               result,
-              `Kind: ${result.kind}\nName: ${printable(result.name)}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})\nValidation: passed`,
+              `Kind: ${result.kind}\nName: ${printable(result.name)}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})\nDefinition validation: passed\nStorage verification: ${result.validation.storage}\nEntry validation: ${result.validation.entry?.status ?? "not-applicable"}`,
             );
         } catch (cause) {
           if (cancelled)

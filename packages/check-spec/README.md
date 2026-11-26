@@ -32,8 +32,12 @@ MiB of distinct Markdown bytes. The enclosing viewer additionally limits the
 complete resolved canonical state to 1 MiB. Cancellation stops file streams.
 
 The generic Bundle protocol validates entry structure and storage integrity.
-Markdown references are an App-level contract, so generic build/inspect success
-does not prove that references exist or Check semantics are valid.
+`checkSpecDefinition`, exported from the `/bundle` entry, is the shared complete
+type definition used by Check SDK model generation. The viewer's declarative
+Schema file is checked against that definition to preserve the same type
+identity. Markdown references are an App-level contract, so generic
+build/inspect success does not prove that references exist or Check semantics
+are valid.
 
 ## Explicit conversion
 

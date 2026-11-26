@@ -1,0 +1,7 @@
+name: IPAB App Source
+description: App project source snapshot; build inputs are ordinary resources.
+entry:
+  path: package.json
+  contentType: application/json
+  schema:
+    type: object

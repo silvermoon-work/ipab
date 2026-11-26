@@ -22,7 +22,6 @@ import { CarBlockIterator } from "@ipld/car/iterator";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import ignore from "ignore";
-import { stringify } from "yaml";
 import {
   bundleLimits,
   encodeSchema,
@@ -31,7 +30,11 @@ import {
   parseBundleManifest,
   ContentBundleError,
 } from "@ipab/bundle";
-import type { OpenBundleOptions, SchemaBlock } from "@ipab/bundle";
+import type {
+  EntryValidation,
+  OpenBundleOptions,
+  SchemaBlock,
+} from "@ipab/bundle";
 import {
   encodeBundleCar,
   encodeSchemaCar,
@@ -59,6 +62,7 @@ export interface BuildResult {
   schemaCid: string;
   output: string;
   bytes: number;
+  validation?: EntryValidation | null;
 }
 export interface InspectResult {
   kind: "content-bundle" | "bundle-schema";
@@ -68,15 +72,11 @@ export interface InspectResult {
   name: string;
   description: string;
   entry: { path: string; contentType: string };
-  validation: { status: "valid"; storage: "verified" | "not-applicable" };
-}
-export interface InitResult {
-  kind: "bundle-init";
-  directory: string;
-  schemaCid: string;
-  name: string;
-  entry: { path: string; contentType: string };
-  files: string[];
+  validation: {
+    definition: "valid";
+    storage: "verified" | "not-applicable";
+    entry: EntryValidation | null;
+  };
 }
 export interface ImportResult {
   kind: "bundle-import";
@@ -85,6 +85,7 @@ export interface ImportResult {
   source: string;
   blocks: number;
   bytes: number;
+  validation: EntryValidation | null;
 }
 export function nodeError(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
@@ -299,6 +300,7 @@ async function fromRoot(
   });
   return {
     schema: bundle.schema,
+    validation: bundle.validation,
     kind: "content-bundle" as const,
     sourceKind,
     cid: root.toString(),
@@ -334,7 +336,11 @@ export async function inspectBundle(
         sourceKind: "directory",
         cid: null,
         ...summary(encoded.schema),
-        validation: { status: "valid", storage: "verified" },
+        validation: {
+          definition: "valid",
+          storage: "verified",
+          entry: encoded.validation,
+        },
       };
     } finally {
       await encoded.close();
@@ -347,8 +353,9 @@ export async function inspectBundle(
     cid: loaded.cid,
     ...summary(loaded.schema),
     validation: {
-      status: "valid",
+      definition: "valid",
       storage: loaded.kind === "content-bundle" ? "verified" : "not-applicable",
+      entry: loaded.kind === "content-bundle" ? loaded.validation : null,
     },
   };
 }
@@ -378,6 +385,7 @@ export async function importBundle(
     cid,
     schemaCid: loaded.schema.cid.toString(),
     source: path,
+    validation: loaded.kind === "content-bundle" ? loaded.validation : null,
     blocks: car.blocks.size,
     bytes: car.bytes,
   };
@@ -490,52 +498,11 @@ export async function buildBundle(
     cid: encoded.cid.toString(),
     schemaCid: encoded.schema.cid.toString(),
     output,
+    validation: encoded.validation,
   };
   return {
     ...result,
     bytes: await writeCar(encoded, output, Boolean(options.replace), options),
-  };
-}
-export async function initBundle(
-  source: string,
-  directory: string,
-  options: AuthoringOptions = {},
-): Promise<InitResult> {
-  const loaded = await artifact(source, options);
-  if (loaded.kind !== "bundle-schema")
-    throw new HostError(
-      "Initialization requires a type definition, not a content bundle.",
-    );
-  const schema = loaded.schema;
-  const { entry } = schema.manifest;
-  if (ignore().add("/dist/").ignores(entry.path))
-    throw new HostError(
-      "Default entry conflicts with the generated /dist/ ignore rule.",
-    );
-  let value: string;
-  if (entry.contentType === "application/jsonl") {
-    if (!Array.isArray(entry.defaultValue))
-      throw new HostError("JSONL default must be an array.");
-    value = entry.defaultValue.map((item) => JSON.stringify(item)).join("\n");
-    if (value) value += "\n";
-  } else
-    value =
-      entry.contentType === "application/yaml"
-        ? stringify(entry.defaultValue)
-        : `${JSON.stringify(entry.defaultValue, null, 2)}\n`;
-  const files = new Map([
-    [".bundle.yaml", stringify(schema.manifest)],
-    [".bundle-ignore", "/dist/\n"],
-    [entry.path, value],
-  ]);
-  const root = await scaffoldFiles(directory, files, options);
-  return {
-    kind: "bundle-init",
-    directory: root,
-    schemaCid: schema.cid.toString(),
-    name: schema.manifest.name,
-    entry: { path: entry.path, contentType: entry.contentType },
-    files: [...files.keys()],
   };
 }
 export async function scaffoldFiles(

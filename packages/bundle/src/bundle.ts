@@ -2,7 +2,12 @@ import { ContentError, IpfsStore, openContent } from "@ipab/ipfs-store";
 import type { UnixfsNode } from "@ipab/ipfs-store";
 import { CID } from "multiformats/cid";
 import { ContentBundleError } from "./errors.js";
-import { parseBundleManifest, parseData, safePath } from "./parsing.js";
+import {
+  entryValidation,
+  parseBundleManifest,
+  parseData,
+  safePath,
+} from "./parsing.js";
 import {
   decodeSchema,
   encodeSchema,
@@ -339,15 +344,23 @@ async function operation(
         "Schema CID differs from the explicit validator.",
       );
     const path = manifest.entry.path;
+    const validation = entryValidation(manifest.entry);
     try {
-      const value = parseData(
-        await bytesAt(path, limits.documentBytes),
-        manifest.entry.contentType,
-        limits.nodes,
-        limits.jsonDepth,
-        charge,
-      );
-      validateValue(schema, value, { charge, depth: limits.validationDepth });
+      const bytes = await bytesAt(path, limits.documentBytes);
+      if (validation.status !== "unsupported") {
+        const value = parseData(
+          bytes,
+          manifest.entry.contentType.toLowerCase(),
+          limits.nodes,
+          limits.jsonDepth,
+          charge,
+        );
+        if (manifest.entry.schema !== undefined)
+          validateValue(schema, value, {
+            charge,
+            depth: limits.validationDepth,
+          });
+      }
     } catch (cause) {
       throw contextual(cause, path, "", [], options.signal);
     }
@@ -359,6 +372,7 @@ async function operation(
       manifest,
       schemaKey: schema.cid.toString(),
       schema,
+      validation,
       readFile: reader(cid, files, options, limits),
     });
   } catch (cause) {

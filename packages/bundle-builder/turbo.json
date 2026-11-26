@@ -1,0 +1,26 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/examples/agent-skill/**",
+        "!$TURBO_ROOT$/examples/agent-skill/dist/**"
+      ]
+    },
+    "test-ci": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/examples/agent-skill/**",
+        "!$TURBO_ROOT$/examples/agent-skill/dist/**"
+      ]
+    },
+    "test-coverage": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/examples/agent-skill/**",
+        "!$TURBO_ROOT$/examples/agent-skill/dist/**"
+      ]
+    }
+  }
+}

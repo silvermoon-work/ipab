@@ -1,16 +1,14 @@
 import type { CID } from "multiformats/cid";
 
 export type JsonSchema = boolean | { readonly [key: string]: unknown };
-export type ContentType =
-  "application/json" | "application/yaml" | "application/jsonl";
+export type ContentType = string;
 export interface BundleManifest {
   readonly name: string;
   readonly description: string;
   readonly entry: {
     readonly path: string;
-    readonly schema: JsonSchema;
+    readonly schema?: JsonSchema;
     readonly contentType: ContentType;
-    readonly defaultValue: unknown;
   };
 }
 export interface SchemaDefinitions {
@@ -47,11 +45,16 @@ export interface ContentBundle {
   readonly manifest: BundleManifest;
   readonly schemaKey: string;
   readonly schema: SchemaBlock;
+  readonly validation: EntryValidation;
   readFile(
     path: string,
     options?: { signal?: AbortSignal },
   ): Promise<ReadableStream<Uint8Array>>;
 }
+export type EntryValidation = {
+  readonly status: "validated" | "schema-absent" | "unsupported";
+  readonly contentType: string;
+};
 export type ContentBundleErrorCode =
   | "MANIFEST_INVALID"
   | "PATH_INVALID"

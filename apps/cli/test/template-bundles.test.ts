@@ -11,9 +11,9 @@ import { initApp } from "../src/app-authoring.js";
 import { appTemplate, renderTemplate } from "../src/app-templates.js";
 import {
   buildBundle,
-  initBundle,
   inspectBundle,
   readCar,
+  scaffoldFiles,
 } from "../src/authoring.js";
 import {
   builtinTemplateSchema,
@@ -33,7 +33,15 @@ import { pinDetails } from "../src/pins.js";
 import { cli, fixture } from "./helpers.js";
 
 const encode = (value: string) => new TextEncoder().encode(value);
-const definition = templateSchema.entry.defaultValue;
+const definition = {
+  version: 1,
+  root: "project",
+  render: { suffix: ".liquid" },
+  parameters: {
+    name: { type: "string", required: true },
+    description: { type: "string", default: "" },
+  },
+};
 const tree = (
   files: readonly (readonly [string, string | Uint8Array])[],
   entry: unknown = definition,
@@ -192,11 +200,8 @@ describe("Data-only Template Bundles", () => {
       "src/main.ts",
     );
     expect(created.files).not.toContain("template.yaml");
-    const raw = await initBundle(
-      templateBuiltinAlias,
-      join(work.root, "raw-template"),
-    );
-    expect(raw.schemaCid).toBe((await builtinTemplateSchema()).cid.toString());
+    expect(created.kind).toBe("project-init");
+    expect(created).not.toHaveProperty("schemaCid");
     expect((await inspectBundle(templateBuiltinAlias)).entry.path).toBe(
       "template.yaml",
     );
@@ -330,6 +335,95 @@ describe("Data-only Template Bundles", () => {
     expect(await readFile(join(created.directory, ".hidden"))).toEqual(
       Buffer.from([0, 255, 128]),
     );
+  });
+  it("initializes non-App content through directories, CARs, CIDs and named pins without npm name semantics", async () => {
+    const source = join(work.root, "markdown-template");
+    await scaffoldFiles(
+      source,
+      new Map([
+        [".bundle.yaml", stringify(templateSchema)],
+        ["template.yaml", stringify(definition)],
+        [
+          "project/.bundle.yaml",
+          stringify({
+            name: "Markdown document",
+            entry: { path: "README.md", contentType: "text/markdown" },
+          }),
+        ],
+        ["project/README.md.liquid", "# {{ name }}\n{{ description }}\n"],
+      ]),
+    );
+    const built = await buildBundle(source);
+    const imported = await cli(work.stateDir, [
+      "bundle",
+      "import",
+      built.output,
+    ]);
+    expect(imported.code, imported.err).toBe(0);
+    const pinned = await cli(work.stateDir, [
+      "pin",
+      "add",
+      "document-template",
+      built.cid,
+    ]);
+    expect(pinned.code, pinned.err).toBe(0);
+    for (const [index, selector] of [
+      source,
+      built.output,
+      built.cid,
+      "document-template",
+    ].entries()) {
+      const target = join(work.root, `document-${index}`);
+      const created = await cli(work.stateDir, [
+        "--json",
+        "init",
+        "My Document",
+        target,
+        "--template",
+        selector,
+        "--param",
+        "description=Plain content",
+      ]);
+      expect(created.code, created.err).toBe(0);
+      expect(JSON.parse(created.out) as unknown).toMatchObject({
+        kind: "project-init",
+        name: "My Document",
+        directory: target,
+        templateCid: built.cid,
+        files: [".bundle.yaml", "README.md"],
+      });
+      expect(JSON.parse(created.out) as unknown).not.toHaveProperty(
+        "schemaCid",
+      );
+      expect(await readFile(join(target, "README.md"), "utf8")).toBe(
+        "# My Document\nPlain content\n",
+      );
+      expect(created.err).toContain("Next: ipab bundle build");
+      expect(created.err).not.toContain("install");
+      const content = await cli(work.stateDir, [
+        "bundle",
+        "build",
+        target,
+        "--no-import",
+      ]);
+      expect(content.code, content.err).toBe(0);
+      const inspected = await inspectBundle(target);
+      expect(inspected.validation.entry).toEqual({
+        status: "schema-absent",
+        contentType: "text/markdown",
+      });
+    }
+    const human = await cli(work.stateDir, [
+      "init",
+      "Other Document",
+      join(work.root, "human-document"),
+      "--template",
+      source,
+    ]);
+    expect(human.code, human.err).toBe(0);
+    expect(human.out).toContain(`Template CID: ${built.cid}`);
+    expect(human.out).not.toContain("App");
+    expect(human.out).not.toContain("Schema CID");
   });
   it("renders real Liquid conditions, loops, filters and JSON without HTML escaping", async () => {
     const entry = {

@@ -17,6 +17,7 @@ export {
   encodeSchema,
   decodeSchema,
   schemaBlockBytes,
+  schemaDialect,
   declaresBundleSchema,
   validateValue as validateSchemaValue,
 } from "./schema.js";
@@ -24,6 +25,7 @@ export type { SchemaOptions, ValidationContext } from "./schema.js";
 export { ContentBundleError } from "./errors.js";
 export type {
   ContentBundle,
+  EntryValidation,
   OpenBundleOptions,
   BundleLimits,
   BundleManifest,

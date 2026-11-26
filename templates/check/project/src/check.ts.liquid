@@ -1,0 +1,55 @@
+import { defineCheck, defineCheckpoint } from "@ipab/check-sdk";
+
+interface Input {
+  text: string;
+}
+
+const text = defineCheckpoint({
+  id: "text",
+  title: "Text",
+  description: "Check that the input text matches the expected greeting.",
+  instructions: "Compare text with hello. Correct the input and rerun if it differs.",
+  rules: [
+    { code: "text-matches-standard", description: "Text must be hello." },
+  ],
+  output: {
+    description: "The verified greeting, available to subsequent Checkpoints.",
+    fields: [{ name: "text", description: "Verified input text." }],
+  },
+  check: (input: Input) =>
+    input.text === "hello"
+      ? { pass: true, output: { text: input.text } }
+      : {
+          pass: false,
+          problems: [
+            {
+              code: "text-matches-standard",
+              context: { expected: "hello", actual: input.text },
+            },
+          ],
+        },
+});
+
+export default defineCheck({
+  name: {{ name | json }},
+  description: "Check a greeting supplied as one JSON value on STDIN.",
+  parameters: {
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["text"],
+      properties: { text: { type: "string" } },
+    },
+    parse(value: unknown): Input {
+      if (
+        typeof value !== "object" ||
+        value === null ||
+        !("text" in value) ||
+        typeof value.text !== "string"
+      )
+        throw new Error("Expected a text input.");
+      return { text: value.text };
+    },
+  },
+  checkpoints: text,
+});

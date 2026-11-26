@@ -41,28 +41,18 @@ export async function initApp(
     parameters?: readonly string[];
   } = {},
 ) {
-  if (
-    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
-    name.length > 214 ||
-    ["node_modules", "favicon.ico"].includes(name)
-  )
-    throw new HostError(
-      "App NAME must be an unscoped lowercase npm package name.",
-    );
   const { files, cid: templateCid } = await appTemplate(
     options.template ?? "node",
     name,
     options,
   );
-  const schemaCid = (await builtinAppSchema()).cid.toString();
   const root = await scaffoldFiles(directory, files, options);
   return {
-    kind: "app-init" as const,
+    kind: "project-init" as const,
     directory: root,
     name,
     template: options.template ?? "node",
     templateCid,
-    schemaCid,
     files: [...files.keys()],
   };
 }
@@ -341,7 +331,7 @@ export async function buildApp(
   const description = appDescription({
     ...defaults,
     ...overrides,
-    entry: appSchema.entry.defaultValue.entry,
+    entry: "resources/app.cjs",
     ...(supportedSchemas ? { supportedSchemas: supportedSchemasPath } : {}),
   });
   if (description.icon !== undefined) {
@@ -515,7 +505,19 @@ export async function buildApp(
       if (++resourceCount > 4096)
         throw new HostError("App resource file count exceeds 4096.");
       relativePath(path);
-      if (path.split("/").some((part) => part.startsWith(".")))
+      if (
+        path
+          .split("/")
+          .some(
+            (part, index, parts) =>
+              part.startsWith(".") &&
+              !(
+                part === ".bundle.yaml" &&
+                index === parts.length - 1 &&
+                index > 0
+              ),
+          )
+      )
         throw new HostError("Hidden prebuilt resources are not supported.");
       const bytes = await readBytes(inputTree, path, 16 * 1024 * 1024, options);
       const target = join(bundleStage, "resources", ...path.split("/"));

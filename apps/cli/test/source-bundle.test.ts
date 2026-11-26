@@ -76,7 +76,7 @@ it("follows nested project gitignores, negation and pruning without Git or machi
 
 it("preserves explicit definitions and fails on excluded required files, symlinks, invalid ignores or cancellation", async () => {
   const definition =
-    '{"name":"Custom","entry":{"path":"package.json","schema":{"type":"object"},"contentType":"application/json","defaultValue":{}}}\n';
+    '{"name":"Custom","entry":{"path":"package.json","schema":{"type":"object"},"contentType":"application/json"}}\n';
   await writeFile(join(project, ".bundle.yaml"), definition);
   expect(
     new TextDecoder().decode(
@@ -106,10 +106,16 @@ it("preserves explicit definitions and fails on excluded required files, symlink
 });
 
 it("validates weak source CID metadata locally without fetching content", async () => {
+  const metadata = {
+    name: "Untitled App",
+    version: "0.0.0",
+    description: "",
+    entry: "resources/app.cjs",
+  };
   const cid = "bafybeigdyrzt5sfp7udm7hu76uysn5h5m5mcwq7vbgxww6nypb3q6h3csi";
-  expect(
-    appDescription({ ...appSchema.entry.defaultValue, source: { cid } }).source,
-  ).toEqual({ cid });
+  expect(appDescription({ ...metadata, source: { cid } }).source).toEqual({
+    cid,
+  });
   const schemaCid = (await encodeSchema(appSchema)).cid.toString();
   for (const source of [
     null,
@@ -119,7 +125,5 @@ it("validates weak source CID metadata locally without fetching content", async 
     { cid: "not-a-cid" },
     { cid: schemaCid },
   ])
-    expect(() =>
-      appDescription({ ...appSchema.entry.defaultValue, source }),
-    ).toThrow();
+    expect(() => appDescription({ ...metadata, source })).toThrow();
 });

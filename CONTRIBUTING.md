@@ -14,10 +14,19 @@ pnpm check
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
+Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告
+提交，以及原始 Check model 根 CID 在 App／Result 中的准确复用。
 它们的日常测试包括有界 Markdown 引用、静态校验器、移动／桌面 hydration，
 以及真实 App CAR 读取示例 Content Bundle 后的内容 SSR 与关闭行为。
 Check Viewer 的仓库构建使用独立临时 CLI 状态目录，不读取或修改设备已有的
 Store 配置，完成后只清理本次创建的状态目录。
+Bundle／Builder 测试覆盖 Markdown frontmatter、入口字节保留和 Agent Skill
+示例 CAR；CLI 测试覆盖通用 Template
+Bundle 初始化，不从类型 Schema 生成默认数据。
+Bundle entry 不含 defaultValue；Template
+parameters 的 default 仍是渲染参数默认值。
+Builder 的各测试任务将 Skill 示例
+源文件纳入 Turbo 缓存输入，不将示例生成的 `dist/` 作为输入或资源。
 
 ## 工程命令
 
@@ -127,6 +136,9 @@ pnpm exec turbo run test --filter=<package-name>
 重复构建与类型错误后的产物保护、YAML/JSON Schema 集合确定性、
 完整 Web/Vite 模板、prebuild 各类输出拒绝、源码输出开关、前后端多配置编译。
 这些测试保留所有原断言、超时和完整执行入口，不通过 `skip` 或环境变量隐藏。
+前后端类型检查顺序与源码变化后的产物保护分别验证，避免将多轮真实编译
+叠加到单个用例的超时预算。相关构建绑定 Vitest 用例取消信号；
+清理项目之前等待在途构建及其子进程关闭，覆盖率仍采集所有子进程。
 
 日常仍保留真实 strict tsc/依赖打包/CAR/独立源码 Bundle 冒烟、
 构建后 pin/rename/exec、动态依赖及不安全路径拒绝、编译流错误回归，

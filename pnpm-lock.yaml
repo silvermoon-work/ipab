@@ -114,6 +114,9 @@ catalogs:
     turbo:
       specifier: 2.11.11
       version: 2.11.11
+    typebox:
+      specifier: 1.4.7
+      version: 1.4.7
     typescript:
       specifier: 6.0.3
       version: 6.0.3
@@ -325,9 +328,15 @@ importers:
       '@ipld/dag-cbor':
         specifier: 'catalog:'
         version: 10.0.2
+      ajv:
+        specifier: 'catalog:'
+        version: 8.20.0
       multiformats:
         specifier: 'catalog:'
         version: 14.0.5
+      typebox:
+        specifier: 'catalog:'
+        version: 1.4.7
       yaml:
         specifier: 'catalog:'
         version: 2.9.1
@@ -418,6 +427,43 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@26.6.6)(@vitest/coverage-v8@5.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(yaml@2.9.1))
+
+  packages/check-sdk:
+    dependencies:
+      '@ipab/bundle':
+        specifier: workspace:*
+        version: link:../bundle
+      '@ipab/bundle-builder':
+        specifier: workspace:*
+        version: link:../bundle-builder
+      '@ipab/check-spec':
+        specifier: workspace:*
+        version: link:../check-spec
+      ajv:
+        specifier: 'catalog:'
+        version: 8.20.0
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.2
+      multiformats:
+        specifier: 'catalog:'
+        version: 14.0.5
+    devDependencies:
+      '@ipld/car':
+        specifier: 'catalog:'
+        version: 5.4.6
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 5.1.0(vitest@5.1.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -2593,6 +2639,9 @@ packages:
   type-check@0.4.0:
     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
     engines: {node: '>= 0.8.0'}
+
+  typebox@1.4.7:
+    resolution: {integrity: sha512-KonYdBj3gOgG/rH96TlUs/f+eaEDqiKRW7KU4/LE/tEjEnRCcfpYLofBfHfNMBAiBosmY55e4YeCPuE+NXmJtg==}
 
   typescript-eslint@8.72.2:
     resolution: {integrity: sha512-c/+AKMW1KB81r28Sp0AAdcyXj5dzNmAsZFcsrxKbZTKmcBK2xIwBR31dcSYSDu3bKmzXe8GKrSxO+eDQ401Uzg==}
@@ -5412,6 +5461,8 @@ snapshots:
   type-check@0.4.0:
     dependencies:
       prelude-ls: 1.2.1
+
+  typebox@1.4.7: {}
 
   typescript-eslint@8.72.2(eslint@10.15.0(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3):
     dependencies:

@@ -23,6 +23,17 @@ export const builtinTemplateNames = new Map([
   ["builtin:template.web-app", "web-app"],
 ] as const);
 
+function appName(name: string) {
+  if (
+    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
+    name.length > 214 ||
+    ["node_modules", "favicon.ico"].includes(name)
+  )
+    throw new HostError(
+      "App NAME must be an unscoped lowercase npm package name.",
+    );
+}
+
 async function legacyTemplate(
   selector: string,
   name: string,
@@ -317,6 +328,7 @@ export async function appTemplate(
   for (const [alias, name] of builtinTemplateNames)
     if (selector === alias) selector = name;
   if (selector === "node" || selector === "web-app") {
+    appName(name);
     const loaded = await builtinTemplateSource(selector, options);
     const parameters = [...(options.parameters ?? [])];
     if (
@@ -360,6 +372,7 @@ export async function appTemplate(
     }
   }
   if (legacy) {
+    appName(name);
     if (options.parameters?.length)
       throw new HostError(
         "--param requires a Template Bundle, not a legacy mapping.",

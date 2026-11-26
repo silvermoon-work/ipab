@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { resolveViewerSource } from "../src/source.js";
 
-const cid = "bafyreif6sc6dlltoddzfwdqcfgfaaquhrmjccu7wsmkqf6m62ruoxy43pq";
+const cid = "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq";
 let folder: string | undefined;
 afterEach(async () => {
   if (folder) await rm(folder, { recursive: true, force: true });

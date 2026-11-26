@@ -76,7 +76,7 @@ the existing Web App lease.
 The adapter reads the manifest and entry through the caller's IPAB context; the
 context owns storage integrity/access. It does not independently scan all
 resource files, import, pin, retain, modify local files, or provide arbitrary
-browser CID/file access. Bundle schemas use the current IPAB structural dialect;
+browser CID/file access. Bundle schemas use standard JSON Schema Draft 2020-12;
 old Check document `$schema` URIs are not IPAB type identities.
 
 This is for trusted Node Apps, not a Node sandbox or public deployment server.

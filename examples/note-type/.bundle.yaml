@@ -12,6 +12,3 @@ entry:
       text:
         type: string
   contentType: application/json
-  defaultValue:
-    title: Untitled
-    text: ""

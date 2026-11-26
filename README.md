@@ -115,6 +115,8 @@ ipab --help
 
 ## 更多文档
 
+- [MVP 主链路](docs/mvp-user-journey.md)：两台设备按同一个正式名称运行、修改并验证 App
+  Bundle（目标场景）。
 - [个人 swarm 的创建与授权需求](docs/swarm-authorization.md)：设备入群、成员身份验证和共享发布根的更新（需求草案）。
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。
 - [创建应用](docs/reference.md#app-开发上层-node-profile)：Node / Web

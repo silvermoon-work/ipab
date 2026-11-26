@@ -1,7 +1,7 @@
 # @ipab/cli
 
-Node subprocess host for InterPlanetary Application Bundles. **Not a sandbox**:
-only execute Apps you trust.
+Node subprocess App host for IPAB (InterPlanetary Artifact Bundle). **Not a
+sandbox**: only execute Apps you trust.
 
 `0.1.0-rc.0` is published. The next candidate is `0.1.0-rc.1`; until it is
 published, install the existing RC:

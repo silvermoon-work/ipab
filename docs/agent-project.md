@@ -2,7 +2,8 @@
 
 ## Scope
 
-本仓库是 IPAB（InterPlanetary Application Bundle）的独立工程 workspace。
+本仓库是 IPAB（InterPlanetary Artifact Bundle）的独立工程 workspace。
+项目愿景与使用场景见 [VISION.md](../VISION.md)，不代表当前已实现能力。
 当前 `apps/cli` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、
 本地元数据及 Store owner 协调。普通 App argv/stdio 取代早期单 CID Task 输入；
 关联管理叫 register，不是 apps；open 不提供临时应用覆盖。

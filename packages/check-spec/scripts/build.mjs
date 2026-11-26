@@ -1,10 +1,20 @@
-import { run } from "../../../scripts/lib/run.mjs";
+import { spawnSync } from "node:child_process";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import standalone from "ajv/dist/standalone/index.js";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-run("typescript/bin/tsc", ["--project", "tsconfig.build.json"]);
-if (process.exitCode) throw new Error("Check Spec TypeScript build failed");
+const compilation = spawnSync(
+  process.execPath,
+  [
+    fileURLToPath(import.meta.resolve("typescript/bin/tsc")),
+    "--project",
+    "tsconfig.build.json",
+  ],
+  { stdio: "inherit", shell: false },
+);
+if (compilation.error) throw compilation.error;
+if (compilation.status !== 0)
+  throw new Error("Check Spec TypeScript build failed");
 const { checkBundleSpecSchema } = await import("../dist/shape-schema.js");
 const ajv = new Ajv2020({
   allErrors: true,

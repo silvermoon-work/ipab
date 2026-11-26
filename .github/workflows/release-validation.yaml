@@ -8,10 +8,9 @@ on:
         type: string
 permissions:
   contents: read
-  actions: read
 jobs:
   evidence:
-    name: Exact-SHA daily CI evidence
+    name: Exact-SHA validation target
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -30,14 +29,12 @@ jobs:
           ref: ${{ inputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-      - name: Verify existing exact-SHA main-push CI
+      - name: Confirm checked-out main revision
         env:
-          GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ inputs.sha }}
-        run: node scripts/verify-ci.mjs
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main
   full:
     name: Full release / ${{ matrix.name }}
     needs: evidence
@@ -74,12 +71,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Confirm exact-SHA evidence and every full matrix succeeded
+      - name: Confirm target and every full matrix succeeded
         env:
           EVIDENCE_RESULT: ${{ needs.evidence.result }}
           FULL_RESULT: ${{ needs.full.result }}
         run: |
           if [ "$EVIDENCE_RESULT" != success ] || [ "$FULL_RESULT" != success ]; then
-            echo "::error::Existing exact-SHA daily CI and every full release check must succeed."
+            echo "::error::Exact-SHA target and every full release check must succeed."
             exit 1
           fi

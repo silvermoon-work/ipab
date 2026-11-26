@@ -1,8 +1,18 @@
 import { chmodSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { run } from "../../../scripts/lib/run.mjs";
+import { spawnSync } from "node:child_process";
 
-run("typescript/bin/tsc", ["--project", "tsconfig.build.json"]);
+const compilation = spawnSync(
+  process.execPath,
+  [
+    fileURLToPath(import.meta.resolve("typescript/bin/tsc")),
+    "--project",
+    "tsconfig.build.json",
+  ],
+  { stdio: "inherit", shell: false },
+);
+if (compilation.error) throw compilation.error;
+process.exitCode = compilation.status ?? 1;
 if (process.exitCode === 0) {
   const { buildBundle } = await import("../dist/authoring.js");
   const { builtinTemplateSource } = await import("../dist/template-source.js");

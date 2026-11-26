@@ -10,7 +10,7 @@ Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`�
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
 `workspace:*` 引用 Store。`@ipab/bundle-builder` 同属 npm 交付项；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-五个 code 成员显式登记 npm 交付，首轮统一准备 `0.1.0-rc.0`；`@ipab/web-app`
+五个 code 成员显式登记 npm 交付，当前统一准备 `0.1.0-rc.1`；`@ipab/web-app`
 是本机浏览器桥接框架。
 `@ipab/bundle-viewer` 为 private React 同构封装，通过 Web App 的显式
 renderFrontend hook 渲染真实内容并 hydration；标准数据式模板位于
@@ -19,7 +19,12 @@ templates/bundle-viewer，当前通过目录／CAR／CID 选择，不新增内�
 不自动兼容旧 DOM renderer／browser Task，不迁移旧 aliases 或文件 watch CLI。
 本地链接同构组件时，模板 Node prebuild 须将 react/react-dom alias 到生成项目
 的同一实例，Vite 保持 resolve.dedupe；相同版本不等于同一 hooks runtime。
-真实 pnpm 安装验证须实际运行构建 App，检查内容 SSR 与连接关闭，不只检查 CAR。
+发布前 pnpm 安装 smoke 只验证五个交付 tarball 安装、JS 入口加载与 CLI 版本；
+Viewer 的 App 构建、内容 SSR 和连接关闭由成员业务测试覆盖，不在安装 smoke 重复。
+private
+@silvermoon-work/devtool.package-smoke 负责通用 pnpm 打包／隔离安装／清理，
+根 test-package-smoke 调用其 CLI，scripts/package-smoke.mjs 负责项目特有验证。
+该试验包不加入五个 npm 交付项。
 Store 的 ipfs-access/ipfs-payload 基础依赖仍使用原发布包，未迁入本仓库。
 private `@ipab/check-spec` 迁入 okr-agent 的 MIT React 定义查看器；
 `apps/check-viewer` 由 bundle-viewer 模板初始化，为独立 private App。
@@ -70,8 +75,8 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 - Store 的 node:test 测试已改用 Vitest 的 test/onTestFinished/afterAll 和
   fake timers，保留本地存储与 Gateway 业务断言。已移除 Kubo RPC 后端及其
   专用测试；不访问共享 daemon 管理接口。
-- 新成员脚本按完整标准使用 `node scripts/<same-name>.mjs`，共享逻辑在
-  根 `scripts/lib/`，工具失败必须传播；下面的既有差异仅适用于已有根脚本。
+- 成员的工具转发直接使用 tsc、Vitest、publint，不添加同名包装文件；
+  特有构建逻辑才保留 Node 脚本，失败必须传播。标准接口差异见下。
 - 运行时／CLI 边界、准确 App Schema 和保留策略见 docs/design-overview.md
   与 docs/reference.md。日常运行只删除自身创建的运行文件，不清空共享 Store
   或请求 daemon GC。显式 store gc 仅对当前协调式本地 Store 回收未受保护
@@ -211,6 +216,14 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 “沿用当前项目的直接工具命令”。本仓库据此使用标准工具命令和根 check
 的 fail-fast 链，不引入只为转发命令而存在的 `scripts/<same-name>.mjs`。
 
+2026-11-26 用户确认使用已有跨平台 CLI 简化根脚本。check/check-ci/check-release
+用 npm-run-all2 8.0.4 的 run-s 明确列出顺序、首项失败即停；
+test-ci 直接调用 Turbo。成员直接运行 tsc、Vitest、publint；
+删除对应薄包装及 runChecks，不在仓库重复实现通用执行器。
+移除 scripts/lib 与重复的门禁接入测试及 test-tooling。
+根 scripts 只保留 link-cli 和 package-smoke 项目验证；
+成员中生成 CAR／AJV 等有实际项目逻辑的构建脚本保留。
+
 这与标准 `AGENTS.md` 的固定同名脚本接口条款存在已知差异，
 不是标准检查已通过或可删除标准条款的声明。标准文件完整保留；
 项目选择只记录在本文件。不要通过修改标准或未来 Check 资产掩盖这一差异。
@@ -225,22 +238,24 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
 
 当前有只读手动 Release validation 和单包 publish-npm workflow，
 五个 code package 已登记交付，根保持 private。
-它要求当前 dispatch 的准确 main SHA 已有新版日常 push 矩阵/汇总成功，
-再运行三种 Node 完整检查与真实安装链路，产生 Release verification (v2)。
+完整验证核对当前 dispatch 的准确 main SHA，再运行三种 Node 完整检查与真实
+安装链路，产生 Release verification (v2)；各 workflow 自己传播矩阵失败。
 日常 CI verification (v2) 与旧 Release verification (v1) 不是完整发布证据。
 Trusted Publisher 使用 publish-npm.yaml 和 environment npm，允许直接 npm
 publish。
 每包 deliverable.yaml 只声明 type:npm，tag 为准确 @ipab/<包名>@<版本>，
 从同目录 package.json 派生，tag 后缀必须等于该包准确版本；
-main dispatch 只 dry-run，准确 SHA 日常及完整远程证据缺失时阻止。
+发布 main dispatch 只 dry-run，同一准确 SHA 的日常和完整 workflow 最新整体结果
+都必须 completed/success，由已发布 publish-gate 统一检查。
 RC 从 rc.0 连续增长，用 rc dist-tag；稳定版用 latest。发布前核对目标版本缺失、
 全部 runtime/peer 依赖已存在，registry 失败不代表缺失。
 不复制原仓库的版本／SHA 授权，不自动发布、推 tag、修改已有 dist-tag 或上传远端产物。
 根固定已发布 devtool.publish-gate 0.2.0，五个实际发布包的 prepublishOnly
 准确为 publish-gate check --workflow ci.yaml --workflow
 release-validation.yaml。
-重复 workflow 的整体成功检查由共享门禁提供；IPAB 仍保留更严格的
-main-push/main dispatch、完整矩阵与汇总检查。使用 native pnpm 目录发布执行
-真实生命周期，tarball 仅用于预检，不能用 tarball publish 绕过钩子。
+重复 workflow 的整体成功检查由共享门禁提供；旧成功后的新 run/rerun 失败
+必须按失败处理，不搜索历史成功替代。不在 IPAB 重复实现 CI jobs、版本、
+registry、依赖和发布资格检查。workflow 用 publish-gate target --json 选择单包，
+构建／lint 后 native pnpm 目录发布执行真实生命周期；不能发布 tarball 绕过钩子。
 PNPM_CONFIG_* 传递 public/channel/provenance/dry-run 及当前有效 registry，
 main dispatch 始终 dry-run，不自动运行证据 workflow，不授权 IPAB 发版。

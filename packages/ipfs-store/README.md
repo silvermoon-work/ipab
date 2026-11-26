@@ -1,9 +1,10 @@
 # @ipab/ipfs-store
 
 Verified local IPFS/UnixFS storage with optional read-only upstream HTTP
-gateways. The first npm release is being prepared as `0.1.0-rc.0`. Source was
-migrated from `silvermoon-work/task-engine`; the original MIT license and
-CID/protocol contracts are preserved. Kubo RPC storage is no longer supported.
+gateways. The next npm candidate is `0.1.0-rc.1`; `0.1.0-rc.0` is published.
+Source was migrated from `silvermoon-work/task-engine`; the original MIT license
+and CID/protocol contracts are preserved. Kubo RPC storage is no longer
+supported.
 
 Run `pnpm check` from the repository root. Source and tests use strict
 TypeScript, type-aware lint and the shared Vitest configuration.

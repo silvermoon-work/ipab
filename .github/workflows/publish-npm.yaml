@@ -54,11 +54,35 @@ jobs:
           package-manager-cache: false
       - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
-      - name: Verify exact release evidence and publish selected package
+      - name: Select one declared package
+        id: target
         env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TARGET_PACKAGE: ${{ inputs.package }}
+          PACKAGE_INPUT: ${{ inputs.package }}
           TARGET_VERSION: ${{ inputs.version }}
           TARGET_SHA: ${{ inputs.sha || github.sha }}
-        run: pnpm publish-npm
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            test "$GITHUB_REF" = refs/heads/main
+          fi
+          target="$(pnpm exec publish-gate target --json)"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            test "$(printf '%s' "$target" | jq -r .version)" = "$TARGET_VERSION"
+          fi
+          printf '%s' "$target" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_OUTPUT"
+      - name: Build and lint selected package
+        env:
+          TARGET_PACKAGE: ${{ steps.target.outputs.name }}
+        run: pnpm exec turbo run lint-package --filter="$TARGET_PACKAGE"
+      - name: Publish through the installed lifecycle gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PACKAGE_INPUT: ${{ steps.target.outputs.name }}
+          PACKAGE_DIR: ${{ steps.target.outputs.directory }}
+          PNPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          PNPM_CONFIG_ACCESS: public
+          PNPM_CONFIG_TAG: ${{ steps.target.outputs.channel }}
+          PNPM_CONFIG_PROVENANCE: "true"
+          PNPM_CONFIG_DRY_RUN:
+            ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: pnpm --dir "$PACKAGE_DIR" publish --no-git-checks

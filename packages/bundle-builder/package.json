@@ -1,6 +1,6 @@
 {
   "name": "@ipab/bundle-builder",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "private": false,
   "description": "Deterministic bounded UnixFS Bundle CAR construction from repeatable file trees.",
   "type": "module",
@@ -38,12 +38,12 @@
   },
   "scripts": {
     "prepublishOnly": "publish-gate check --workflow ci.yaml --workflow release-validation.yaml",
-    "build": "node scripts/build.mjs",
-    "lint-package": "node scripts/lint-package.mjs",
-    "typecheck": "node scripts/typecheck.mjs",
-    "test": "node scripts/test.mjs",
-    "test-ci": "node scripts/test-ci.mjs",
-    "test-coverage": "node scripts/test-coverage.mjs"
+    "build": "tsc --project tsconfig.build.json",
+    "lint-package": "publint --strict",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "vitest run --root . --config ../../vitest.config.ts",
+    "test-ci": "vitest run --root . --config ../../vitest.config.ts --tags-filter \"!release-e2e\"",
+    "test-coverage": "vitest run --root . --config ../../vitest.config.ts --coverage"
   },
   "dependencies": {
     "@ipab/bundle": "workspace:*",

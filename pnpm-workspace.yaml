@@ -57,4 +57,4 @@ catalog:
 minimumReleaseAgeExclude:
   - "@eslint/config-array@0.23.6"
   - eslint@10.15.0
-  - "@silvermoon-work/devtool.publish-gate@0.2.0-rc.0"
+  - "@silvermoon-work/devtool.publish-gate@0.2.0"

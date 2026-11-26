@@ -15,7 +15,14 @@ IPAB 使用 Node 子进程运行 App Bundle，保留应用的命令行参数和�
 
 ## 安装
 
-目前尚未发布 npm 包，需要从源码安装；支持 Windows、macOS 和 Linux。
+已发布 `0.1.0-rc.0`；当前源码准备 `0.1.0-rc.1`，尚未发布。支持 Windows、
+macOS 和 Linux。安装现有 RC：
+
+```sh
+npm install --global @ipab/cli@0.1.0-rc.0
+```
+
+使用当前候选源码（下文 Gateway 配置适用于 rc.1 候选）：
 请先安装 Git、[指定版本的 Node](.node-version) 和
 [packageManager 指定版本的 pnpm](package.json)，然后执行：
 

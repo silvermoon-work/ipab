@@ -8,7 +8,7 @@ IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/
 通过独立 IPC 提供 IPFS 文件流及可写输出 Space。**它不是沙箱**：应用拥有
 当前用户的 Node、文件系统、网络和环境权限；只执行你信任的应用。
 根 workspace 保持 private；五个 npm 包首轮准备
-`0.1.0-rc.0`，不包含节点管理流程。
+`0.1.0-rc.1`（`0.1.0-rc.0` 已发布），不包含节点管理流程。
 
 ## 使用
 
@@ -31,7 +31,7 @@ ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 
 ### 本机命令与上游 Gateway
 
-CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前准备 `0.1.0-rc.0`，尚未发布到 npm。
+CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前准备 `0.1.0-rc.1`，尚未发布到 npm。
 在仓库根目录构建并将本地包链接到全局（支持 macOS、Linux 和 Windows）：
 
 ```sh
@@ -338,7 +338,7 @@ Bundle，包含 Vite + 原生 TypeScript 前端、自包含 Node 后端和
 内置 pin、快捷名与目录／CAR／CID 使用相同校验及展开协议，
 `templateCid` 报告准确内容身份。
 内置 Web 模板默认引用 CLI 所安装 `@ipab/web-app` 的准确版本，本轮准备版本为
-`0.1.0-rc.0`；该框架版本实际发布后，生成项目可直接从 registry 安装。
+`0.1.0-rc.1`；该框架版本实际发布后，生成项目可直接从 registry 安装。
 不再自动写入设备专用的绝对 `file:` 路径。本地开发或未发布时须显式使用
 `--param webAppDependency=file:...`。目录／CAR／CID 分发必须明确提供
 `webAppDependency` 参数，内置快捷名也允许覆盖该参数。

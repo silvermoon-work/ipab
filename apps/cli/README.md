@@ -3,11 +3,10 @@
 Node subprocess App host for IPAB (InterPlanetary Artifact Bundle). **Not a
 sandbox**: only execute Apps you trust.
 
-`0.1.0-rc.1` is published. The next candidate is `0.1.0-rc.2`; until it is
-published, install the existing RC:
+`0.1.0-rc.2` is published. Install this RC:
 
 ```sh
-npm install --global @ipab/cli@0.1.0-rc.1
+npm install --global @ipab/cli@0.1.0-rc.2
 ipab --version
 ipab --help
 ```
@@ -25,7 +24,7 @@ Local Store and `store.gateway`; reset old `store.rpc` configuration and rebuild
 local named pins. Remote Kubo pins and retention are not automatically migrated
 or released. This is an intentional prerelease compatibility change.
 
-The rc.2 candidate adds shared swarm Names, authenticated five-minute HEAD
+The rc.2 release adds shared swarm Names, authenticated five-minute HEAD
 caching, local swarm registration/selection and named search. See the
 [MVP implementation](../../docs/mvp-implementation.md) for force controls and
 the migration from legacy creation/membership records.

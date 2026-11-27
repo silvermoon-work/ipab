@@ -22,7 +22,7 @@ IPAB 以普通 Node 子进程执行 App Bundle，保留应用的 argv 与 stdin/
 通过独立 IPC 提供 IPFS 文件流及可写输出 Space。**它不是沙箱**：应用拥有
 当前用户的 Node、文件系统、网络和环境权限；只执行你信任的应用。
 根 workspace 保持 private；五个 npm 包均已发布 `0.1.0-rc.1`。
-本轮 Store、Bundle、Builder、CLI 准备 `0.1.0-rc.2`，Web App 保持 rc.1，
+本轮 Store、Bundle、Builder、CLI 已发布 `0.1.0-rc.2`，Web App 保持 rc.1，
 不包含节点管理流程。
 
 ## 使用
@@ -46,7 +46,7 @@ ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 
 ### 本机命令与上游 Gateway
 
-CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前准备 `0.1.0-rc.2`，尚未发布到 npm。
+CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前已发布 `0.1.0-rc.2`。
 在仓库根目录构建并将本地包链接到全局（支持 macOS、Linux 和 Windows）：
 
 ```sh

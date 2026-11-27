@@ -31,7 +31,7 @@ Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`�
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
 `workspace:*` 引用 Store。`@ipab/bundle-builder` 同属 npm 交付项；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-五个 code 成员显式登记 npm 交付，Store、Bundle、Builder、CLI 当前准备
+五个 code 成员显式登记 npm 交付，Store、Bundle、Builder、CLI 当前已发布
 `0.1.0-rc.2`；`@ipab/web-app` 保持已发布的 `0.1.0-rc.1`，
 因交付源码未变化不重复发布。`@ipab/web-app`
 是本机浏览器桥接框架。

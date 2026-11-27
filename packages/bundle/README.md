@@ -1,7 +1,7 @@
 # Bundle runtime
 
-`0.1.0-rc.1` is published; the next npm candidate is `0.1.0-rc.2`, including the
-shared portable pointer protocol and signed client exports.
+`0.1.0-rc.2` is published, including the shared portable pointer protocol and
+signed client exports.
 
 `@ipab/bundle` validates immutable UnixFS Content Bundles and their complete
 single-block type definitions. Callers own the block resolver/Store. There is no

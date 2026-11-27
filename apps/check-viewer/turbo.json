@@ -1,7 +1,13 @@
 {
   "extends": ["//"],
   "tasks": {
-    "test": { "dependsOn": ["build"] },
-    "test-coverage": { "dependsOn": ["build"] }
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/examples/check-spec/**"]
+    },
+    "test-coverage": {
+      "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/examples/check-spec/**"]
+    }
   }
 }

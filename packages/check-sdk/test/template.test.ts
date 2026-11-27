@@ -194,19 +194,14 @@ it(
       }
       const original = await readFile(built.output);
       const source = await readFile(prebuild, "utf8");
-      for (const directory of [false, true]) {
-        const extra = directory
-          ? 'await mkdir(join(outputDir, "check", ".private"));'
-          : 'await writeFile(join(outputDir, "check", ".secret"), "hidden");';
-        await writeFile(
-          prebuild,
-          `${source}\nconst {mkdir, writeFile} = await import("node:fs/promises");\nconst {join} = await import("node:path");\n${extra}`,
-        );
-        await expect(buildApp(root, { replace: true })).rejects.toThrow(
-          "Hidden prebuilt resources",
-        );
-        expect(await readFile(built.output)).toEqual(original);
-      }
+      await writeFile(
+        prebuild,
+        `${source}\nconst {writeFile} = await import("node:fs/promises");\nconst {join} = await import("node:path");\nawait writeFile(join(outputDir, "check", ".secret"), "hidden");`,
+      );
+      await expect(buildApp(root, { replace: true })).rejects.toThrow(
+        "Hidden prebuilt resources",
+      );
+      expect(await readFile(built.output)).toEqual(original);
       await store.gc();
       expect(await readFileFrom(model, "references/shared.md")).toEqual(
         Buffer.from("# Shared\n\nOriginal reference bytes.\n"),

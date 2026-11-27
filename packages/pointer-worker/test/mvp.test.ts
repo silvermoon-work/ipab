@@ -380,7 +380,7 @@ test(
       expect(
         JSON.parse(await readFile(join(rawDir, "entry.json"), "utf8")),
       ).toMatchObject({ value: appV2, previous: releaseV1 });
-      expect((await invoke(homeA, ["exec", "--raw", releaseV2])).code).toBe(2);
+      expect(await runCli(["exec", "--raw", releaseV2], cfgIO, envA)).toBe(2);
       expect(
         (
           await invoke(homeA, [

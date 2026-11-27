@@ -12,7 +12,7 @@ import { viewer } from "../src/shared/viewer.js";
 import definition from "../schemas/check.json" with { type: "json" };
 import { checkSpecDefinition } from "@ipab/check-spec/bundle";
 
-describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
+describe("shared Check component", { tags: ["unit"] }, () => {
   it("renders the shared Check component using real definition data", () => {
     expect(definition).toEqual(checkSpecDefinition);
     const html = renderToString(
@@ -44,6 +44,9 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
     expect(html).toContain("Review");
     expect(html).toContain("任务总览");
   });
+});
+
+describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
   it.each(["cid", "folder", "pin"])(
     "executes the actual App CAR and resolves Markdown from %s before SSR",
     async (mode) => {
@@ -90,21 +93,8 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
           (await encodeSchema(definition)).cid.toString(),
         );
         const appIdentity = await command(["bundle", "import", app]);
-        const content = await command([
-          "bundle",
-          "build",
-          example,
-          "-o",
-          join(work, "content.car"),
-        ]);
         const local = join(work, "folder");
-        if (mode === "pin") {
-          await promisify(execFile)(
-            process.execPath,
-            [cli, ...args, "pin", "add", "my-check", content.cid],
-            { env },
-          );
-        }
+        let source = local;
         if (mode === "folder") {
           await mkdir(join(local, "instructions"), { recursive: true });
           for (const path of [
@@ -117,6 +107,23 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
               join(local, ...path.split("/")),
               await readFile(join(example, ...path.split("/"))),
             );
+        } else {
+          const content = await command([
+            "bundle",
+            "build",
+            example,
+            "-o",
+            join(work, "content.car"),
+          ]);
+          source = content.cid;
+          if (mode === "pin") {
+            source = "my-check";
+            await promisify(execFile)(
+              process.execPath,
+              [cli, ...args, "pin", "add", source, content.cid],
+              { env },
+            );
+          }
         }
         child = spawn(
           process.execPath,
@@ -126,11 +133,7 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
             join(work, "state"),
             "exec",
             appIdentity.cid,
-            ...(mode === "folder"
-              ? [local]
-              : mode === "pin"
-                ? ["my-check"]
-                : [content.cid]),
+            source,
             "--no-open",
           ],
           {

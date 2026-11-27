@@ -8,6 +8,7 @@ import { UnixFS } from "ipfs-unixfs";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { State } from "../src/state.js";
+import { appDescription } from "../src/app-definition.js";
 import {
   bytes,
   OutputSpace,
@@ -41,6 +42,41 @@ async function invalidBlock(store: IpfsStore): Promise<CID> {
   await store.put(cid, bytes);
   return cid;
 }
+
+const metadata = {
+  name: "Reader",
+  version: "1.2.3-rc.0+build.1",
+  description: "Base description",
+  entry: "resources/app.cjs",
+  author: { name: "Author", email: "author@example.com" },
+  license: "Proprietary; declarative only",
+  icon: "resources/icon.svg",
+  i18n: {
+    "zh-CN": { name: "阅读器" },
+    en: { description: "English description" },
+  },
+};
+
+describe("App metadata validation", { tags: ["unit"] }, () => {
+  it.each([
+    [{ name: "  " }, "App name"],
+    [{ version: "1.2.3-01" }, "SemVer"],
+    [{ version: "1.2.3+bad..id" }, "SemVer"],
+    [{ author: { name: "" } }, "Author name"],
+    [{ author: { name: "A", email: "not-an-email" } }, "Author email"],
+    [{ license: "" }, "App license"],
+    [{ i18n: { not_a_tag: { name: "Name" } } }, "Invalid i18n language tag"],
+    [{ i18n: { en: { name: "" } } }, "Translated name"],
+    [{ i18n: { "en-US": {}, "en-us": {} } }, "Duplicate i18n language tag"],
+  ] as const)(
+    "rejects invalid concrete App metadata %#",
+    (overrides, error) => {
+      expect(() => appDescription({ ...metadata, ...overrides })).toThrow(
+        error,
+      );
+    },
+  );
+});
 
 describe(
   "real UnixFS and Node subprocess runtime",
@@ -648,19 +684,6 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
         }
       },
     );
-    const metadata = {
-      name: "Reader",
-      version: "1.2.3-rc.0+build.1",
-      description: "Base description",
-      entry: "resources/app.cjs",
-      author: { name: "Author", email: "author@example.com" },
-      license: "Proprietary; declarative only",
-      icon: "resources/icon.svg",
-      i18n: {
-        "zh-CN": { name: "阅读器" },
-        en: { description: "English description" },
-      },
-    };
     const files = {
       ".bundle.yaml": JSON.stringify(appSchema),
       "resources/app.cjs": 'process.stdout.write("licensed app still runs");',
@@ -706,21 +729,12 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       expect(run.stdout.toString()).toBe("licensed app still runs");
     }, 30000);
     it.each([
-      { name: "  " },
       { version: "01.2.3" },
-      { version: "1.2.3-01" },
-      { version: "1.2.3+bad..id" },
-      { author: { name: "" } },
-      { author: { name: "A", email: "not-an-email" } },
-      { license: "" },
       { icon: "../icon.svg" },
       { icon: "app.json" },
       { icon: "resources/missing.svg" },
-      { i18n: { not_a_tag: { name: "Name" } } },
-      { i18n: { en: { name: "" } } },
       { i18n: { en: { icon: "x" } } },
       { i18n: { en: { description: 1 } } },
-      { i18n: { "en-US": {}, "en-us": {} } },
       { profile: "ipab.node.v1", runtime: "node" },
     ])(
       "rejects invalid concrete App metadata %#",

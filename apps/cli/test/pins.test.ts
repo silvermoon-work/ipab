@@ -1,21 +1,10 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import * as dagPb from "@ipld/dag-pb";
@@ -72,42 +61,6 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
   let state: State;
   let builtinPins: ReturnType<typeof pinDetails>[];
   let pendingProcess: Promise<unknown> | undefined;
-  let driverDirectory: string | undefined;
-  let recoveryDriver: string;
-  beforeAll(async () => {
-    driverDirectory = await mkdtemp(join(tmpdir(), "ipab-pin-driver-"));
-    recoveryDriver = join(driverDirectory, "pin-recovery.mjs");
-    const script = `
-      import { IpfsStore } from ${JSON.stringify(fileURLToPath(new URL("../../../packages/ipfs-store/dist/index.js", import.meta.url)))};
-      import { State } from ${JSON.stringify(fileURLToPath(new URL("../dist/state.js", import.meta.url)))};
-      import { addPin } from ${JSON.stringify(fileURLToPath(new URL("../dist/pins.js", import.meta.url)))};
-      async function main() {
-        const state = new State(process.argv[2]);
-        await addPin(state, "interrupted", process.argv[3], JSON.parse(process.argv[4]), config => {
-          const store = new IpfsStore(config);
-          store.confirmRetained = async () => { process.exit(42); };
-          return store;
-        });
-      }
-      void main();
-    `;
-    await build({
-      stdin: { contents: script, resolveDir: process.cwd() },
-      outfile: recoveryDriver,
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      banner: {
-        js: 'import { createRequire as createPinDriverRequire } from "node:module"; const require = createPinDriverRequire(import.meta.url);',
-      },
-      sourcemap: "inline",
-      target: "node22",
-    });
-  });
-  afterAll(async () => {
-    if (driverDirectory)
-      await rm(driverDirectory, { recursive: true, force: true });
-  });
   beforeEach(async () => {
     work = await fixture();
     pendingProcess = undefined;
@@ -689,7 +642,7 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
     pendingProcess = promisify(execFile)(
       process.execPath,
       [
-        recoveryDriver,
+        fileURLToPath(new URL("./fixtures/pin-recovery.mjs", import.meta.url)),
         work.stateDir,
         root,
         JSON.stringify(work.store.configuration),

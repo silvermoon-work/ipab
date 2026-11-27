@@ -166,6 +166,16 @@ Turbo 为 `test-ci` 单独缓存，依赖成员自身 `build`，确保导入当�
 它不写 coverage，也不与完整 `test-coverage` 共享任务缓存；
 测试分类、成员过滤命令和共享配置变化均使缓存失效。
 
+修改元数据、模板或包导出时，先定向验证，再跑原门禁：
+纯 App 元数据和内存模板渲染进日常测试；资源路径、真实模板编译、
+CAR 替换失败保护、Viewer 三种输入和跨账号发布仍在完整测试中执行。
+修改公开入口后可先构建并运行 `pnpm test-package-smoke`，以早点发现
+消费端的导入错误；不能用 workspace import 或定向 coverage 代替发布验证。
+成员需要增加跨包测试输入时，在成员 `turbo.json` 继承根任务，
+用 Turbo 的 `--dry=json` 确认 `dependsOn`、`VITEST_MAX_WORKERS` 和
+`coverage/**` 没有丢失。Check Viewer 的完整测试还依赖仓库 Check 示例；
+CLI 构建只依赖两种内置模板，完整测试另依赖 React Viewer 模板。
+
 ### 发布前完整验证（只读）
 
 需要准备发布时，从 **main** 手动触发

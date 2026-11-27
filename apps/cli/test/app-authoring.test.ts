@@ -87,18 +87,21 @@ async function projectTools(root: string) {
       process.platform === "win32" ? "junction" : "dir",
     );
 }
-async function dualEntryProject(root: string, signal: AbortSignal) {
+async function initHookProject(root: string, signal: AbortSignal) {
   await initApp("hello", root, { signal });
   await projectTools(root);
-  const serverConfigPath = join(root, "tsconfig.json");
-  const serverConfig = object(
-    JSON.parse(await readFile(serverConfigPath, "utf8")) as unknown,
-    "tsconfig",
-  );
+  // The hook writes its own output; its checked input needs no Node or DOM globals.
+  await writeFile(join(root, "src", "main.ts"), "export {};\n");
   await writeFile(
-    serverConfigPath,
-    JSON.stringify({ ...serverConfig, include: ["src/main.ts"] }),
+    join(root, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { strict: true, lib: ["ES2022"], types: [] },
+      files: ["src/main.ts"],
+    }),
   );
+}
+async function dualEntryProject(root: string, signal: AbortSignal) {
+  await initHookProject(root, signal);
   await writeFile(join(root, "src", "other.ts"), "export {};\n");
   await writeFile(
     join(root, "src", "browser.ts"),
@@ -1182,8 +1185,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
     "assembles fresh hook output, skips lifecycle hooks and rejects invalid programs without replacing the CAR",
     { tags: ["release-e2e"], timeout: 120_000 },
     async () => {
-      await initApp("hello", project);
-      await projectTools(project);
+      await initHookProject(project, buildSignal);
       const config = {
         entry: "app.cjs",
         resources: ["web"],
@@ -1271,6 +1273,15 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       );
       await expect(buildApp(project, { replace: true })).rejects.toThrow(
         "valid Node CommonJS",
+      );
+      expect(await readFile(carPath)).toEqual(original);
+      await writeHook('console.log("fresh");');
+      await writeFile(
+        hook,
+        `${await readFile(hook, "utf8")}\nawait mkdir(join(output, "web", ".private"));`,
+      );
+      await expect(buildApp(project, { replace: true })).rejects.toThrow(
+        "Hidden prebuilt resources",
       );
       expect(await readFile(carPath)).toEqual(original);
       expect(
@@ -1367,10 +1378,13 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       await expect(
         readFile(join(project, "dist", "hook-ran")),
       ).rejects.toThrow();
-      await writeFile(
-        join(project, "tsconfig.browser.json"),
-        JSON.stringify(browserConfig),
-      );
+    },
+  );
+  it(
+    "preserves both CARs when a dual-entry prebuild changes source",
+    { tags: ["release-e2e"], timeout: 60_000 },
+    async () => {
+      await dualEntryProject(project, buildSignal);
       await mkdir(join(project, "dist"));
       await buildProject();
       const bundle = await loadCar(join(project, "dist", "app.car"));
@@ -1385,15 +1399,6 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       await expect(
         bundle.readFile("resources/server/app.cjs"),
       ).rejects.toThrow();
-    },
-  );
-  it(
-    "preserves both CARs when a dual-entry prebuild changes source",
-    { tags: ["release-e2e"], timeout: 60_000 },
-    async () => {
-      await dualEntryProject(project, buildSignal);
-      await mkdir(join(project, "dist"));
-      await buildProject();
       const appBytes = await readFile(join(project, "dist", "app.car"));
       const sourceBytes = await readFile(
         join(project, "dist", "app.source.car"),

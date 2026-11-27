@@ -1,0 +1,26 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pointer-worker/src/**",
+        "$TURBO_ROOT$/packages/pointer-worker/test/**"
+      ]
+    },
+    "test-ci": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pointer-worker/src/**",
+        "$TURBO_ROOT$/packages/pointer-worker/test/**"
+      ]
+    },
+    "test-coverage": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pointer-worker/src/**",
+        "$TURBO_ROOT$/packages/pointer-worker/test/**"
+      ]
+    }
+  }
+}

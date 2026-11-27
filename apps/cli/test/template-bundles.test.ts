@@ -419,6 +419,89 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
     expect(human.out).not.toContain("App");
     expect(human.out).not.toContain("Schema CID");
   });
+  it("resolves CLI named pins and provides repeatable parameters with clean JSON output", async () => {
+    const source = await bundle();
+    const built = await buildBundle(source);
+    expect(
+      (await cli(work.stateDir, ["bundle", "import", built.output])).code,
+    ).toBe(0);
+    expect(
+      (await cli(work.stateDir, ["pin", "add", "project-template", built.cid]))
+        .code,
+    ).toBe(0);
+    const selected = await cli(work.stateDir, [
+      "--json",
+      "init",
+      "demo",
+      join(work.root, "cli"),
+      "--template",
+      "project-template",
+      "--param",
+      "description=hello",
+    ]);
+    expect(selected.code, selected.err).toBe(0);
+    expect(JSON.parse(selected.out)).toMatchObject({ templateCid: built.cid });
+    const state = new State(work.stateDir);
+    state.savePin({
+      name: "pending-template",
+      cid: built.cid,
+      owner: "pending-test",
+      status: "pending",
+      metadata: null,
+    });
+    state.close();
+    const pending = await cli(work.stateDir, [
+      "init",
+      "demo",
+      join(work.root, "pending"),
+      "--template",
+      "pending-template",
+    ]);
+    expect(pending.code).toBe(1);
+    expect(pending.err).toContain("pending");
+    expect(
+      (await cli(work.stateDir, ["init", "demo", "--param", "invalid"])).code,
+    ).toBe(2);
+    expect((await cli(work.stateDir, ["init", "--help"])).out).toContain(
+      "--param",
+    );
+  });
+  it("rejects wrong Bundle types, missing Store and incomplete CAR without writing output", async () => {
+    const source = await bundle();
+    await writeFile(
+      join(source, ".bundle.yaml"),
+      stringify({ ...templateSchema, name: "Other type" }),
+    );
+    await expect(appTemplate(source, "demo", {})).rejects.toThrow(
+      "exact builtin",
+    );
+    const built = await buildBundle(source);
+    await expect(appTemplate(built.output, "demo", {})).rejects.toThrow(
+      "exact builtin",
+    );
+    const incomplete = join(work.root, "incomplete.car");
+    const { writer, out } = CarWriter.create([CID.parse(built.cid)]);
+    const drained = (async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const bytes of out) chunks.push(bytes);
+      return Buffer.concat(chunks);
+    })();
+    await writer.close();
+    await writeFile(incomplete, await drained);
+    await expect(appTemplate(incomplete, "demo", {})).rejects.toThrow();
+    await expect(templateSource(built.cid, {})).rejects.toThrow(
+      "configured Store",
+    );
+    await expect(
+      templateSource(join(work.root, "file.txt"), {}),
+    ).rejects.toThrow();
+    await expect(appTemplate("unknown", "demo", {})).rejects.toThrow(
+      "Unknown template",
+    );
+  });
+});
+
+describe("Template rendering", { tags: ["unit"] }, () => {
   it("renders real Liquid conditions, loops, filters and JSON without HTML escaping", async () => {
     const entry = {
       ...definition,
@@ -636,85 +719,5 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
         { signal: active.signal },
       ),
     ).rejects.toThrow("cancelled during rendering");
-  });
-  it("resolves CLI named pins and provides repeatable parameters with clean JSON output", async () => {
-    const source = await bundle();
-    const built = await buildBundle(source);
-    expect(
-      (await cli(work.stateDir, ["bundle", "import", built.output])).code,
-    ).toBe(0);
-    expect(
-      (await cli(work.stateDir, ["pin", "add", "project-template", built.cid]))
-        .code,
-    ).toBe(0);
-    const selected = await cli(work.stateDir, [
-      "--json",
-      "init",
-      "demo",
-      join(work.root, "cli"),
-      "--template",
-      "project-template",
-      "--param",
-      "description=hello",
-    ]);
-    expect(selected.code, selected.err).toBe(0);
-    expect(JSON.parse(selected.out)).toMatchObject({ templateCid: built.cid });
-    const state = new State(work.stateDir);
-    state.savePin({
-      name: "pending-template",
-      cid: built.cid,
-      owner: "pending-test",
-      status: "pending",
-      metadata: null,
-    });
-    state.close();
-    const pending = await cli(work.stateDir, [
-      "init",
-      "demo",
-      join(work.root, "pending"),
-      "--template",
-      "pending-template",
-    ]);
-    expect(pending.code).toBe(1);
-    expect(pending.err).toContain("pending");
-    expect(
-      (await cli(work.stateDir, ["init", "demo", "--param", "invalid"])).code,
-    ).toBe(2);
-    expect((await cli(work.stateDir, ["init", "--help"])).out).toContain(
-      "--param",
-    );
-  });
-  it("rejects wrong Bundle types, missing Store and incomplete CAR without writing output", async () => {
-    const source = await bundle();
-    await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({ ...templateSchema, name: "Other type" }),
-    );
-    await expect(appTemplate(source, "demo", {})).rejects.toThrow(
-      "exact builtin",
-    );
-    const built = await buildBundle(source);
-    await expect(appTemplate(built.output, "demo", {})).rejects.toThrow(
-      "exact builtin",
-    );
-    const incomplete = join(work.root, "incomplete.car");
-    const { writer, out } = CarWriter.create([CID.parse(built.cid)]);
-    const drained = (async () => {
-      const chunks: Uint8Array[] = [];
-      for await (const bytes of out) chunks.push(bytes);
-      return Buffer.concat(chunks);
-    })();
-    await writer.close();
-    await writeFile(incomplete, await drained);
-    await expect(appTemplate(incomplete, "demo", {})).rejects.toThrow();
-    await expect(templateSource(built.cid, {})).rejects.toThrow(
-      "configured Store",
-    );
-    await expect(
-      templateSource(join(work.root, "file.txt"), {}),
-    ).rejects.toThrow();
-    await expect(appTemplate("unknown", "demo", {})).rejects.toThrow(
-      "Unknown template",
-    );
   });
 });

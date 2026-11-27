@@ -2,27 +2,6 @@
   "$schema": "https://turborepo.com/schema.json",
   "globalDependencies": [".node-version", "tsconfig.json", "vitest.config.ts"],
   "tasks": {
-    "@ipab/bundle#test": {
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/packages/pointer-worker/src/**",
-        "$TURBO_ROOT$/packages/pointer-worker/test/**"
-      ]
-    },
-    "@ipab/bundle#test-ci": {
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/packages/pointer-worker/src/**",
-        "$TURBO_ROOT$/packages/pointer-worker/test/**"
-      ]
-    },
-    "@ipab/bundle#test-coverage": {
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/packages/pointer-worker/src/**",
-        "$TURBO_ROOT$/packages/pointer-worker/test/**"
-      ]
-    },
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]

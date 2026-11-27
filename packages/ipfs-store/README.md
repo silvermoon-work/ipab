@@ -29,6 +29,11 @@ management/GC RPC is issued. No gateway is guessed when unset; local misses
 fail. Successfully pinned complete DAGs remain available without the gateway.
 Unpinned cache can be collected and then needs an available source to reacquire.
 
+Local-only use does not load the Helia HTTP gateway transport. Its modules load
+on the first read that uses that transport, within the existing read and
+per-attempt timeout budgets. Later reads in the same process reuse the modules,
+not a running gateway node.
+
 `read(cidOrCidPath, { signal? })` returns a discriminated `UnixfsNode`: files
 (`type: "file" | "raw"`) expose `content()` as an async byte stream; directories
 expose `entries()` as an async iterator. It does not materialize the whole file

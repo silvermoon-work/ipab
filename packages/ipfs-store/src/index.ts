@@ -1,6 +1,3 @@
-import { trustlessGateway } from "@helia/block-brokers";
-import { createHeliaHTTP } from "@helia/http";
-import { httpGatewayRouting } from "@helia/routers";
 import { unixfs } from "@helia/unixfs";
 import { ContentError } from "./errors.js";
 import { MemoryBlockstore } from "blockstore-core";
@@ -320,6 +317,16 @@ function gatewaySource(url: string, allowPath = false): ReadSource {
   return {
     source: endpoint.href,
     async read(cid, signal) {
+      signal.throwIfAborted();
+      const [
+        { trustlessGateway },
+        { createHeliaHTTP },
+        { httpGatewayRouting },
+      ] = await Promise.all([
+        import("@helia/block-brokers"),
+        import("@helia/http"),
+        import("@helia/routers"),
+      ]);
       signal.throwIfAborted();
       const node = await createHeliaHTTP({
         ...isolatedNodeOptions(),

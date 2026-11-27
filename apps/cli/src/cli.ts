@@ -400,7 +400,6 @@ const commandHelp: Record<
     ],
     examples: [
       "ipab exec reader",
-      "ipab exec reader --help",
       "ipab exec --log reader",
       "ipab exec ipab://work/apps/hello --help",
     ],

@@ -263,7 +263,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       ]);
       expect(() => parse(["exec", "--log"])).toThrow("Expected APP");
       expect(() => parse(["exec", "--log", "--log", "reader"])).toThrow(
-        "Expected APP",
+        "Duplicate option --log",
       );
       const root = await app(
         work.store,

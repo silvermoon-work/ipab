@@ -106,6 +106,98 @@ return edit conflict/exit 3 with retained candidate/content CIDs. Non-CAS
 network failures are not silently retried; unknown commit outcomes are not
 successes. Publication does not edit, compile, execute or install.
 
+## Swarm registry and header cache
+
+The local registry and header cache live in the selected CLI state directory,
+alongside the existing swarm membership scope. The account identity remains in
+HOME. `swarm create` and `swarm join` register successful swarms automatically;
+both accept `--alias ALIAS`. A local alias is unique, case-sensitive, follows
+the same short-name rules as pins, and is not the shared swarm display name.
+Existing owner/member access can be registered using:
+
+```sh
+ipab swarm add SWARM_CID --alias work
+ipab swarm list
+ipab swarm use work
+ipab swarm remove work
+```
+
+`add` authenticates against the service; it does not grant membership. The first
+registration becomes `swarm.default` only if no saved default exists. `use`
+changes this saved CID without a network request. Selection precedence remains
+explicit `--swarm`, `IPAB_SWARM`, then `swarm.default`; the first two also
+accept local aliases. `list` shows the saved and effective selections and their
+source without claiming that membership is currently authorized. `remove` only
+forgets the registry entry, preserving credentials, content, cached headers and
+remote membership. Removing the saved current swarm clears the default
+atomically without silently selecting another swarm. Legacy credentials are not
+automatically enumerated as registrations; use `add`.
+
+Shared `name:` resolution in `exec`, `open` and `get` reuses an authenticated
+header and locally validated Names snapshot for **300 seconds by default**. An
+age of exactly 300 seconds is expired. The cache persists between commands, is
+bound to the account public key and canonical Swarm CID, and retains the
+immutable descriptor and snapshot so valid cache reads need no content Gateway
+or pointer-service request. Local certificate validity and binding are still
+checked on every cache hit; remote revocation may only be detected on refresh,
+so a cached header is not proof of fresh service authorization.
+
+An absent or expired cache is refreshed. A Name missing from a valid cached
+snapshot triggers one refresh and retry; a Name missing from a just-refreshed
+snapshot fails without another refresh. Content fetch/execution failures do not
+trigger header retries. `--force` refreshes immediately; `--no-force` overrides
+a reusable force preference. They conflict. For `exec`, both flags must precede
+APP; all flags after APP are still forwarded verbatim. Bare CID and local pin
+resolution do not request a swarm header.
+
+```sh
+ipab config set swarm.cacheTtl 300
+ipab config set swarm.forceRefresh false
+ipab --swarm work exec --force name:apps/hello --help
+ipab --swarm work get --force name:documents/readme -o readme
+ipab config reset swarm.cacheTtl
+```
+
+`swarm.cacheTtl` accepts integer seconds from 0 through 86400; 0 disables cache
+reuse. `swarm.forceRefresh` defaults to false. Their environment overrides are
+`IPAB_SWARM_CACHE_TTL` and `IPAB_SWARM_FORCE_REFRESH`. Failed refreshes do not
+extend cache lifetime or fall back to stale data. Malformed cache data fails
+explicitly and can be replaced with `--force`. `swarm status` always
+authenticates and refreshes, updating the cache. Creation/join populate the
+cache; a named publication invalidates it before attempting the remote write,
+including unknown write outcomes. Publication CAS baselines and membership
+authorization never use cached HEAD.
+
+### Search named entries
+
+`ipab search QUERY` performs case-insensitive literal substring matching on
+formal Names, including Artifact nodes and directly named snapshots. It does not
+search Check `pass` booleans, unnamed content, payload text or history. The
+query must be 1..256 characters without control characters.
+
+```sh
+ipab search hello
+ipab search hello --current
+ipab --swarm work search hello --force
+ipab --json search hello
+```
+
+By default it searches every local registration. `--current` selects the
+effective current swarm; explicit `--swarm` or `IPAB_SWARM` also narrows the
+scope to one swarm. `--current` conflicts with `--swarm`. Valid caches are
+searched entirely locally; only absent/expired headers refresh unless `--force`
+is requested. Zero matches is success (exit 0) and does not refresh valid
+caches. Any unavailable swarm fails the entire search (exit 1), rather than
+outputting an incomplete success. Invalid queries/options exit 2.
+
+JSON stdout is `{matches,swarms}`. Each match has `swarm`, nullable `alias`,
+`name`, `reference` (`name:NAME`) and `targetCid`, the direct Name target, not
+an expanded Artifact payload CID. Each searched swarm reports `cid`, `source`
+(`cache` or `network`), `root`, `revision` and RFC3339 `verifiedAt`. Results
+sort by canonical swarm CID and Name; same Names in different swarms remain
+distinct. Progress/errors use stderr. Search never downloads every Artifact or
+its payload just to list names.
+
 Swarm flows require a prepared private Kubo network. `store.gateway` stays
 read-only; it does not upload. `swarm.provider` (default local port 5001) is an
 explicit **CAR import bridge**, not a restored `store.rpc` backend. It POSTs

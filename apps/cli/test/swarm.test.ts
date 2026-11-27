@@ -28,6 +28,9 @@ import {
   publish,
   requestMembership,
   readSnapshot,
+  swarmHeader,
+  searchNames,
+  swarmType,
   requestType,
   resolveReference,
   responseType,
@@ -41,6 +44,7 @@ import type { Identity } from "../src/identity.js";
 import type * as IdentityModule from "../src/identity.js";
 import { cli } from "./helpers.js";
 import { writeCar } from "../src/authoring.js";
+import { State } from "../src/state.js";
 
 const ports = vi.hoisted(() => ({
   identity: vi.fn<(env: NodeJS.ProcessEnv) => Promise<Identity>>(),
@@ -86,6 +90,7 @@ describe(
       creates = 0,
       failProvide = false,
       provideCalls = 0;
+    let reads = 0;
     let identities: Map<string, Identity>;
     beforeEach(async () => {
       await mkdir(resolve(".test-work"), { recursive: true });
@@ -118,6 +123,7 @@ describe(
       creates = 0;
       provideCalls = 0;
       failProvide = false;
+      reads = 0;
       const fetcher: typeof fetch = async (input, options) => {
         const request = new Request(input, options);
         if (new URL(request.url).pathname.startsWith("/api/v0/dag/import")) {
@@ -162,6 +168,7 @@ describe(
           root = ((await request.json()) as { root: string }).root;
           revision++;
         }
+        if (request.method === "GET") reads++;
         return new Response(
           JSON.stringify({ root, revision: String(revision) }),
           { headers: { etag: `"${revision}"` } },
@@ -205,6 +212,245 @@ describe(
       });
     });
     const local = (reference: string) => reference;
+    it("persists headers across calls, expires at exactly five minutes, and honors force/zero TTL", async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      const swarm = await createSwarm(a);
+      const payload = await jsonBundle(store, noteType, { cached: true });
+      await publish(a, payload, {
+        swarm,
+        name: "documents/cached",
+        snapshot: true,
+      });
+      const first = await swarmHeader(a, swarm);
+      const count = reads;
+      clock.mockReturnValue(Date.parse(first.verifiedAt) + 299_999);
+      expect((await swarmHeader({ ...a }, swarm)).source).toBe("cache");
+      expect(reads).toBe(count);
+      clock.mockReturnValue(Date.parse(first.verifiedAt) + 300_000);
+      expect((await swarmHeader(a, swarm)).source).toBe("network");
+      expect(reads).toBe(count + 1);
+      expect((await swarmHeader(a, swarm, true)).source).toBe("network");
+      expect((await swarmHeader({ ...a, cacheTtl: 0 }, swarm)).source).toBe(
+        "network",
+      );
+      expect(reads).toBe(count + 3);
+      expect((await resolveReference(a, payload, undefined, local)).cid).toBe(
+        payload,
+      );
+      expect(reads).toBe(count + 3);
+    });
+    it("refreshes a cached name miss once, freezes cached hits, and invalidates successful local publications", async () => {
+      const swarm = await createSwarm(a);
+      await joinSwarm(
+        b,
+        await approveMembership(a, await requestMembership(b, swarm)),
+      );
+      const payload = await jsonBundle(store, noteType, { text: "first" });
+      await publish(b, payload, { swarm, name: "new", snapshot: true });
+      const beforeMiss = reads;
+      expect((await resolveReference(a, "name:new", swarm, local)).cid).toBe(
+        payload,
+      );
+      expect(reads).toBe(beforeMiss + 1);
+      const old = await publish(b, payload, { swarm, name: "versioned" });
+      await swarmHeader(a, swarm, true);
+      const next = await jsonBundle(store, noteType, { text: "next" });
+      const current = await publish(b, next, {
+        swarm,
+        name: "versioned",
+        expect: old,
+      });
+      const beforeHit = reads;
+      expect(
+        (await resolveReference(a, "name:versioned", swarm, local)).cid,
+      ).toBe(payload);
+      expect(reads).toBe(beforeHit);
+      expect(
+        (
+          await resolveReference(
+            { ...a, forceRefresh: true },
+            "name:versioned",
+            swarm,
+            local,
+            true,
+          )
+        ).cid,
+      ).toBe(current);
+      expect(reads).toBe(beforeHit + 1);
+      const beforeMissing = reads;
+      await expect(
+        resolveReference(a, "name:missing", swarm, local),
+      ).rejects.toThrow("not present");
+      expect(reads).toBe(beforeMissing + 1);
+      await expect(
+        resolveReference(
+          { ...a, forceRefresh: true },
+          "name:missing",
+          swarm,
+          local,
+        ),
+      ).rejects.toThrow("not present");
+      expect(reads).toBe(beforeMissing + 2);
+      const replacement = await publish(a, payload, {
+        swarm,
+        name: "versioned",
+        expect: current,
+      });
+      const beforeLocal = reads;
+      expect(
+        (await resolveReference(a, "name:versioned", swarm, local, true)).cid,
+      ).toBe(replacement);
+      expect(reads).toBe(beforeLocal + 1);
+    });
+    it("does not reuse expired credentials or fall back after refresh failure, and binds caches to identity", async () => {
+      const swarm = await createSwarm(a);
+      await joinSwarm(
+        b,
+        await approveMembership(a, await requestMembership(b, swarm), 60),
+      );
+      const before = reads;
+      expect(
+        (await swarmHeader({ ...a, stateDir: b.stateDir }, swarm)).source,
+      ).toBe("network");
+      expect(reads).toBe(before + 1);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      await expect(swarmHeader(b, swarm)).rejects.toThrow("valid owner-issued");
+      const original = a.fetch!;
+      a.fetch = (input, options) => {
+        if (new Request(input, options).method === "GET")
+          return Promise.resolve(
+            new Response('{"error":{"code":"internal","message":"offline"}}', {
+              status: 503,
+            }),
+          );
+        return original(input, options);
+      };
+      await expect(swarmHeader(a, swarm, true)).rejects.toThrow();
+      clock.mockReturnValue(Date.now() + 300_000);
+      await expect(swarmHeader(a, swarm)).rejects.toThrow();
+    });
+    it("searches cached Names without payload reads, returns complete empty results, and refreshes expired scope", async () => {
+      const swarm = await createSwarm(a);
+      const payload = await jsonBundle(store, noteType, {
+        text: "not indexed",
+      });
+      const node = await publish(a, payload, { swarm, name: "Apps/Hello" });
+      const header = await swarmHeader(a, swarm);
+      const blockGet = vi.spyOn(store.block, "get");
+      const before = reads;
+      const scope = [{ cid: swarm, alias: "work" }];
+      const result = await searchNames(a, "hello", scope);
+      expect(result.matches).toEqual([
+        {
+          swarm,
+          alias: "work",
+          name: "Apps/Hello",
+          reference: "name:Apps/Hello",
+          targetCid: node,
+        },
+      ]);
+      expect(result.swarms[0]).toMatchObject({ cid: swarm, source: "cache" });
+      expect(blockGet).not.toHaveBeenCalled();
+      expect((await searchNames(a, "absent", scope)).matches).toEqual([]);
+      expect(reads).toBe(before);
+      vi.spyOn(Date, "now").mockReturnValue(
+        Date.parse(header.verifiedAt) + 300_000,
+      );
+      expect((await searchNames(a, "hello", scope)).swarms[0]?.source).toBe(
+        "network",
+      );
+      expect(reads).toBe(before + 1);
+      a.fetch = () =>
+        Promise.resolve(
+          new Response('{"error":{"code":"internal","message":"offline"}}', {
+            status: 503,
+          }),
+        );
+      await expect(
+        searchNames({ ...a, forceRefresh: true }, "hello", scope),
+      ).rejects.toThrow("Search was not completed");
+    });
+    it("manages registrations/current selection and searches multiple swarms through CLI without revocation", async () => {
+      const env = { HOME: "a" };
+      const swarm = await createSwarm(a, { alias: "work" });
+      const other = await jsonBundle(store, swarmType, {
+        ...(await descriptor(store, swarm)),
+        variable: toBase64Url(randomBytes(32)),
+      });
+      expect(
+        (
+          await cli(a.stateDir, ["swarm", "add", other, "--alias", "other"], {
+            env,
+          })
+        ).code,
+      ).toBe(0);
+      const state = new State(a.stateDir);
+      try {
+        expect(state.swarms()).toHaveLength(2);
+        expect(state.config()["swarm.default"]).toBe(swarm);
+      } finally {
+        state.close();
+      }
+      const conflict = await cli(
+        a.stateDir,
+        ["swarm", "create", "--alias", "work"],
+        { env },
+      );
+      expect(conflict.code).toBe(1);
+      expect(creates).toBe(1);
+      const beforeLocal = reads;
+      expect(
+        (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
+      ).toBe(0);
+      const listed = await cli(a.stateDir, ["--json", "swarm", "list"], {
+        env: { ...env, IPAB_SWARM: "work" },
+      });
+      expect(JSON.parse(listed.out)).toMatchObject({
+        savedCurrent: other,
+        effectiveCurrent: swarm,
+        source: "env",
+      });
+      expect(reads).toBe(beforeLocal);
+      const all = await cli(a.stateDir, ["--json", "search", "absent"], {
+        env,
+      });
+      expect(all.code, all.err).toBe(0);
+      expect(
+        (JSON.parse(all.out) as { swarms: unknown[] }).swarms,
+      ).toHaveLength(2);
+      const current = await cli(
+        a.stateDir,
+        ["--json", "search", "absent", "--current"],
+        { env },
+      );
+      expect(
+        (JSON.parse(current.out) as { swarms: { cid: string }[] }).swarms.map(
+          (entry) => entry.cid,
+        ),
+      ).toEqual([other]);
+      expect(
+        (
+          await cli(
+            a.stateDir,
+            ["--swarm", "work", "search", "absent", "--force"],
+            { env },
+          )
+        ).code,
+      ).toBe(0);
+      const removed = await cli(
+        a.stateDir,
+        ["--json", "swarm", "remove", "other"],
+        { env },
+      );
+      expect(JSON.parse(removed.out)).toEqual({
+        removed: other,
+        savedCurrent: null,
+      });
+      expect((await (await pointer(a, other)).read()).root).toBe(root);
+      expect(
+        (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
+      ).toBe(1);
+    });
     it("retries only network failures, reports bounded CAS contention, and preserves candidates on service errors", async () => {
       const swarm = await createSwarm(a);
       const original = a.fetch!;
@@ -351,7 +597,7 @@ describe(
       ).toBe(0);
       expect(
         (await cli(b.stateDir, ["swarm", "status"], { env: memberEnv })).code,
-      ).toBe(2);
+      ).toBe(0);
       expect(
         (
           await cli(b.stateDir, ["--json", "swarm", "status", swarm], {

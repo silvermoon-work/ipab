@@ -59,6 +59,30 @@ ipab config set store.gateway http://127.0.0.1:8080
 `build` 的有意迁移见 [MVP 实现与决策](docs/mvp-implementation.md)。
 独立 CID／具名 pin 的本机操作仍不要求 Kubo。
 
+### 多 swarm 与名称缓存
+
+创建或加入 swarm 后会自动登记到当前本机状态目录；首次登记且没有保存默认值时，
+会将它设为当前 swarm。已有授权的 swarm 可以手动登记并设置本地别名：
+
+```sh
+ipab swarm add <swarm-cid> --alias work
+ipab swarm list
+ipab swarm use work
+ipab search hello
+ipab --swarm work get --force name:apps/hello
+```
+
+选择优先级为 `--swarm CID或别名`、`IPAB_SWARM`、保存的 `swarm.default`。
+`swarm use` 不需要设置环境变量；`swarm remove work` 只移除本机登记，
+不删除证书、内容或远程成员资格。
+
+`exec`、`open`、`get` 的共享名称解析默认复用 5 分钟内的已验证 swarm HEAD；
+有效缓存找不到名称时刷新一次。`--force` 要求立即刷新；`exec` 的该参数必须
+放在 App 引用之前，App 引用之后的参数仍全部透传。
+`search` 默认按名称关键字检索所有已登记 swarm，缓存有效时只读本地信息，
+缺失或过期时更新；`--current` 或显式 swarm 选择可缩小范围。详情见
+[swarm 与名称缓存](docs/mvp-implementation.md#swarm-registry-and-header-cache)。
+
 ## 快速上手
 
 ### 运行应用

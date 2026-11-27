@@ -17,6 +17,13 @@ export interface Association {
   appCid: string;
   argv: string[];
 }
+export interface RegisteredSwarm {
+  cid: string;
+  alias: string | null;
+}
+export function swarmAlias(value: string): void {
+  pinName(value);
+}
 export interface RunRecord {
   id: string;
   origin: "exec" | "open";
@@ -145,6 +152,8 @@ export class State {
       DROP TABLE IF EXISTS aliases;
       CREATE TABLE IF NOT EXISTS named_pins (name TEXT PRIMARY KEY, owner TEXT UNIQUE NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS registrations (schema_cid TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS swarms (cid TEXT PRIMARY KEY, alias TEXT UNIQUE);
+      CREATE TABLE IF NOT EXISTS swarm_headers (account TEXT NOT NULL, swarm TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (account,swarm));
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS holds (owner TEXT PRIMARY KEY, value TEXT NOT NULL);`);
     this.transaction(() => {
@@ -205,6 +214,99 @@ export class State {
   }
   resetConfig(key: ConfigKey | "store.rpc"): void {
     this.db.prepare("DELETE FROM config WHERE key=?").run(key);
+  }
+  swarms(): RegisteredSwarm[] {
+    return this.db
+      .prepare("SELECT cid,alias FROM swarms ORDER BY cid")
+      .all()
+      .map((row) => {
+        if (
+          typeof row.cid !== "string" ||
+          (row.alias !== null && typeof row.alias !== "string")
+        )
+          throw new HostError("Invalid persisted swarm registration.");
+        const cid = exactCid(row.cid);
+        if (row.alias !== null) swarmAlias(row.alias);
+        return { cid, alias: row.alias };
+      });
+  }
+  resolveSwarm(reference: string): string {
+    try {
+      return CID.parse(reference).toV1().toString();
+    } catch {
+      const entry = this.swarms().find((entry) => entry.alias === reference);
+      if (entry) return entry.cid;
+      throw new HostError(
+        `Unknown swarm alias "${reference}". Run ipab swarm list.`,
+      );
+    }
+  }
+  registeredSwarm(reference: string): RegisteredSwarm {
+    const cid = this.resolveSwarm(reference);
+    const entry = this.swarms().find((entry) => entry.cid === cid);
+    if (!entry)
+      throw new HostError(
+        `Swarm "${reference}" is not registered. Run ipab swarm add ${cid}.`,
+      );
+    return entry;
+  }
+  checkSwarmAlias(alias: string, cid?: string): void {
+    swarmAlias(alias);
+    if (
+      this.swarms().some((entry) => entry.alias === alias && entry.cid !== cid)
+    )
+      throw new HostError(
+        `Swarm alias "${alias}" is already assigned. Choose another alias.`,
+      );
+  }
+  registerSwarm(cid: string, alias?: string): RegisteredSwarm {
+    cid = exactCid(cid);
+    return this.transaction(() => {
+      if (alias !== undefined) this.checkSwarmAlias(alias, cid);
+      const previous = this.swarms().find((entry) => entry.cid === cid);
+      const entry = { cid, alias: alias ?? previous?.alias ?? null };
+      this.db
+        .prepare("INSERT OR REPLACE INTO swarms VALUES (?,?)")
+        .run(cid, entry.alias);
+      if (this.config()["swarm.default"] == null)
+        this.setConfig("swarm.default", cid);
+      return entry;
+    });
+  }
+  useSwarm(reference: string): string {
+    return this.transaction(() => {
+      const entry = this.registeredSwarm(reference);
+      this.setConfig("swarm.default", entry.cid);
+      return entry.cid;
+    });
+  }
+  removeSwarm(reference: string): string {
+    return this.transaction(() => {
+      const entry = this.registeredSwarm(reference);
+      this.db.prepare("DELETE FROM swarms WHERE cid=?").run(entry.cid);
+      if (this.config()["swarm.default"] === entry.cid)
+        this.resetConfig("swarm.default");
+      return entry.cid;
+    });
+  }
+  swarmHeader(account: string, swarm: string): unknown {
+    const row = this.db
+      .prepare("SELECT value FROM swarm_headers WHERE account=? AND swarm=?")
+      .get(account, swarm);
+    if (!row) return undefined;
+    try {
+      return JSON.parse(String(row.value)) as unknown;
+    } catch {
+      throw new HostError("Malformed persisted swarm header cache.");
+    }
+  }
+  saveSwarmHeader(account: string, swarm: string, value: unknown): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO swarm_headers VALUES (?,?,?)")
+      .run(account, swarm, JSON.stringify(value));
+  }
+  invalidateSwarmHeader(swarm: string): void {
+    this.db.prepare("DELETE FROM swarm_headers WHERE swarm=?").run(swarm);
   }
   resolve(value: string, schema = false): string {
     try {

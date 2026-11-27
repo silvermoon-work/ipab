@@ -48,6 +48,7 @@ import { bundleJson, provideContent } from "./content-provider.js";
 import { bytes, relativePath } from "./space.js";
 import { publicUrl } from "./config.js";
 import { appSchemaCid } from "./app-definition.js";
+import { State } from "./state.js";
 
 const cidField = { type: "string", minLength: 1, maxLength: 128 } as const;
 function definition(
@@ -128,6 +129,22 @@ export interface SwarmContext {
   fetch?: typeof fetch;
   pointerService?: string;
   pointerApiKey?: string;
+  state?: State;
+  cacheTtl?: number;
+  forceRefresh?: boolean;
+  diagnostic?: (text: string) => void;
+}
+function withState<T>(
+  context: SwarmContext,
+  operation: (state: State) => T,
+): T {
+  if (context.state) return operation(context.state);
+  const state = new State(context.stateDir);
+  try {
+    return operation(state);
+  } finally {
+    state.close();
+  }
 }
 async function requestPointer<T>(operation: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
@@ -222,6 +239,9 @@ export async function descriptor(
   cid: string,
 ): Promise<Descriptor> {
   const data = await typedJson<Descriptor>(store, cid, swarmType);
+  return validateDescriptor(data);
+}
+async function validateDescriptor(data: Descriptor): Promise<Descriptor> {
   data.service = publicUrl(data.service).replace(/\/$/, "");
   const url = new URL(data.service);
   if (
@@ -309,6 +329,15 @@ export async function pointer(
 ): Promise<BoundPointer> {
   const data = await descriptor(context.store, swarm);
   const identity = await accountIdentity(context.env);
+  return authenticatedPointer(context, swarm, data, identity, certificate);
+}
+async function authenticatedPointer(
+  context: SwarmContext,
+  swarm: string,
+  data: Descriptor,
+  identity: Identity,
+  certificate?: Certificate,
+): Promise<BoundPointer> {
   if (identity.publicKey === data.owner && certificate === undefined)
     return bindPointer(context, data, identity);
   const cert =
@@ -363,10 +392,10 @@ export async function readSnapshot(
     throw new HostError(
       "HEAD must reference a verified publication linking State and optional previous publication.",
     );
-  const value = object(
-    dagCbor.decode(await store.block.get(stateCid.toString())),
-    "swarm snapshot",
-  );
+  return decodeSnapshot(await store.block.get(stateCid.toString()));
+}
+function decodeSnapshot(bytes: Uint8Array): Snapshot {
+  const value = object(dagCbor.decode(bytes), "swarm snapshot");
   const properties = object(value.properties, "swarm properties");
   const names = object(value.names, "swarm Names");
   if (
@@ -384,6 +413,171 @@ export async function readSnapshot(
       throw new HostError("Snapshot Name targets must be CID links.");
   }
   return value as unknown as Snapshot;
+}
+export interface SwarmHeader {
+  head: ReadResult;
+  snapshot: Snapshot;
+  source: "cache" | "network";
+  verifiedAt: string;
+}
+export async function swarmHeader(
+  context: SwarmContext,
+  swarm: string,
+  force = context.forceRefresh ?? false,
+): Promise<SwarmHeader> {
+  swarm = CID.parse(swarm).toV1().toString();
+  const identity = await accountIdentity(context.env);
+  const ttl = context.cacheTtl ?? 300;
+  if (!Number.isSafeInteger(ttl) || ttl < 0 || ttl > 86400)
+    throw new HostError(
+      "swarm.cacheTtl requires an integer number of seconds from 0 to 86400.",
+    );
+  const cached = force
+    ? undefined
+    : withState(context, (state) =>
+        state.swarmHeader(identity.publicKey, swarm),
+      );
+  if (cached !== undefined) {
+    const value = object(cached, "swarm header cache");
+    if (
+      typeof value.root !== "string" ||
+      CID.parse(value.root).code !== dagCbor.code ||
+      typeof value.revision !== "string" ||
+      !value.revision ||
+      typeof value.etag !== "string" ||
+      typeof value.verifiedAt !== "number" ||
+      !Number.isSafeInteger(value.verifiedAt) ||
+      value.verifiedAt < 0 ||
+      typeof value.snapshot !== "string" ||
+      Buffer.from(value.snapshot, "base64").toString("base64") !==
+        value.snapshot
+    )
+      throw new HostError(
+        "Invalid persisted swarm header cache; retry with --force to replace it.",
+      );
+    const snapshot = decodeSnapshot(Buffer.from(value.snapshot, "base64"));
+    const cachedDescriptor = object(
+      value.descriptor,
+      "cached swarm descriptor",
+    );
+    if (
+      typeof cachedDescriptor.service !== "string" ||
+      typeof cachedDescriptor.variable !== "string" ||
+      typeof cachedDescriptor.owner !== "string"
+    )
+      throw new HostError(
+        "Invalid cached swarm descriptor; retry with --force to replace it.",
+      );
+    const data = await validateDescriptor({
+      service: cachedDescriptor.service,
+      variable: cachedDescriptor.variable,
+      owner: cachedDescriptor.owner,
+    });
+    const age = Date.now() - value.verifiedAt;
+    if (age >= 0 && age < ttl * 1000) {
+      await authenticatedPointer(context, swarm, data, identity);
+      return {
+        head: { root: value.root, revision: value.revision, etag: value.etag },
+        snapshot,
+        source: "cache",
+        verifiedAt: new Date(value.verifiedAt).toISOString(),
+      };
+    }
+  }
+  const data = await descriptor(context.store, swarm);
+  const client = await authenticatedPointer(context, swarm, data, identity);
+  context.diagnostic?.(`Refreshing swarm HEAD ${swarm}...`);
+  const head = await client.read();
+  const snapshot = await readSnapshot(context.store, head.root);
+  const verifiedAt = Date.now();
+  withState(context, (state) => {
+    state.saveSwarmHeader(identity.publicKey, swarm, {
+      ...head,
+      descriptor: data,
+      snapshot: Buffer.from(dagCbor.encode(snapshot)).toString("base64"),
+      verifiedAt,
+    });
+  });
+  return {
+    head,
+    snapshot,
+    source: "network",
+    verifiedAt: new Date(verifiedAt).toISOString(),
+  };
+}
+export async function addSwarm(
+  context: SwarmContext,
+  swarm: string,
+  alias?: string,
+): Promise<void> {
+  swarm = CID.parse(swarm).toV1().toString();
+  if (alias !== undefined)
+    withState(context, (state) => {
+      state.checkSwarmAlias(alias, swarm);
+    });
+  await swarmHeader(context, swarm, true);
+  withState(context, (state) => state.registerSwarm(swarm, alias));
+}
+export async function searchNames(
+  context: SwarmContext,
+  query: string,
+  swarms: readonly { cid: string; alias: string | null }[],
+) {
+  if (
+    !query ||
+    query.length > 256 ||
+    [...query].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  )
+    throw new HostError(
+      "Search query must be 1..256 characters without control characters.",
+      2,
+    );
+  const matches: {
+    swarm: string;
+    alias: string | null;
+    name: string;
+    reference: string;
+    targetCid: string;
+  }[] = [];
+  const searched: {
+    cid: string;
+    source: "cache" | "network";
+    root: string;
+    revision: string;
+    verifiedAt: string;
+  }[] = [];
+  for (const swarm of [...swarms].sort((a, b) =>
+    a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0,
+  )) {
+    let header: SwarmHeader;
+    try {
+      header = await swarmHeader(context, swarm.cid);
+    } catch (cause) {
+      throw new HostError(
+        `Could not search swarm "${swarm.alias ?? swarm.cid}": ${message(cause)}. Search was not completed.`,
+      );
+    }
+    searched.push({
+      cid: swarm.cid,
+      source: header.source,
+      root: header.head.root,
+      revision: header.head.revision,
+      verifiedAt: header.verifiedAt,
+    });
+    for (const name of Object.keys(header.snapshot.names).sort())
+      if (name.toLowerCase().includes(query.toLowerCase()))
+        matches.push({
+          swarm: swarm.cid,
+          alias: swarm.alias,
+          name,
+          reference: `name:${name}`,
+          targetCid: header.snapshot.names[name]!.toString(),
+        });
+  }
+  return { matches, swarms: searched };
 }
 async function publication(
   store: IpfsStore,
@@ -433,8 +627,13 @@ export async function createSwarm(
     service?: string;
     resume?: string;
     properties?: { name: string; description: string };
+    alias?: string;
   } = {},
 ): Promise<string> {
+  if (options.alias !== undefined && options.resume === undefined)
+    withState(context, (state) => {
+      state.checkSwarmAlias(options.alias!);
+    });
   const cfg = {
     service: context.pointerService,
     apiKey: context.pointerApiKey,
@@ -469,12 +668,17 @@ export async function createSwarm(
       value.owner !== identity.publicKey ||
       typeof value.root !== "string" ||
       !Number.isSafeInteger(value.createdAt) ||
-      (value.id !== undefined && typeof value.id !== "string")
+      (value.id !== undefined && typeof value.id !== "string") ||
+      (value.cid !== undefined && typeof value.cid !== "string")
     )
       throw new HostError(
         "Saved creation does not match this account and configured service.",
       );
     record = value as typeof record;
+    if (options.alias !== undefined)
+      withState(context, (state) => {
+        state.checkSwarmAlias(options.alias!, record.cid);
+      });
     if (!record.id && Date.now() - record.createdAt >= 10 * 60 * 1000)
       throw new HostError(
         "Unconfirmed creation is beyond the service's minimum idempotency window. Ask the operator to recover it; do not allocate another pointer.",
@@ -531,6 +735,7 @@ export async function createSwarm(
     );
     record.cid = cid;
     await saveCreation(context, operation, record);
+    await addSwarm(context, cid, options.alias);
     return cid;
   } catch (cause) {
     throw new HostError(
@@ -614,6 +819,7 @@ export async function approveMembership(
 export async function joinSwarm(
   context: SwarmContext,
   responseCid: string,
+  alias?: string,
 ): Promise<string> {
   const response = await typedJson<{
     swarm: string;
@@ -636,6 +842,10 @@ export async function joinSwarm(
       "Response does not match this account's exact pending request and target swarm.",
     );
   const client = await pointer(context, response.swarm, response.certificate);
+  if (alias !== undefined)
+    withState(context, (state) => {
+      state.checkSwarmAlias(alias, response.swarm);
+    });
   await client.read();
   try {
     await save(context, `${response.swarm}.json`, {
@@ -652,6 +862,13 @@ export async function joinSwarm(
       throw new HostError(
         "An existing membership differs; explicit renewal is outside this MVP.",
       );
+  }
+  try {
+    await addSwarm(context, response.swarm, alias);
+  } catch (cause) {
+    throw new HostError(
+      `Membership certificate was saved, but swarm registration failed: ${message(cause)}. Retry the same response or run ipab swarm add ${response.swarm}.`,
+    );
   }
   return response.swarm;
 }
@@ -672,14 +889,21 @@ export async function resolveReference(
   if (reference.startsWith("name:")) {
     if (!swarm)
       throw new HostError("Shared Names require --swarm CID or swarm.default.");
-    const client = await pointer(context, swarm);
-    const head = await client.read();
-    const snapshot = await readSnapshot(context.store, head.root);
     const name = formalName(reference.slice(5));
-    const link = Object.hasOwn(snapshot.names, name)
-      ? snapshot.names[name]
-      : undefined;
-    if (!link) throw new HostError("Formal Name is not present in this swarm.");
+    let header = await swarmHeader(context, swarm);
+    const lookup = () =>
+      Object.hasOwn(header.snapshot.names, name)
+        ? header.snapshot.names[name]
+        : undefined;
+    let link = lookup();
+    if (!link && header.source === "cache") {
+      header = await swarmHeader(context, swarm, true);
+      link = lookup();
+    }
+    if (!link)
+      throw new HostError(
+        `Formal Name "${name}" is not present in this swarm after refreshing HEAD.`,
+      );
     targetCid = link.toString();
   } else targetCid = local(reference);
   let cid = targetCid;
@@ -821,6 +1045,9 @@ export async function publish(
       context.fetch,
     );
     try {
+      withState(context, (state) => {
+        state.invalidateSwarmHeader(options.swarm!);
+      });
       await client.write(next, head.revision, toBase64Url(randomBytes(18)));
       return candidate;
     } catch (cause) {

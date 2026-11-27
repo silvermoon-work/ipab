@@ -71,5 +71,72 @@ describe(
         validateUserConfig({ "swarm.default": "not-a-cid" }),
       ).toThrow("Malformed");
     });
+    it("keeps force options before exec's App boundary and parses swarm management/search", () => {
+      expect(
+        parse([
+          "--swarm",
+          "work",
+          "exec",
+          "--force",
+          "--log",
+          "name:apps/hello",
+          "--force",
+        ]).options,
+      ).toEqual({ force: true, log: true });
+      expect(
+        parse(["exec", "--force", "name:apps/hello", "--force"]).positional,
+      ).toEqual(["name:apps/hello", "--force"]);
+      for (const command of ["get", "open", "search"])
+        expect(parse([command, "--force", "hello"]).options.force).toBe(true);
+      for (const command of ["exec", "get", "open", "search"])
+        expect(() =>
+          parse([command, "--force", "--no-force", "hello"]),
+        ).toThrow("mutually exclusive");
+      expect(() =>
+        parse(["--swarm", "work", "search", "--current", "hello"]),
+      ).toThrow("mutually exclusive");
+      expect(
+        parse(["swarm", "add", cid, "--alias", "work"]).options.alias,
+      ).toBe("work");
+      for (const path of [
+        "swarm list",
+        "swarm add",
+        "swarm use",
+        "swarm remove",
+        "search",
+      ])
+        expect(help(path)).toContain("Examples:");
+      expect(parse(["search", "--help"]).help).toBe(true);
+    });
+    it("validates cache configuration and resolves alias selection without hiding invalid lower layers", () => {
+      expect(parseValue("swarm.cacheTtl", "0", true)).toBe(0);
+      expect(parseValue("swarm.cacheTtl", "300", true)).toBe(300);
+      expect(parseValue("swarm.cacheTtl", "default", true)).toBe(300);
+      for (const value of [-1, 1.5, Infinity, 86401, null, "1e3"])
+        expect(() => parseValue("swarm.cacheTtl", value, true)).toThrow(
+          "0 to 86400",
+        );
+      expect(parseValue("swarm.forceRefresh", "true", true)).toBe(true);
+      expect(() => parseValue("swarm.forceRefresh", "yes", true)).toThrow(
+        "true or false",
+      );
+      const resolve = (alias: string) => {
+        if (alias !== "work") throw new Error("Unknown alias");
+        return cid;
+      };
+      expect(
+        effectiveConfig({}, { json: false, swarm: "work" }, {}, resolve).find(
+          (item) => item.key === "swarm.default",
+        ),
+      ).toMatchObject({ value: cid, source: "flag" });
+      expect(() =>
+        effectiveConfig(
+          {},
+          { json: false, swarm: "work" },
+          { IPAB_SWARM: "unknown" },
+          resolve,
+        ),
+      ).toThrow("Unknown alias");
+    });
   },
 );

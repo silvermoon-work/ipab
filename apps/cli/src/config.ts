@@ -9,6 +9,8 @@ export type ConfigKey =
   | "swarm.default"
   | "swarm.service"
   | "swarm.provider"
+  | "swarm.cacheTtl"
+  | "swarm.forceRefresh"
   | "store.gateway"
   | "pointers.service"
   | "pointers.apiKey"
@@ -33,6 +35,8 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "swarm.default": null,
   "swarm.service": null,
   "swarm.provider": "http://127.0.0.1:5001",
+  "swarm.cacheTtl": 300,
+  "swarm.forceRefresh": false,
   "store.gateway": null,
   "pointers.service": null,
   "pointers.apiKey": null,
@@ -45,6 +49,8 @@ const environments: Record<ConfigKey, string> = {
   "swarm.default": "IPAB_SWARM",
   "swarm.service": "IPAB_SWARM_SERVICE",
   "swarm.provider": "IPAB_SWARM_PROVIDER",
+  "swarm.cacheTtl": "IPAB_SWARM_CACHE_TTL",
+  "swarm.forceRefresh": "IPAB_SWARM_FORCE_REFRESH",
   "store.gateway": "IPAB_STORE_GATEWAY",
   "pointers.service": "IPAB_POINTERS_SERVICE",
   "pointers.apiKey": "IPAB_POINTERS_API_KEY",
@@ -122,12 +128,21 @@ export function parseValue(
   text = false,
 ): ConfigValue {
   if (text && typeof value === "string") {
-    if (key.startsWith("swarm.") && value === "default") return null;
-    if (key === "history.enabled") {
+    if (key.startsWith("swarm.") && value === "default")
+      return key === "swarm.cacheTtl" || key === "swarm.forceRefresh"
+        ? defaults[key]
+        : null;
+    if (key === "history.enabled" || key === "swarm.forceRefresh") {
       if (value === "true") return true;
       if (value === "false") return false;
     }
     if (key === "history.limit" && /^[1-9]\d*$/.test(value))
+      value = Number(value);
+    if (
+      key === "swarm.cacheTtl" &&
+      typeof value === "string" &&
+      /^(0|[1-9]\d*)$/.test(value)
+    )
       value = Number(value);
     if (
       ["store.gateway", "pointers.service", "pointers.apiKey"].includes(key) &&
@@ -151,6 +166,22 @@ export function parseValue(
         ? "Invalid pointers.apiKey; expected a canonical base64url encoding of 32 bytes."
         : "Invalid pointers.service; expected a canonical HTTPS origin or default.",
     );
+  }
+  if (key === "swarm.cacheTtl") {
+    if (
+      Number.isSafeInteger(value) &&
+      typeof value === "number" &&
+      value >= 0 &&
+      value <= 86400
+    )
+      return value;
+    syntax(
+      "swarm.cacheTtl requires an integer number of seconds from 0 to 86400.",
+    );
+  }
+  if (key === "swarm.forceRefresh") {
+    if (typeof value === "boolean") return value;
+    syntax("swarm.forceRefresh requires true or false.");
   }
   if (key.startsWith("swarm.") && value === null) return null;
   if (key === "swarm.default" && typeof value === "string") {
@@ -249,6 +280,7 @@ export function effectiveConfig(
   user: Partial<Record<ConfigKey, ConfigValue>>,
   flags: GlobalOptions,
   env: NodeJS.ProcessEnv = process.env,
+  resolveSwarm?: (reference: string) => string,
 ): ConfigItem[] {
   if (env.IPAB_STORE_RPC !== undefined)
     syntax(
@@ -264,13 +296,21 @@ export function effectiveConfig(
             ? flags.swarm
             : undefined;
       // Invalid lower layers are not hidden by a higher-priority override.
+      const parse = (value: string) =>
+        parseValue(
+          key,
+          key === "swarm.default" && value !== "default" && resolveSwarm
+            ? resolveSwarm(value)
+            : value,
+          true,
+        );
       const environmental =
-        variable === undefined ? undefined : parseValue(key, variable, true);
+        variable === undefined ? undefined : parse(variable);
       return {
         key,
         value:
           flag !== undefined
-            ? parseValue(key, flag, true)
+            ? parse(flag)
             : variable !== undefined
               ? environmental!
               : Object.hasOwn(user, key)

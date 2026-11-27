@@ -220,15 +220,15 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   导入失败保留 CAR、不回滚共享 block；构建失败只清理本次 staging／临时 CAR，
   不打包或删除旧 staging。完整公共接口与资源路径见 docs/reference.md。
 - App build 默认生成独立 `<output-name>.source.car`；`build.includeSource`
-  配置默认 true，互斥 `--with-source`／`--without-source` 优先覆盖。
+  配置默认 true，项目工具的 `includeSource` 选项优先覆盖。
   项目 `.bundle.yaml` 定义源码类型，内置模板生成以 package.json 为入口的
   IPAB App Source；旧项目无定义时只在快照补默认定义，不修改项目。
   源码按项目内嵌套 .gitignore 选择，包含未跟踪内容，不读取机器全局规则；
   强制排除 .git、node_modules、根 dist、活跃输出目录、两个输出和自有 staging。
   快照受 Bundle 预算限制，构建前后核对文件与字节，变化失败；
-  符号链接、忽略定义／入口／显式构建输入失败。App 只保存 source:{cid} 弱关联，
-  不内嵌源码 CAR 或 blocks，不自动 fetch/import/pin/retain 源码。
-  CLI 默认仅导入 App，源码需独立导入及保留。两个产物分别原子提交，不承诺
+  符号链接、忽略定义／入口／显式构建输入失败。启用时 App 保留 source:{cid}，
+  并在 source/ 挂入准确的源码 DAG；导入或递归保留 App 即包含源码块。
+  不把 CAR 文件作为不透明资源内嵌。两个产物分别原子提交，不承诺
   跨文件事务或任意环境可复现；关闭不删除既有源码产物。新增 source 改变 App
   类型身份，旧包须重建并显式更新 pin/register，不能静默接受旧类型。
 - Init 支持 `--template node|web-app|显式本地目录`；本地 `ipab-template.json`
@@ -237,7 +237,8 @@ CAR，不导入 Store；App 源码快照排除自身 .turbo／coverage。
   先按 typecheck 配置运行严格本地 tsc，再调用准确 npm/pnpm 的指定 script，
   只调用 scripts.ipab-prebuild，不回调 scripts.build，也不运行额外 lifecycle
   hooks
-  或让 pnpm 自动下载／切换版本。scripts.build 保持 ipab build。
+  或让 pnpm 自动下载／切换版本。项目 build 脚本先 prepare 再运行通用 ipab
+  build。
   未声明 packageManager 时优先沿用 npm_execpath 标识的 npm/pnpm，
   没有上下文才使用 npm；明确声明始终优先并校验准确版本。
   钩子只写本次 `IPAB_BUILD_DIR`，不得清除

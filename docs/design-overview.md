@@ -217,16 +217,15 @@ open 在 execute 的唯一 App load 后、materialize／spawn 前按输入 schem
 新增字段有意改变完整 App 类型 CID；旧身份不自动接受或迁移，须重建并更新 pin/register。
 
 可选 source 为严格 `{cid:string}` 对象，仅接受 canonical CIDv1 UnixFS SHA-256
-CID，
-是纯文本弱关联，不是 IPLD link。App 加载、执行、导入和 pin 都不获取、验证或保留
-它指向的源码 DAG。上层 build 默认在独立 `<output-name>.source.car` 中输出源码
-Content Bundle，绝不将源码 CAR 或 blocks 嵌入 App。项目内嵌套 `.gitignore`
+CID。字段本身不是 IPLD link；带源码构建还在 App 的 `source/` 建立 UnixFS 链接，
+将同一源码 DAG 纳入最终 CAR，递归 pin App 会保留源码。仍生成独立的
+`<output-name>.source.car` 供单独使用，不需为了发布再导入它。项目内嵌套
+`.gitignore`
 选择当前工作树文件，排除依赖、Git 元数据、输出和 staging；前后快照变化失败。
 源码 `.bundle.yaml` 与最终 App 的类型定义独立。配置 `build.includeSource`
-默认为 true，互斥 `--with-source`／`--without-source` 优先覆盖；
-关闭不生成源码、不写关联、不清理旧产物。源码导入及持久保留独立操作。
+默认为 true；关闭不生成源码、不写关联、不清理旧产物。
 完整文件选择、结果形状、两产物提交边界与可复现性限制见
-[源码包参考](reference.md#独立源码包与弱关联)。
+[源码包参考](reference.md#app-car-中的源码)。
 
 app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
 实际 App 元数据变动不修改共享类型 CID。description 缺省为空，

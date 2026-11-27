@@ -167,9 +167,16 @@ export async function selectedTree(
       );
   return filesystemTree(root, { exclude: excluded });
 }
-export async function readCar(path: string, options: AuthoringOptions) {
-  const tree = await filesystemTree(dirname(path));
-  const input = await tree.read(basename(path), options);
+export async function readCar(
+  path: string,
+  options: AuthoringOptions,
+  directory = dirname(path),
+) {
+  const tree = await filesystemTree(directory);
+  const input = await tree.read(
+    relative(directory, path).split(sep).join("/"),
+    options,
+  );
   const chunks = streamChunks(input, options);
   let bytes = 0;
   try {

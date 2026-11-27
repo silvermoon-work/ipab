@@ -14,6 +14,7 @@ import { relativePath } from "./space.js";
 import {
   nodeError,
   outputAvailable,
+  readCar,
   writeCar,
   type AuthoringOptions,
   type BuildResult,
@@ -117,14 +118,36 @@ export async function assembleBundle(
     const sourcePath = mapping.source;
     files.set(mapping.target, () => tree.read(sourcePath, options));
   }
+  // CID grafts are processed sequentially; keep at most one local CAR in memory.
+  let localCar:
+    { path: string; data: Awaited<ReturnType<typeof readCar>> } | undefined;
   const imports = ((recipe.imports as unknown[] | undefined) ?? []).map(
     (item) => {
       const mapping = object(item, "CID import");
-      keys(mapping, ["cid", "target"]);
+      keys(mapping, ["cid", "target", "car"]);
       if (typeof mapping.cid !== "string" || typeof mapping.target !== "string")
         throw new HostError("CID imports require cid and target strings.");
       const cid = CID.parse(mapping.cid);
       claim(mapping.target);
+      if (mapping.car !== undefined) {
+        if (typeof mapping.car !== "string")
+          throw new HostError("CID import car must be a relative file path.");
+        const path = resolve(root, relativePath(mapping.car));
+        inputs.add(path);
+        return {
+          path: mapping.target,
+          cid,
+          resolveCid: async (block: CID) => {
+            if (localCar?.path !== path)
+              localCar = { path, data: await readCar(path, options, root) };
+            if (!localCar.data.root.equals(cid))
+              throw new HostError(
+                "CID import does not match the local CAR root.",
+              );
+            return localCar.data.resolveCid(block);
+          },
+        };
+      }
       if (!options.resolveCid)
         throw new HostError("CID imports require a Store.");
       return { path: mapping.target, cid, resolveCid: options.resolveCid };

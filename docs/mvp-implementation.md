@@ -159,16 +159,18 @@ remains the low-level direct-directory/type-only packer.
 Old App `ipab.yaml`/`ipab.json` is **rejected** by root build, not silently
 ignored. Its App-specific behavior is available only to explicitly invoked
 project tooling: `prepareApp` in `@ipab/cli/devtools` prepares
-`dist/prepared-app/` (files plus recipe) and a separate source CAR. Existing
+`dist/prepared-app/` (files plus recipe). With source enabled (default), the
+recipe imports the original source DAG at `source/` from a local CAR: an
+`imports` entry may specify `car`, a recipe-relative file whose root must match
+the declared `cid`. This needs neither a gateway nor preloaded Store blocks.
+`app.json.source.cid` still identifies the source Bundle directly. Existing
 metadata/supportedSchemas/source validation and trusted project prebuild rules
 are retained there, outside root build. Generated templates provide:
 
 ```sh
 # Explicitly link this candidate CLI as a project dependency first:
 pnpm add --save-dev @ipab/cli@link:PATH_TO_THIS_WORKTREE/apps/cli
-pnpm prepare-app
 pnpm build
-ipab bundle import dist/app.source.car
 ipab publish dist/app.car --name apps/hello
 ```
 
@@ -178,7 +180,10 @@ and linking developer tools are explicit external operations. Source snapshots
 exclude generated outputs and carry the project scripts/configuration. Check
 Viewer repository build likewise prepares explicitly then invokes generic
 assembly using isolated local state. Old scripts that assumed `ipab build`
-compiles must migrate to the two explicit stages above.
+compiles must migrate to a project `build` script that runs preparation before
+generic assembly. `build.includeSource: false` omits both the source link and
+the source DAG. A separate source CAR may still be used independently; it is not
+required for distribution or offline import of newly built Apps.
 
 ## Validation boundary
 

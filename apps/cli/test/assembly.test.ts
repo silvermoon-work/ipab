@@ -158,4 +158,28 @@ describe("generic assembly recipes", { tags: ["unit"] }, () => {
     );
     await expect(assembleBundle(linked)).rejects.toThrow("symlink");
   });
+  it("grafts a local CAR without a Store and rejects a different declared CID", async () => {
+    const input = await assembleBundle(work, {
+      output: join(work, "input.car"),
+    });
+    const fromCar = (cid: string) =>
+      writeFile(
+        join(work, "ipab.build.yaml"),
+        JSON.stringify({
+          ...recipe,
+          imports: [{ cid, target: "original", car: "input.car" }],
+        }),
+      );
+    await fromCar(input.cid);
+    const result = await assembleBundle(work);
+    const car = await readCar(result.output, {});
+    const bundle = await openBundle(car.root, { resolveCid: car.resolveCid });
+    expect(
+      await new Response(await bundle.readFile("original/entry.json")).text(),
+    ).toBe('{"text":"prepared"}');
+    await fromCar(result.cid);
+    await expect(assembleBundle(work, { replace: true })).rejects.toThrow(
+      "local CAR root",
+    );
+  });
 });

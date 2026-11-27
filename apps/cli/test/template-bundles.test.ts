@@ -100,7 +100,8 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
     ).toMatchObject({
       description: 'Plain <text> with "quotes"',
       scripts: {
-        build: "ipab build dist/prepared-app --output dist/app.car --replace",
+        build:
+          "node scripts/prepare.mjs && node node_modules/@ipab/cli/dist/main.js build dist/prepared-app --output dist/app.car --replace",
         "ipab-prebuild": "node scripts/ipab-prebuild.mjs",
       },
     });

@@ -230,20 +230,19 @@ Viewer 模板用它实现目录／具名 pin／CID 的单参数自动识别；�
 同名 pin 只解析一次，不自动跟随重命名或内容变化。
 
 根 `init` 通过通用 Template Bundle 创建任意项目或内容，默认使用 Node App 模板；
-根 `build` 面向 App，`bundle` 分组仍是不会编译代码的底层工具。
+项目 `pnpm run build` 负责编译和打包；通用 `ipab build` 本身不编译。
 使用已构建并链接到全局的本地 `ipab`（首轮 RC 尚未发布到 npm）：
 
 ```powershell
 ipab init hello
 Set-Location .\hello
-npm install
-npm run typecheck
-ipab --json build
+# 先将 @ipab/cli 开发依赖链接到本机源码中的 apps/cli 目录
+pnpm run build
 ipab exec <app-cid>
 # 修改后重新构建已有产物：
-ipab build --replace
+pnpm run build
 # 只生成 CAR，不写 Store：
-ipab build --no-import
+pnpm run build --no-import
 # 已有 CAR 也可单独导入（不 pin）：
 ipab bundle import .\dist\app.car
 ```
@@ -255,8 +254,8 @@ App
 源码的 force 选项。默认 Node 模板生成 `package.json`、严格
 `tsconfig.json`、`src/main.ts`、
 `ipab.yaml`、源码类型 `.bundle.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通
-`tsc --noEmit` 与
-`ipab build`，不声明不存在的 registry `@ipab/cli` 版本。
+`tsc --noEmit` 与项目准备后调用通用打包器的 `build`，不声明不存在的 registry
+`@ipab/cli` 版本。
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
 编译由本地 CLI 的 esbuild `0.28.2` 提供，不要求项目另装 bundler。
 
@@ -405,15 +404,15 @@ ipab init dashboard --template .\templates\web-app\dist\bundle.car `
 ```json
 {
   "scripts": {
-    "build": "ipab build",
+    "build": "node scripts/prepare.mjs && node node_modules/@ipab/cli/dist/main.js build dist/prepared-app --output dist/app.car --replace",
     "ipab-prebuild": "node scripts/ipab-prebuild.mjs"
   }
 }
 ```
 
-流程为 `npm run build` → `ipab build` → 严格类型检查 → 指定项目
-`ipab-prebuild` → 产物校验与组装 → 按选项导入 Store。
-直接 `ipab build` 同样完成全部步骤；不自动回调 npm 的 build。
+流程为项目 `pnpm run build` → 准备工具执行严格类型检查及指定的 `ipab-prebuild` →
+`ipab build` 校验与组装 → 按选项导入 Store。
+直接 `ipab build` 不执行项目脚本。
 **这是执行可信项目代码的模式**，与默认只编译源码不同；脚本和工具插件不是沙箱。
 IPAB 不加载 Vite／esbuild 配置、不安装工具，不通过是否存在脚本来猜测策略。
 钩子可自由使用 Vite、esbuild 或其他工具；模板预置的 Vite 为 `8.3.8`。
@@ -485,8 +484,7 @@ IPAB 仍只执行 Node 入口，不新增 Browser profile。框架不解释 View
 框架 API、请求校验及页面生命周期见
 [Web App framework](../packages/web-app/README.md)。
 
-`build [DIR] [-o FILE | --output FILE] [--replace] [--no-import] [--with-source | --without-source]`
-默认使用当前项目，
+项目准备工具默认使用当前项目，
 默认 Node 策略读取以下数据配置，不加载 JS 配置、npm lifecycle hooks 或用户插件；
 显式 `ipab-prebuild` 策略则使用上面的可信项目编译契约：
 
@@ -569,16 +567,15 @@ App 身份。不加载 JS 配置、不执行 hooks。
   写入失败命令非零、保留已生成 CAR，可用 `bundle import FILE.car` 重试。
   没有自动执行、pin、watch 或另一个任务系统；未 pin 内容可能被外部 GC 回收。
 
-### 独立源码包与弱关联
+### App CAR 中的源码
 
 `build.includeSource` 默认为 `true`，默认 Node 与 `ipab-prebuild` 策略均适用。
-命令行优先于项目配置；`--with-source` 与 `--without-source`
-互斥，同时指定退出 2。
+项目工具的 `prepareApp(directory, { includeSource })` 调用可覆盖配置。
+项目脚本执行准备和打包；通用 `ipab build` 不执行准备脚本。
 
 ```powershell
-ipab build --no-import
-ipab build --without-source --replace
-ipab build --with-source --replace --output .\dist\release.car
+pnpm run build
+ipab publish .\dist\app.car --name apps/hello
 ```
 
 启用时生成独立 Content Bundle CAR：默认 `dist/app.source.car`，显式输出
@@ -597,19 +594,16 @@ ipab build --with-source --replace --output .\dist\release.car
 字节、路径数量和深度受 Bundle 预算限制。**Gitignore 不是敏感信息扫描器**，
 分发前须检查规则；模板默认忽略 `.env` 和 `.env.*`。
 
-App 的 `app.json` 只包含弱关联：
+App 的 `app.json` 记录原源码 Bundle 的身份：
 
 ```json
 { "source": { "cid": "<源码 Content Bundle 的准确 CID>" } }
 ```
 
-该字段由构建生成，不允许 `app` 元数据覆盖。源码 CAR 和源码 blocks **不会嵌入 App
-Bundle**；App loader 只本地校验 CID 格式，不获取源码，
-App 的导入、执行和 pin 不递归导入、校验或保留源码。默认构建导入也仅导入
-App；源码需要独立操作，例如 `ipab bundle import .\dist\app.source.car`，
-再按需 `ipab pin add my-source <源码CID>`。
-`--json` 的可选 `source` 对象含 `cid`、`schemaCid`、`output`、`bytes`；
-顶层 `imported` 仅描述 App。关闭源码时不生成源码包、不写关联；
+该字段由准备工具生成，不允许 `app` 元数据覆盖。新构建将这个 CID 对应的
+UnixFS 子树挂在 `source/`，**不是**把 `.car` 文件嵌套成单个资源。
+只导入或发布 App CAR 就包含源码 DAG；即使离线，也可 `ipab get <源码CID>`。
+旧 App 若只有弱关联，仍需另行提供源码。关闭源码时不生成源码包、不挂入子树、不写关联；
 不会删除以前生成的源码 CAR。
 
 构建前冻结所选文件，构建后重新核对文件集合和字节，发现变化则失败，

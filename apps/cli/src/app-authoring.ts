@@ -1,7 +1,15 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { compileFunction } from "node:vm";
 import { stringify } from "yaml";
@@ -11,6 +19,7 @@ import { encodeBundleCar, memoryTree, readBytes } from "@ipab/bundle-builder";
 import {
   writeCar,
   outputAvailable,
+  readCar,
   scaffoldFiles,
   nodeError,
   type AuthoringOptions,
@@ -33,6 +42,8 @@ import { captureSource, sourceFingerprint } from "./source-bundle.js";
 export { appSchema } from "./app-definition.js";
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+const sourceTarget = "source";
+const sourceCarInput = "source.car";
 
 export async function initApp(
   name: string,
@@ -575,24 +586,36 @@ export async function buildApp(
         }),
         { flag: "wx", signal: options.signal },
       );
-      const encoded = await encodeBundleCar(
-        await filesystemTree(bundleStage),
-        options,
-      );
+      const source = encodedSource
+        ? {
+            cid: encodedSource.cid.toString(),
+            schemaCid: encodedSource.schema.cid.toString(),
+            output: sourceOutput,
+            bytes: await writeCar(
+              encodedSource,
+              sourceOutput,
+              Boolean(options.replace),
+              options,
+            ),
+          }
+        : undefined;
+      const sourceCar = source
+        ? await readCar(source.output, options)
+        : undefined;
+      const encoded = await encodeBundleCar(await filesystemTree(bundleStage), {
+        ...options,
+        imports:
+          encodedSource && sourceCar
+            ? [
+                {
+                  path: sourceTarget,
+                  cid: encodedSource.cid,
+                  resolveCid: sourceCar.resolveCid,
+                },
+              ]
+            : [],
+      });
       try {
-        const source = encodedSource
-          ? {
-              cid: encodedSource.cid.toString(),
-              schemaCid: encodedSource.schema.cid.toString(),
-              output: sourceOutput,
-              bytes: await writeCar(
-                encodedSource,
-                sourceOutput,
-                Boolean(options.replace),
-                options,
-              ),
-            }
-          : undefined;
         if (options.preparedDirectory) {
           const preparedFiles = new Map<string, Uint8Array>();
           const preparedTree = await filesystemTree(bundleStage);
@@ -621,10 +644,28 @@ export async function buildApp(
                 files: [...preparedFiles.keys()]
                   .filter((path) => path !== ".bundle.yaml")
                   .map((path) => ({ source: path, target: path })),
-                imports: [],
+                imports: source
+                  ? [
+                      {
+                        cid: source.cid,
+                        target: sourceTarget,
+                        car: sourceCarInput,
+                      },
+                    ]
+                  : [],
               }),
             ),
           );
+          if (source)
+            preparedFiles.set(
+              sourceCarInput,
+              await readBytes(
+                await filesystemTree(dirname(source.output)),
+                basename(source.output),
+                source.bytes,
+                options,
+              ),
+            );
           await scaffoldFiles(
             options.preparedDirectory,
             preparedFiles,
@@ -691,7 +732,7 @@ export async function prepareApp(
       recipe.version !== 1 ||
       !Array.isArray(recipe.files) ||
       !Array.isArray(recipe.imports) ||
-      recipe.imports.length
+      recipe.imports.length > 1
     )
       throw new HostError(
         "Existing prepared output is not owned by the App preparation tool.",
@@ -709,6 +750,18 @@ export async function prepareApp(
         return relativePath(mapping.source);
       }),
     ]);
+    if (recipe.imports.length) {
+      const sourceImport = object(recipe.imports[0], "prepared source import");
+      if (
+        sourceImport.target !== sourceTarget ||
+        sourceImport.car !== sourceCarInput ||
+        typeof sourceImport.cid !== "string"
+      )
+        throw new HostError(
+          "Existing prepared source import is not generated.",
+        );
+      allowed.add(sourceCarInput);
+    }
     const verify = async (path: string): Promise<void> => {
       for (const item of await tree.list(path)) {
         const child = path ? `${path}/${item.name}` : item.name;

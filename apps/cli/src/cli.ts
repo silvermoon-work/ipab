@@ -1243,7 +1243,7 @@ async function performCli(
                 result.files.includes("ipab.json"))
             )
               io.err(
-                `Next: install declared dependencies and explicitly link the candidate @ipab/cli as a project dependency in ${JSON.stringify(result.directory)}; run pnpm prepare-app, then pnpm build. Root ipab build does not compile.`,
+                `Next: install declared dependencies and explicitly link the candidate @ipab/cli as a project dependency in ${JSON.stringify(result.directory)}; run pnpm build to prepare and package the App. Root ipab build does not compile.`,
               );
             else if (result.files.includes(".bundle.yaml"))
               io.err(

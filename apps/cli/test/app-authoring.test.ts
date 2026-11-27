@@ -278,7 +278,8 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       name: "hello",
       private: true,
       scripts: {
-        build: "ipab build dist/prepared-app --output dist/app.car --replace",
+        build:
+          "node scripts/prepare.mjs && node node_modules/@ipab/cli/dist/main.js build dist/prepared-app --output dist/app.car --replace",
         "prepare-app": "node scripts/prepare.mjs",
         typecheck: "tsc --noEmit",
       },
@@ -477,10 +478,29 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
     ])
       await expect(sourceBundle.readFile(path)).rejects.toThrow();
     const appCar = await readCar(join(project, "dist", "app.car"), {});
-    expect(appCar.blocks.has(String(sourceResult.cid))).toBe(false);
-    await expect(
-      work.store.block.get(String(sourceResult.cid)),
-    ).rejects.toThrow();
+    const embedded = await openBundle(sourceBundle.cid, {
+      resolveCid: appCar.resolveCid,
+    });
+    const embeddedSource = await new Response(
+      await embedded.readFile("src/main.ts"),
+    ).text();
+    expect(embeddedSource).toBe(
+      await readFile(join(project, "src", "main.ts"), "utf8"),
+    );
+    expect(
+      await new Response(await bundle.readFile("source/src/main.ts")).text(),
+    ).toBe(embeddedSource);
+    const downloaded = join(work.root, "downloaded-source");
+    const got = await cli(work.stateDir, [
+      "get",
+      String(sourceResult.cid),
+      "-o",
+      downloaded,
+    ]);
+    expect(got.code, got.err).toBe(0);
+    expect(await readFile(join(downloaded, "src", "main.ts"), "utf8")).toBe(
+      embeddedSource,
+    );
     await expect(
       bundle.readFile("resources/supported-schemas.car"),
     ).rejects.toThrow();
@@ -552,6 +572,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       const storeConfig = join(work.root, "store.json");
       expect((await projectToolBuild(work.stateDir, project)).code).toBe(1);
       await prepareApp(project, { replace: true });
+      await writeFile(join(project, "dist", "app.car"), "previous output");
       const defaultBuild = await promisify(execFile)(
         process.execPath,
         [
@@ -570,14 +591,11 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
         ],
         { cwd: project },
       );
-      expect(result(defaultBuild.stdout).output).toBe(
-        join(project, "dist", "app.car"),
-      );
-      expect(result(defaultBuild.stdout).imported).toBe(false);
-      expect(
-        (await projectToolBuild(work.stateDir, project, { replace: true }))
-          .code,
-      ).toBe(0);
+      expect(result(defaultBuild.stdout)).toMatchObject({
+        output: join(project, "dist", "app.car"),
+        cid: result(response.out).cid,
+        imported: false,
+      });
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(
         firstCar,
       );
@@ -1047,23 +1065,22 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
         "package",
       );
       expect(pkg.packageManager).toBeUndefined();
+      const scripts = object(pkg.scripts, "scripts");
       await writeFile(
         pkgPath,
         JSON.stringify({
           ...pkg,
           scripts: {
-            ...object(pkg.scripts, "scripts"),
-            build: `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build dist/prepared-app --output dist/app.car`,
+            ...scripts,
+            build: String(scripts.build).replace(
+              "node node_modules/@ipab/cli/dist/main.js build ",
+              `node ${JSON.stringify(resolve("dist", "main.js"))} --state-dir ${JSON.stringify(work.stateDir)} --json build `,
+            ),
           },
         }),
       );
       const runner = process.env.npm_execpath!;
       expect(runner).toMatch(/pnpm(?:\.cjs|\.mjs|\.js|\.exe)?$/);
-      await promisify(execFile)(
-        runner.endsWith(".exe") ? runner : process.execPath,
-        [...(runner.endsWith(".exe") ? [] : [runner]), "run", "prepare-app"],
-        { cwd: project },
-      );
       const built = await promisify(execFile)(
         runner.endsWith(".exe") ? runner : process.execPath,
         [...(runner.endsWith(".exe") ? [] : [runner]), "run", "build"],
@@ -1292,7 +1309,7 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
     },
   );
   it(
-    "uses project source defaults and explicit project-tool overrides without retaining source",
+    "includes or strips the source DAG according to the project default and explicit overrides",
     { tags: ["release-e2e"], timeout: 60_000 },
     async () => {
       await initApp("hello", project);
@@ -1338,6 +1355,17 @@ await writeFile(join(output, "web", "icon.svg"), "<svg/>");
       });
       expect(excluded.code, excluded.err).toBe(0);
       expect(result(excluded.out)).not.toHaveProperty("source");
+      const stripped = await readCar(join(project, "dist", "app.car"), {});
+      expect(stripped.blocks.has(String(includedSource.cid))).toBe(false);
+      const strippedApp = await openBundle(stripped.root, {
+        resolveCid: stripped.resolveCid,
+      });
+      await expect(
+        strippedApp.readFile("source/src/main.ts"),
+      ).rejects.toThrow();
+      expect(
+        await new Response(await strippedApp.readFile("app.json")).json(),
+      ).not.toHaveProperty("source");
       expect(await readFile(join(project, "dist", "app.car"))).toEqual(
         withoutBytes,
       );

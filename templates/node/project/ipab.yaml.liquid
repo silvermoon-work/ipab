@@ -12,7 +12,7 @@ supportedSchemas: []
 # To support your own type, replace [] above with this list and create the definition:
 #   - schemas/note.json
 
-# Separate source CAR; App stores only a weak source.cid, never source blocks.
+# Include the source Bundle DAG in app.car; disable to ship without source.
 # Explicit prepareApp({ includeSource }) project-tool options override this default.
 build:
   includeSource: true

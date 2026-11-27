@@ -1,7 +1,7 @@
 # @ipab/ipfs-store
 
 Verified local IPFS/UnixFS storage with optional read-only upstream HTTP
-gateways. The next npm candidate is `0.1.0-rc.1`; `0.1.0-rc.0` is published.
+gateways. The next npm candidate is `0.1.0-rc.2`; `0.1.0-rc.1` is published.
 Source was migrated from `silvermoon-work/task-engine`; the original MIT license
 and CID/protocol contracts are preserved. Kubo RPC storage is no longer
 supported.

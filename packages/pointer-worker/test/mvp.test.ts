@@ -89,8 +89,8 @@ test(
                 .join("\n"),
             );
           }
-        } else if (incoming.url?.startsWith("/ipfs/")) {
-          const cid = CID.parse(new URL(url).pathname.split("/")[2]!)
+        } else if (incoming.url?.startsWith("/gateway/ipfs/")) {
+          const cid = CID.parse(new URL(url).pathname.split("/")[3]!)
             .toV1()
             .toString();
           response = blocks.has(cid)
@@ -150,7 +150,7 @@ test(
         JSON.stringify({
           backend: "local",
           dataDir: join(home, "blocks"),
-          gateway: endpoint,
+          gateway: `${endpoint}/gateway`,
         }),
       );
       environments.set(home, {
@@ -160,7 +160,7 @@ test(
         TASK_CONTENT_CONFIG: config,
         IPAB_STATE_DIR: join(home, "state"),
         IPAB_SWARM_PROVIDER: endpoint,
-        IPAB_STORE_GATEWAY: endpoint,
+        IPAB_STORE_GATEWAY: `${endpoint}/gateway`,
         IPAB_HISTORY_ENABLED: "false",
       });
     }
@@ -236,8 +236,6 @@ test(
         "--service",
         endpoint,
       ]);
-      environments.get(homeA)!.IPAB_SWARM = swarm;
-      environments.get(homeB)!.IPAB_SWARM = swarm;
       const keyA = await readFile(
         join(homeA, ".ipab", "identity", "key.json"),
         "utf8",
@@ -305,12 +303,13 @@ test(
         "apps/hello",
       ]);
       expect(
-        (await invoke(homeB, ["exec", "name:apps/hello", "Alice"])).out,
+        (await invoke(homeB, ["exec", `ipab://${swarm}/apps/hello`, "Alice"]))
+          .out,
       ).toBe("Hello Alice\n");
       const downloaded = await invoke(homeB, [
         "--json",
         "get",
-        "name:apps/hello",
+        "ipab:///apps/hello",
         "-o",
         join(work, "downloaded-app"),
       ]);
@@ -367,15 +366,22 @@ test(
       ]);
       expect(releaseV2).not.toBe(releaseV1);
       expect(
-        (await invoke(homeA, ["exec", "name:apps/hello", "Alice"])).out,
+        (await invoke(homeA, ["exec", "ipab:///apps/hello", "Alice"])).out,
       ).toBe("Welcome Alice\n");
       expect((await invoke(homeB, ["exec", releaseV1, "Alice"])).out).toBe(
         "Hello Alice\n",
       );
       const rawDir = join(work, "raw-release");
       expect(
-        (await invoke(homeA, ["get", "--raw", "name:apps/hello", "-o", rawDir]))
-          .code,
+        (
+          await invoke(homeA, [
+            "get",
+            "--raw",
+            "ipab:///apps/hello",
+            "-o",
+            rawDir,
+          ])
+        ).code,
       ).toBe(0);
       expect(
         JSON.parse(await readFile(join(rawDir, "entry.json"), "utf8")),
@@ -422,10 +428,10 @@ test(
       expect(different.map((result) => result.code)).toEqual([0, 0]);
       expect(casConflicts).toBeGreaterThan(conflictsBeforeDifferentNames);
       expect(
-        (await invoke(homeA, ["exec", "name:apps/one", "Alice"])).out,
+        (await invoke(homeA, ["exec", "ipab:///apps/one", "Alice"])).out,
       ).toBe("Hello Alice\n");
       expect(
-        (await invoke(homeB, ["exec", "name:apps/two", "Alice"])).out,
+        (await invoke(homeB, ["exec", "ipab:///apps/two", "Alice"])).out,
       ).toBe("Welcome Alice\n");
       failProvider = true;
       expect(
@@ -434,7 +440,7 @@ test(
       ).not.toBe(0);
       failProvider = false;
       expect(
-        (await invoke(homeA, ["get", "name:apps/not-shared"])).code,
+        (await invoke(homeA, ["get", "ipab:///apps/not-shared"])).code,
       ).not.toBe(0);
       expect(
         await readFile(join(homeA, ".ipab", "identity", "key.json"), "utf8"),

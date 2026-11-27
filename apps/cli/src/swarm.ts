@@ -518,6 +518,76 @@ export async function addSwarm(
   await swarmHeader(context, swarm, true);
   withState(context, (state) => state.registerSwarm(swarm, alias));
 }
+export async function updateSwarm(
+  context: SwarmContext,
+  swarm: string,
+  changes: Partial<Snapshot["properties"]>,
+): Promise<{
+  cid: string;
+  root: string;
+  revision: string;
+  properties: Snapshot["properties"];
+}> {
+  if (changes.name === undefined && changes.description === undefined)
+    throw new HostError("swarm update requires --name or --description.", 2);
+  swarm = CID.parse(swarm).toV1().toString();
+  const client = await pointer(context, swarm);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const head = await client.read();
+    const current = await readSnapshot(context.store, head.root);
+    const properties = {
+      ...current.properties,
+      ...(changes.name !== undefined ? { name: changes.name } : {}),
+      ...(changes.description !== undefined
+        ? { description: changes.description }
+        : {}),
+    };
+    const state = await writeSnapshot(context.store, {
+      ...current,
+      properties,
+    });
+    const next = await publication(context.store, state, head.root);
+    await provideContent(
+      context.store,
+      [next],
+      context.provider,
+      context.fetch,
+    );
+    withState(context, (state) => {
+      state.invalidateSwarmHeader(swarm);
+    });
+    try {
+      const written = await client.write(
+        next,
+        head.revision,
+        toBase64Url(randomBytes(18)),
+      );
+      return {
+        cid: swarm,
+        root: written.root,
+        revision: written.revision,
+        properties,
+      };
+    } catch (cause) {
+      if (!(cause instanceof PointerApiError) || cause.status !== 412)
+        throw new HostError(
+          `Swarm information update failed or its result is unknown: ${message(cause)}. Publication ${next} remains retained; authenticate swarm status before retrying.`,
+          1,
+          "HEAD_UNCONFIRMED",
+          "publication",
+        );
+      context.diagnostic?.(
+        "Swarm HEAD changed; retrying information update with the latest Names and properties.",
+      );
+    }
+  }
+  throw new HostError(
+    "Swarm HEAD is busy; information update could not complete. Retry later.",
+    1,
+    "HEAD_BUSY",
+    "publication",
+  );
+}
 export async function searchNames(
   context: SwarmContext,
   query: string,
@@ -573,7 +643,16 @@ export async function searchNames(
           swarm: swarm.cid,
           alias: swarm.alias,
           name,
-          reference: `name:${name}`,
+          reference: `ipab://${CID.parse(swarm.cid).toV1().toString()}/${name
+            .split("/")
+            .map((segment) =>
+              encodeURIComponent(segment).replace(
+                /[!'()*]/g,
+                (character) =>
+                  `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+              ),
+            )
+            .join("/")}`,
           targetCid: header.snapshot.names[name]!.toString(),
         });
   }
@@ -878,6 +957,40 @@ export function formalName(name: string): string {
     throw new HostError("Invalid formal Name.");
   return name;
 }
+export function parseNameReference(
+  reference: string,
+): { swarm?: string; name: string } | undefined {
+  if (/^name:/i.test(reference))
+    throw new HostError(
+      "name: references are no longer supported. Use ipab://SWARM_CID_OR_ALIAS/PATH or ipab:///PATH.",
+      2,
+    );
+  if (!/^ipab:/i.test(reference)) return undefined;
+  const match = /^ipab:\/\/([^/]*)\/([^?#\s]*)$/i.exec(reference);
+  if (!match || (match[1] && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(match[1])))
+    throw new HostError(
+      "Invalid IPAB URI. Use ipab://SWARM_CID_OR_ALIAS/PATH or ipab:///PATH without credentials, port, query or fragment; percent-encode path segments.",
+      2,
+    );
+  const segments = match[2]!.split("/").map((segment) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new HostError("Invalid percent encoding in IPAB URI path.", 2);
+    }
+    if (decoded.includes("/"))
+      throw new HostError(
+        "Encoded path separators are not allowed in IPAB URIs.",
+        2,
+      );
+    return decoded;
+  });
+  return {
+    ...(match[1] ? { swarm: match[1] } : {}),
+    name: formalName(segments.join("/")),
+  };
+}
 export async function resolveReference(
   context: SwarmContext,
   reference: string,
@@ -886,18 +999,25 @@ export async function resolveReference(
   raw = false,
 ): Promise<{ targetCid: string; cid: string }> {
   let targetCid: string;
-  if (reference.startsWith("name:")) {
-    if (!swarm)
-      throw new HostError("Shared Names require --swarm CID or swarm.default.");
-    const name = formalName(reference.slice(5));
-    let header = await swarmHeader(context, swarm);
+  const shared = parseNameReference(reference);
+  if (shared) {
+    const authority = shared.swarm;
+    const selectedSwarm = authority
+      ? withState(context, (state) => state.resolveSwarm(authority))
+      : swarm;
+    if (!selectedSwarm)
+      throw new HostError(
+        "Shared Names require a swarm in the URI, --swarm CID_OR_ALIAS or swarm.default. Run ipab swarm use CID_OR_ALIAS.",
+      );
+    const name = shared.name;
+    let header = await swarmHeader(context, selectedSwarm);
     const lookup = () =>
       Object.hasOwn(header.snapshot.names, name)
         ? header.snapshot.names[name]
         : undefined;
     let link = lookup();
     if (!link && header.source === "cache") {
-      header = await swarmHeader(context, swarm, true);
+      header = await swarmHeader(context, selectedSwarm, true);
       link = lookup();
     }
     if (!link)

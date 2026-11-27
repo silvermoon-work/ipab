@@ -87,7 +87,7 @@ describe("generic assembly recipes", { tags: ["unit"] }, () => {
     {
       version: 1,
       files: recipe.files,
-      imports: [{ cid: "name:somewhere", target: "resources/import" }],
+      imports: [{ cid: "ipab:///somewhere", target: "resources/import" }],
     },
   ])("rejects unsafe, ambiguous or incomplete recipe %#", async (value) => {
     await writeFile(join(work, "ipab.build.yaml"), JSON.stringify(value));

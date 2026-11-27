@@ -74,14 +74,27 @@ an interactive confirmation.
 
 ## Content, Names and retention
 
-All references are CIDs. `name:apps/hello` explicitly selects a formal shared
-Name; bare references retain existing local pin/CID semantics. Select a swarm
-with global `--swarm CID`, `IPAB_SWARM`, or `swarm.default`. The service has one
-HEAD per swarm. HEAD is a DAG-CBOR publication `{v:1,state:CID,previous?:CID}`.
-Its State contains `v:1`, mutable `properties` (`name`, `description`) and
-`names` (Name to **CID links**). History links prior publication records rather
-than Descriptors. Mutable properties are not in the Descriptor. There is no
-arbitrary root replacement command or properties-edit command.
+Shared Names use `ipab://SWARM_CID_OR_ALIAS/PATH`. A URI's swarm takes
+precedence over the global selection; CID authorities are portable across
+devices, while aliases are local and case-sensitive. `ipab:///PATH` uses global
+`--swarm CID_OR_ALIAS`, then the saved `swarm.default`; no selection is an
+error. Bare references retain existing local pin/CID semantics. Legacy
+`name:PATH` references are rejected with migration guidance. `IPAB_SWARM` is no
+longer supported: remove it and use `--swarm` or `ipab swarm use CID_OR_ALIAS`.
+
+URI paths retain the existing formal Name validation and 256-character limit.
+Encode individual path segments as UTF-8 percent escapes (for example,
+`documents/hello%20%23world` names `documents/hello #world`). Decoding happens
+once; encoded separators, traversal, malformed escapes and unsafe Names are
+rejected. Credentials, ports, queries and fragments are not supported. Paths are
+not URL-normalized or lowercased.
+
+The service has one HEAD per swarm. HEAD is a DAG-CBOR publication
+`{v:1,state:CID,previous?:CID}`. Its State contains `v:1`, mutable `properties`
+(`name`, `description`) and `names` (Name to **CID links**). History links prior
+publication records rather than Descriptors. Mutable properties are not in the
+Descriptor. There is no arbitrary root replacement command. Shared properties
+can be edited with `swarm update` as described below.
 
 Artifact Bundles have exactly `{value,previous?,timestamp}`; timestamp is
 RFC3339 UTC. Genesis omits previous. Iteration links the old **Artifact node**,
@@ -91,7 +104,8 @@ no raw mode. One operation freezes its resolved target/content CIDs.
 
 ```sh
 ipab publish dist/app.car --name apps/hello
-ipab --json get name:apps/hello -o downloaded-app
+ipab --json get ipab:///apps/hello -o downloaded-app
+ipab get ipab://work/apps/hello -o downloaded-app
 ipab publish APP_V2 --name apps/hello --expect RELEASE_V1
 ipab publish CONTENT_CID --name documents/snapshot --snapshot
 ipab publish CONTENT_CID
@@ -124,16 +138,17 @@ ipab swarm remove work
 
 `add` authenticates against the service; it does not grant membership. The first
 registration becomes `swarm.default` only if no saved default exists. `use`
-changes this saved CID without a network request. Selection precedence remains
-explicit `--swarm`, `IPAB_SWARM`, then `swarm.default`; the first two also
-accept local aliases. `list` shows the saved and effective selections and their
-source without claiming that membership is currently authorized. `remove` only
-forgets the registry entry, preserving credentials, content, cached headers and
-remote membership. Removing the saved current swarm clears the default
-atomically without silently selecting another swarm. Legacy credentials are not
+changes this saved CID without a network request. Global selection precedence is
+explicit `--swarm`, then `swarm.default`; `--swarm` also accepts local aliases.
+An explicit swarm in an IPAB URI overrides this selection for that reference.
+`list` shows the saved and effective selections and their source without
+claiming that membership is currently authorized. `remove` only forgets the
+registry entry, preserving credentials, content, cached headers and remote
+membership. Removing the saved current swarm clears the default atomically
+without silently selecting another swarm. Legacy credentials are not
 automatically enumerated as registrations; use `add`.
 
-Shared `name:` resolution in `exec`, `open` and `get` reuses an authenticated
+Shared IPAB URI resolution in `exec`, `open` and `get` reuses an authenticated
 header and locally validated Names snapshot for **300 seconds by default**. An
 age of exactly 300 seconds is expired. The cache persists between commands, is
 bound to the account public key and canonical Swarm CID, and retains the
@@ -153,8 +168,8 @@ resolution do not request a swarm header.
 ```sh
 ipab config set swarm.cacheTtl 300
 ipab config set swarm.forceRefresh false
-ipab --swarm work exec --force name:apps/hello --help
-ipab --swarm work get --force name:documents/readme -o readme
+ipab exec --force ipab://work/apps/hello --help
+ipab --swarm work get --force ipab:///documents/readme -o readme
 ipab config reset swarm.cacheTtl
 ```
 
@@ -167,6 +182,41 @@ authenticates and refreshes, updating the cache. Creation/join populate the
 cache; a named publication invalidates it before attempting the remote write,
 including unknown write outcomes. Publication CAS baselines and membership
 authorization never use cached HEAD.
+
+### Update shared swarm information
+
+Any authenticated owner or member can update the swarm display name and
+description using the same HEAD write authorization as shared Names:
+
+```sh
+ipab swarm update work --name "Team" --description "Shared workspace"
+ipab swarm update --description ""
+ipab --json swarm status work
+```
+
+The optional positional argument accepts a Swarm CID or local alias and
+otherwise uses the effective current swarm. At least one of `--name` and
+`--description` is required; an empty string clears that field. Unspecified
+fields and the current Names mapping are preserved. A shared name change does
+not alter local aliases or registry selection.
+
+The user-facing policy is last successful write wins for each specified field:
+no `--expect` or revision input is accepted, and stale client data does not
+produce an edit-conflict response. The pointer API still requires `If-Match` to
+protect the whole shared HEAD. The CLI therefore reads the current snapshot
+directly, applies only the requested properties, and automatically
+rereads/reapplies them on CAS contention (up to eight attempts). This preserves
+concurrent Name publications and concurrent changes to unspecified information
+fields rather than overwriting an entire old snapshot. Persistent contention
+fails as a busy service (exit 1), not a user baseline conflict. Other failures
+or unknown write outcomes are reported explicitly without stale fallback or
+automatic non-CAS retries.
+
+The linked publication history is preserved and the local header cache is
+invalidated before each write attempt. Success JSON has `cid`, `root`,
+`revision` and `properties` (`name`, `description`); human output shows the same
+information. `swarm status` always reads the current service state and now also
+includes `properties`. No new owner-only permission or credential is introduced.
 
 ### Search named entries
 
@@ -183,20 +233,22 @@ ipab --json search hello
 ```
 
 By default it searches every local registration. `--current` selects the
-effective current swarm; explicit `--swarm` or `IPAB_SWARM` also narrows the
-scope to one swarm. `--current` conflicts with `--swarm`. Valid caches are
-searched entirely locally; only absent/expired headers refresh unless `--force`
-is requested. Zero matches is success (exit 0) and does not refresh valid
-caches. Any unavailable swarm fails the entire search (exit 1), rather than
-outputting an incomplete success. Invalid queries/options exit 2.
+effective current swarm; explicit `--swarm` also narrows the scope to one swarm.
+`--current` conflicts with `--swarm`. Valid caches are searched entirely
+locally; only absent/expired headers refresh unless `--force` is requested. Zero
+matches is success (exit 0) and does not refresh valid caches. Any unavailable
+swarm fails the entire search (exit 1), rather than outputting an incomplete
+success. Invalid queries/options exit 2.
 
 JSON stdout is `{matches,swarms}`. Each match has `swarm`, nullable `alias`,
-`name`, `reference` (`name:NAME`) and `targetCid`, the direct Name target, not
-an expanded Artifact payload CID. Each searched swarm reports `cid`, `source`
-(`cache` or `network`), `root`, `revision` and RFC3339 `verifiedAt`. Results
-sort by canonical swarm CID and Name; same Names in different swarms remain
-distinct. Progress/errors use stderr. Search never downloads every Artifact or
-its payload just to list names.
+`name`, `reference` (`ipab://SWARM_CID/ENCODED_PATH`) and `targetCid`, the
+direct Name target, not an expanded Artifact payload CID. Each searched swarm
+reports `cid`, `source` (`cache` or `network`), `root`, `revision` and RFC3339
+`verifiedAt`. Results sort by canonical swarm CID and Name; same Names in
+different swarms remain distinct. References contain canonical swarm CIDs rather
+than local aliases, so they can be passed directly to `get`, `exec` or `open` on
+another authorized device without a separate swarm flag. Progress/errors use
+stderr. Search never downloads every Artifact or its payload just to list names.
 
 Swarm flows require a prepared private Kubo network. `store.gateway` stays
 read-only; it does not upload. `swarm.provider` (default local port 5001) is an

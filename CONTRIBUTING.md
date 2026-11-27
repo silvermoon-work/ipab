@@ -12,7 +12,8 @@ pnpm check
 真实构建／执行链路和服务／持久存储集成测试只在发布前完整验证中执行；
 check-release 保留全部测试、四项 90% 覆盖率门槛和交付安装 smoke。
 不能通过排除源码、删除测试、放宽门槛或吞掉错误来取得通过结果。
-五个 code package 显式登记为 npm 交付项，当前候选统一为 `0.1.0-rc.1`；
+五个 code package 显式登记为 npm 交付项；Store、Bundle、Builder、CLI 当前候选为
+`0.1.0-rc.2`，Web App 保持已发布的 `0.1.0-rc.1`；
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
@@ -211,9 +212,11 @@ Trusted Publisher 的约定为 `silvermoon-work/ipab`、
 手动 dispatch 只能从 main 选择自身准确 SHA、包名和版本，始终 `--dry-run`；
 它仍须满足相同的远程证据与依赖可用性门禁。
 
-首轮单包顺序为 `ipfs-store` → `bundle` → `bundle-builder` → `cli`；
-`web-app` 独立，但须在 CLI 之前发布。五包都准备 `0.1.0-rc.1`，
-不是授权现在发布；确认最终 commit 后逐包批准 tag。
+本轮单包顺序为 `ipfs-store` → `bundle` → `bundle-builder` → `cli`，
+四包准备 `0.1.0-rc.2`；`web-app` 复用已发布的 `0.1.0-rc.1`，
+没有交付源码变更，不重复发布。各包 workspace 依赖由 native pnpm 转换为所引用
+包的准确版本，因此必须逐包确认内部依赖可用后再发布下一包。
+候选版本变更不是发布授权；确认最终 commit 后逐包批准 tag。
 
 发布 workflow 用 `publish-gate target --json` 选择唯一包，构建并 lint 所选包及
 构建依赖，然后使用 native pnpm 在包目录执行 `publish --no-git-checks`。

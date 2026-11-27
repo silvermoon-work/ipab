@@ -1,6 +1,6 @@
 {
   "name": "@ipab/bundle-builder",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "private": false,
   "description": "Deterministic bounded UnixFS Bundle CAR construction from repeatable file trees.",
   "type": "module",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parse, help } from "../src/cli.js";
+import { parseNameReference } from "../src/swarm.js";
 import {
   effectiveConfig,
   parseValue,
@@ -13,13 +14,14 @@ describe(
     const cid = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
     it("parses explicit shared references/raw modes without leaking exec flags to the host", () => {
       expect(
-        parse(["--swarm", cid, "exec", "name:apps/hello", "--raw"]).positional,
-      ).toEqual(["name:apps/hello", "--raw"]);
+        parse(["--swarm", cid, "exec", "ipab:///apps/hello", "--raw"])
+          .positional,
+      ).toEqual(["ipab:///apps/hello", "--raw"]);
       expect(() => parse(["exec", "--raw", cid])).toThrow("Expected APP");
       expect(
-        parse(["get", "--raw", "name:apps/hello", "-o", "work"]).options,
+        parse(["get", "--raw", "ipab:///apps/hello", "-o", "work"]).options,
       ).toEqual({ raw: true, output: "work" });
-      expect(parse(["open", "--raw", "name:apps/hello"]).options.raw).toBe(
+      expect(parse(["open", "--raw", "ipab:///apps/hello"]).options.raw).toBe(
         true,
       );
       expect(() => parse(["build", "--with-source"])).toThrow("Unknown option");
@@ -37,7 +39,7 @@ describe(
         "Unknown global",
       );
     });
-    it("round-trips stored swarm settings and honors flag/environment precedence", () => {
+    it("round-trips stored swarm settings and honors flag precedence", () => {
       const user = validateUserConfig({
         "swarm.default": parseValue("swarm.default", cid, true),
         "swarm.service": parseValue(
@@ -58,11 +60,9 @@ describe(
         ),
       ).toMatchObject({ value: cid, source: "user" });
       expect(
-        effectiveConfig(
-          user,
-          { json: false, swarm: cid },
-          { IPAB_SWARM: cid },
-        ).find((item) => item.key === "swarm.default"),
+        effectiveConfig(user, { json: false, swarm: cid }, {}).find(
+          (item) => item.key === "swarm.default",
+        ),
       ).toMatchObject({ value: cid, source: "flag" });
       expect(validateUserConfig({ "swarm.default": null })).toEqual({
         "swarm.default": null,
@@ -79,13 +79,13 @@ describe(
           "exec",
           "--force",
           "--log",
-          "name:apps/hello",
+          "ipab:///apps/hello",
           "--force",
         ]).options,
       ).toEqual({ force: true, log: true });
       expect(
-        parse(["exec", "--force", "name:apps/hello", "--force"]).positional,
-      ).toEqual(["name:apps/hello", "--force"]);
+        parse(["exec", "--force", "ipab:///apps/hello", "--force"]).positional,
+      ).toEqual(["ipab:///apps/hello", "--force"]);
       for (const command of ["get", "open", "search"])
         expect(parse([command, "--force", "hello"]).options.force).toBe(true);
       for (const command of ["exec", "get", "open", "search"])
@@ -107,8 +107,29 @@ describe(
       ])
         expect(help(path)).toContain("Examples:");
       expect(parse(["search", "--help"]).help).toBe(true);
+      expect(
+        parse([
+          "swarm",
+          "update",
+          "work",
+          "--name",
+          "Team",
+          "--description",
+          "",
+        ]).options,
+      ).toEqual({ name: "Team", description: "" });
+      expect(
+        parse(["swarm", "update", "--description", "Shared"]).positional,
+      ).toEqual([]);
+      expect(() => parse(["swarm", "update", "--name"])).toThrow(
+        "needs a value",
+      );
+      expect(() => parse(["swarm", "update", "--expect", cid])).toThrow(
+        "Unknown option",
+      );
+      expect(help("swarm update")).toContain("Any authorized member");
     });
-    it("validates cache configuration and resolves alias selection without hiding invalid lower layers", () => {
+    it("validates cache configuration, resolves alias selection and rejects removed swarm environment selection", () => {
       expect(parseValue("swarm.cacheTtl", "0", true)).toBe(0);
       expect(parseValue("swarm.cacheTtl", "300", true)).toBe(300);
       expect(parseValue("swarm.cacheTtl", "default", true)).toBe(300);
@@ -136,7 +157,49 @@ describe(
           { IPAB_SWARM: "unknown" },
           resolve,
         ),
-      ).toThrow("Unknown alias");
+      ).toThrow("IPAB_SWARM is no longer supported");
+      expect(() =>
+        effectiveConfig({}, { json: false }, { IPAB_SWARM: cid }),
+      ).toThrow("ipab swarm use");
+    });
+    it("parses IPAB URI authorities without changing case and decodes bounded formal Names", () => {
+      expect(parseNameReference(`ipab://${cid}/Apps/Hello`)).toEqual({
+        swarm: cid,
+        name: "Apps/Hello",
+      });
+      expect(parseNameReference("ipab://Work/Apps/Hello")).toEqual({
+        swarm: "Work",
+        name: "Apps/Hello",
+      });
+      expect(
+        parseNameReference("ipab:///documents/hello%20%23%E4%B8%96%E7%95%8C"),
+      ).toEqual({
+        name: "documents/hello #世界",
+      });
+      expect(parseNameReference(cid)).toBeUndefined();
+      expect(parseNameReference("reader")).toBeUndefined();
+      for (const reference of [
+        "name:apps/hello",
+        "ipab:apps/hello",
+        "ipab://work",
+        "ipab:///",
+        "ipab://work/a?query",
+        "ipab://work/a#fragment",
+        "ipab://user@work/a",
+        "ipab://work:80/a",
+        "ipab:///a b",
+        "ipab:///a//b",
+        "ipab:///a/../b",
+        "ipab:///a/%2e%2e/b",
+        "ipab:///a%2fb",
+        "ipab:///a%5cb",
+        "ipab:///a%00b",
+        "ipab:///a%252fb",
+        "ipab:///a%",
+        "ipab:///a%C0%AF",
+        `ipab:///${"a".repeat(257)}`,
+      ])
+        expect(() => parseNameReference(reference), reference).toThrow();
     });
   },
 );

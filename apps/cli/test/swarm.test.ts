@@ -30,6 +30,7 @@ import {
   readSnapshot,
   swarmHeader,
   searchNames,
+  updateSwarm,
   swarmType,
   requestType,
   resolveReference,
@@ -248,7 +249,7 @@ describe(
       const payload = await jsonBundle(store, noteType, { text: "first" });
       await publish(b, payload, { swarm, name: "new", snapshot: true });
       const beforeMiss = reads;
-      expect((await resolveReference(a, "name:new", swarm, local)).cid).toBe(
+      expect((await resolveReference(a, "ipab:///new", swarm, local)).cid).toBe(
         payload,
       );
       expect(reads).toBe(beforeMiss + 1);
@@ -262,14 +263,14 @@ describe(
       });
       const beforeHit = reads;
       expect(
-        (await resolveReference(a, "name:versioned", swarm, local)).cid,
+        (await resolveReference(a, "ipab:///versioned", swarm, local)).cid,
       ).toBe(payload);
       expect(reads).toBe(beforeHit);
       expect(
         (
           await resolveReference(
             { ...a, forceRefresh: true },
-            "name:versioned",
+            "ipab:///versioned",
             swarm,
             local,
             true,
@@ -279,13 +280,13 @@ describe(
       expect(reads).toBe(beforeHit + 1);
       const beforeMissing = reads;
       await expect(
-        resolveReference(a, "name:missing", swarm, local),
+        resolveReference(a, "ipab:///missing", swarm, local),
       ).rejects.toThrow("not present");
       expect(reads).toBe(beforeMissing + 1);
       await expect(
         resolveReference(
           { ...a, forceRefresh: true },
-          "name:missing",
+          "ipab:///missing",
           swarm,
           local,
         ),
@@ -298,7 +299,8 @@ describe(
       });
       const beforeLocal = reads;
       expect(
-        (await resolveReference(a, "name:versioned", swarm, local, true)).cid,
+        (await resolveReference(a, "ipab:///versioned", swarm, local, true))
+          .cid,
       ).toBe(replacement);
       expect(reads).toBe(beforeLocal + 1);
     });
@@ -345,7 +347,7 @@ describe(
           swarm,
           alias: "work",
           name: "Apps/Hello",
-          reference: "name:Apps/Hello",
+          reference: `ipab://${swarm}/Apps/Hello`,
           targetCid: node,
         },
       ]);
@@ -402,13 +404,17 @@ describe(
       expect(
         (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
       ).toBe(0);
-      const listed = await cli(a.stateDir, ["--json", "swarm", "list"], {
-        env: { ...env, IPAB_SWARM: "work" },
-      });
+      const listed = await cli(
+        a.stateDir,
+        ["--swarm", "work", "--json", "swarm", "list"],
+        {
+          env,
+        },
+      );
       expect(JSON.parse(listed.out)).toMatchObject({
         savedCurrent: other,
         effectiveCurrent: swarm,
-        source: "env",
+        source: "flag",
       });
       expect(reads).toBe(beforeLocal);
       const all = await cli(a.stateDir, ["--json", "search", "absent"], {
@@ -450,6 +456,153 @@ describe(
       expect(
         (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
       ).toBe(1);
+    });
+    it("lets members update information with last-write-wins retries while preserving concurrent Names and unspecified fields", async () => {
+      const swarm = await createSwarm(a, {
+        alias: "owned",
+        properties: { name: "Initial", description: "Original description" },
+      });
+      const payload = await jsonBundle(store, noteType, { text: "kept" });
+      const initial = await publish(a, payload, {
+        swarm,
+        name: "documents/initial",
+      });
+      await joinSwarm(
+        b,
+        await approveMembership(a, await requestMembership(b, swarm)),
+        "member",
+      );
+      const original = b.fetch!;
+      let concurrent = "",
+        raced = false,
+        writes = 0;
+      b.fetch = async (input, options) => {
+        const request = new Request(input, options);
+        if (request.method === "PUT") {
+          writes++;
+          if (!raced) {
+            raced = true;
+            await updateSwarm(a, swarm, {
+              description: "Concurrent description",
+            });
+            concurrent = await publish(a, payload, {
+              swarm,
+              name: "documents/concurrent",
+            });
+          }
+        }
+        return original(input, options);
+      };
+      const updated = await updateSwarm(b, swarm, { name: "Member name" });
+      expect(writes).toBe(2);
+      expect(updated.properties).toEqual({
+        name: "Member name",
+        description: "Concurrent description",
+      });
+      const header = await swarmHeader(b, swarm);
+      expect(header.source).toBe("network");
+      expect(header.snapshot.properties).toEqual(updated.properties);
+      expect(header.snapshot.names["documents/initial"]?.toString()).toBe(
+        initial,
+      );
+      expect(header.snapshot.names["documents/concurrent"]?.toString()).toBe(
+        concurrent,
+      );
+      const state = new State(b.stateDir);
+      try {
+        expect(state.registeredSwarm(swarm).alias).toBe("member");
+      } finally {
+        state.close();
+      }
+      await updateSwarm(a, swarm, {
+        name: "Owner name",
+        description: "Owner description",
+      });
+      const last = await updateSwarm(b, swarm, { name: "", description: "" });
+      expect((await readSnapshot(store, last.root)).properties).toEqual({
+        name: "",
+        description: "",
+      });
+    });
+    it("requires explicit information fields and reports non-CAS failures without success or stale-cache reuse", async () => {
+      const swarm = await createSwarm(a);
+      const before = reads;
+      await expect(updateSwarm(a, swarm, {})).rejects.toMatchObject({
+        exitCode: 2,
+      });
+      expect(reads).toBe(before);
+      await expect(
+        updateSwarm({ ...a, env: { HOME: "c" } }, swarm, {
+          name: "Not a member",
+        }),
+      ).rejects.toThrow();
+      const original = a.fetch!;
+      let writes = 0;
+      a.fetch = (input, options) => {
+        if (new Request(input, options).method === "PUT") {
+          writes++;
+          return Promise.resolve(
+            new Response(
+              '{"error":{"code":"internal","message":"storage unavailable"}}',
+              { status: 500 },
+            ),
+          );
+        }
+        return original(input, options);
+      };
+      await expect(
+        updateSwarm(a, swarm, { name: "Unconfirmed" }),
+      ).rejects.toMatchObject({ code: "HEAD_UNCONFIRMED", exitCode: 1 });
+      expect(writes).toBe(1);
+      expect((await swarmHeader(a, swarm)).source).toBe("network");
+      expect((await readSnapshot(store, root)).properties.name).toBe("");
+    });
+    it("routes member information updates through aliases/default selection and exposes shared information in status", async () => {
+      const swarm = await createSwarm(a);
+      await joinSwarm(
+        b,
+        await approveMembership(a, await requestMembership(b, swarm)),
+        "work",
+      );
+      const env = { HOME: "b" };
+      const updated = await cli(
+        b.stateDir,
+        [
+          "--json",
+          "swarm",
+          "update",
+          "work",
+          "--name",
+          "Team",
+          "--description",
+          "Shared",
+        ],
+        { env },
+      );
+      expect(updated.code, updated.err).toBe(0);
+      expect(JSON.parse(updated.out)).toMatchObject({
+        cid: swarm,
+        properties: { name: "Team", description: "Shared" },
+      });
+      const cleared = await cli(
+        b.stateDir,
+        ["--json", "swarm", "update", "--description", ""],
+        { env },
+      );
+      expect(cleared.code, cleared.err).toBe(0);
+      expect(JSON.parse(cleared.out)).toMatchObject({
+        properties: { name: "Team", description: "" },
+      });
+      const status = await cli(b.stateDir, ["--json", "swarm", "status"], {
+        env,
+      });
+      expect(status.code, status.err).toBe(0);
+      expect(JSON.parse(status.out)).toMatchObject({
+        properties: { name: "Team", description: "" },
+      });
+      expect((await cli(b.stateDir, ["swarm", "update"], { env })).code).toBe(
+        2,
+      );
     });
     it("retries only network failures, reports bounded CAS contention, and preserves candidates on service errors", async () => {
       const swarm = await createSwarm(a);
@@ -628,7 +781,7 @@ describe(
           swarm,
           "--json",
           "get",
-          "name:documents/hello",
+          `ipab://${swarm}/documents/hello`,
           "-o",
           join(work, "cli-get"),
         ],
@@ -648,7 +801,7 @@ describe(
               swarm,
               "get",
               "--raw",
-              "name:documents/hello",
+              "ipab:///documents/hello",
               "-o",
               join(work, "raw-get"),
             ],
@@ -682,7 +835,7 @@ describe(
       const v1 = await jsonBundle(store, noteType, { text: "Hello" });
       const node1 = await publish(a, v1, { swarm, name: "documents/hello" });
       expect(
-        await resolveReference(b, "name:documents/hello", swarm, local),
+        await resolveReference(b, "ipab:///documents/hello", swarm, local),
       ).toEqual({ targetCid: node1, cid: v1 });
       const directory = await getBundle(store, v1, join(work, "get"));
       expect(
@@ -701,8 +854,15 @@ describe(
         await typedJson<Artifact>(store, node2, artifactType),
       ).toMatchObject({ value: v2, previous: node1 });
       expect(
-        (await resolveReference(a, "name:documents/hello", swarm, local, true))
-          .cid,
+        (
+          await resolveReference(
+            a,
+            "ipab:///documents/hello",
+            swarm,
+            local,
+            true,
+          )
+        ).cid,
       ).toBe(node2);
       await expect(
         publish(a, v1, { swarm, name: "documents/hello", expect: node1 }),
@@ -781,6 +941,66 @@ describe(
       expect((await descriptor(store, swarm)).variable).toBe(fixtureId);
       expect(creates).toBe(1);
     });
+    it("resolves explicit URI swarms over defaults and emits portable encoded search references", async () => {
+      const swarm = await createSwarm(a, { alias: "Work" });
+      const payload = await jsonBundle(store, noteType, {});
+      const name = "documents/hello #世界'()!";
+      await publish(a, payload, { swarm, name, snapshot: true });
+      const result = await searchNames(a, "hello", [
+        { cid: swarm, alias: "Work" },
+      ]);
+      const reference = result.matches[0]!.reference;
+      expect(reference).toBe(
+        `ipab://${swarm}/documents/hello%20%23%E4%B8%96%E7%95%8C%27%28%29%21`,
+      );
+      const fallback = vi.fn(local);
+      const unrelated = await jsonBundle(store, noteType, { unrelated: true });
+      expect(await resolveReference(a, reference, unrelated, fallback)).toEqual(
+        {
+          targetCid: payload,
+          cid: payload,
+        },
+      );
+      expect(
+        await resolveReference(
+          a,
+          "ipab://Work/documents/hello%20%23%E4%B8%96%E7%95%8C%27%28%29%21",
+          undefined,
+          fallback,
+        ),
+      ).toEqual({
+        targetCid: payload,
+        cid: payload,
+      });
+      expect(fallback).not.toHaveBeenCalled();
+      const downloaded = await cli(
+        a.stateDir,
+        [
+          "--swarm",
+          unrelated,
+          "--json",
+          "get",
+          reference,
+          "-o",
+          join(work, "uri-get"),
+        ],
+        { env: a.env },
+      );
+      expect(downloaded.code, downloaded.err).toBe(0);
+      expect(JSON.parse(downloaded.out)).toMatchObject({
+        targetCid: payload,
+        cid: payload,
+      });
+      await expect(
+        resolveReference(a, "ipab://work/documents/hello", swarm, fallback),
+      ).rejects.toThrow("Unknown swarm alias");
+      const before = reads;
+      await expect(
+        resolveReference(a, "name:documents/hello", swarm, fallback),
+      ).rejects.toThrow("no longer supported");
+      expect(reads).toBe(before);
+      expect(fallback).not.toHaveBeenCalled();
+    });
     it("rejects foreign origin, mismatched requests/certificates and unauthorized Name lookups", async () => {
       await expect(
         createSwarm(a, { service: "https://other.example" }),
@@ -818,10 +1038,10 @@ describe(
         "duration",
       );
       await expect(
-        resolveReference(a, "name:missing", undefined, local),
+        resolveReference(a, "ipab:///missing", undefined, local),
       ).rejects.toThrow("require");
       await expect(
-        resolveReference(a, "name:missing", swarm, local),
+        resolveReference(a, "ipab:///missing", swarm, local),
       ).rejects.toThrow("not present");
       await expect(
         publish(a, await jsonBundle(store, noteType, {}), { expect: swarm }),

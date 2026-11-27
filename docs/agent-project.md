@@ -17,6 +17,11 @@ bridge 只提供／pin 内容，
 不恢复 Store RPC backend，不管理部署。决定与迁移见
 [mvp-implementation.md](mvp-implementation.md)。
 
+共享 Name 引用使用 `ipab://SWARM_CID_OR_ALIAS/PATH`，authority 保持大小写，
+显式 URI swarm 优先；`ipab:///PATH` 按 `--swarm`、`swarm.default` 选择。
+不再支持 `name:PATH` 或 `IPAB_SWARM`。搜索输出带 canonical swarm CID 和
+按段编码路径的完整 URI，不使用本机别名生成跨设备引用。
+
 本仓库是 IPAB（InterPlanetary Artifact Bundle）的独立工程 workspace。
 项目愿景与使用场景见 [VISION.md](../VISION.md)，不代表当前已实现能力。
 当前 `apps/cli` 已实现确认的 CLI、Node 子进程 profile、独立 IPC Space context、
@@ -26,7 +31,9 @@ Content Bundle 与 Store 已迁入 `packages/bundle` 和 `packages/ipfs-store`�
 名称为 `@ipab/bundle` 与 `@ipab/ipfs-store`；CLI 和 Bundle 使用
 `workspace:*` 引用 Store。`@ipab/bundle-builder` 同属 npm 交付项；
 Schema 编码与校验仍在统一的 Bundle runtime，已移除专用 Schema Bundle Builder。
-五个 code 成员显式登记 npm 交付，当前统一准备 `0.1.0-rc.1`；`@ipab/web-app`
+五个 code 成员显式登记 npm 交付，Store、Bundle、Builder、CLI 当前准备
+`0.1.0-rc.2`；`@ipab/web-app` 保持已发布的 `0.1.0-rc.1`，
+因交付源码未变化不重复发布。`@ipab/web-app`
 是本机浏览器桥接框架。
 `@ipab/bundle-viewer` 为 private React 同构封装，通过 Web App 的显式
 renderFrontend hook 渲染真实内容并 hydration；标准数据式模板位于

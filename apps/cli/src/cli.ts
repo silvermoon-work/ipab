@@ -38,6 +38,7 @@ import {
   descriptor,
   swarmHeader,
   addSwarm,
+  updateSwarm,
   searchNames,
   resolveReference,
   publish,
@@ -100,6 +101,8 @@ const commands: Record<string, string> = {
   "swarm add": "swarm add SWARM_CID [--alias ALIAS]",
   "swarm use": "swarm use CID_OR_ALIAS",
   "swarm remove": "swarm remove CID_OR_ALIAS",
+  "swarm update":
+    "swarm update [CID_OR_ALIAS] [--name TEXT] [--description TEXT]",
   publish:
     "publish CID_OR_CAR [--name NAME [--expect OLD_NODE_CID | --snapshot]]",
   get: "get REF [--raw] [--force | --no-force] [-o DIRECTORY]",
@@ -218,15 +221,31 @@ const commandHelp: Record<
   "swarm use": {
     summary: "Save a registered swarm as the current default",
     examples: ["ipab swarm use work"],
-    notes: [
-      "Local only. --swarm and IPAB_SWARM still override the saved default.",
-    ],
+    notes: ["Local only. --swarm still overrides the saved default."],
   },
   "swarm remove": {
     summary: "Forget a local registration without revoking membership",
     examples: ["ipab swarm remove work"],
     notes: [
       "Preserves credentials, content and remote membership. Clears a matching saved default without selecting a replacement.",
+    ],
+  },
+  "swarm update": {
+    summary: "Update shared swarm information as an owner or member",
+    arguments: ["CID_OR_ALIAS  Defaults to the effective current swarm."],
+    options: [
+      "--name TEXT  Replace the shared display name; empty text clears it.",
+      "--description TEXT  Replace the shared description; empty text clears it.",
+    ],
+    examples: [
+      'ipab swarm update work --name "Team" --description "Shared workspace"',
+      'ipab swarm update --description ""',
+    ],
+    notes: [
+      "Requires at least one field. Any authorized member can update both fields.",
+      "Last successful write wins for the specified fields; no expected-value/version input.",
+      "Automatically retries HEAD contention while preserving current Names and unspecified properties.",
+      "Shared name changes do not rename local registry aliases.",
     ],
   },
   search: {
@@ -241,7 +260,7 @@ const commandHelp: Record<
     ],
     examples: ["ipab search hello", "ipab --swarm work search hello --force"],
     notes: [
-      "Searches all registered swarms unless --current, --swarm or IPAB_SWARM selects one.",
+      "Searches all registered swarms unless --current or --swarm selects one.",
       "Valid caches use local Names only; absent/expired caches refresh. No payload downloads.",
       "No matches is success, not a reason to refresh valid caches. Any failed swarm fails the whole search.",
     ],
@@ -273,11 +292,13 @@ const commandHelp: Record<
       "-o, --output DIRECTORY  New or empty directory; defaults to resolved CID.",
     ],
     examples: [
-      "ipab --json get name:apps/hello -o hello-app",
+      "ipab --json get ipab:///apps/hello -o hello-app",
+      "ipab get ipab://work/apps/hello -o hello-app",
       "ipab get --raw RELEASE_CID",
     ],
     notes: [
       "Returns the selected content CID and original target CID (editing baseline).",
+      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "Does not install, build, edit, or automatically retrieve associated source.",
     ],
   },
@@ -368,7 +389,7 @@ const commandHelp: Record<
     ],
   },
   exec: {
-    summary: "Run an App by CID or named pin",
+    summary: "Run an App by CID, named pin or IPAB URI",
     arguments: [
       "APP_ARGS  Everything after APP is passed verbatim, including --help.",
     ],
@@ -381,9 +402,11 @@ const commandHelp: Record<
       "ipab exec reader",
       "ipab exec reader --help",
       "ipab exec --log reader",
+      "ipab exec ipab://work/apps/hello --help",
     ],
     notes: [
       "Apps are NOT sandboxed; run only Apps you trust.",
+      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "History stores argv by default; do not put secrets in arguments.",
       "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
       "--json is not supported; App stdio is passed through.",
@@ -391,16 +414,21 @@ const commandHelp: Record<
   },
   open: {
     summary: "Open content with its registered App",
-    arguments: ["CONTENT  Bundle CID or named pin."],
+    arguments: ["CONTENT  Bundle CID, named pin or IPAB URI."],
     options: [
       "--log  Record stdout/stderr; requires history enabled.",
       "--raw  Open the Artifact node rather than its value.",
       "--force  Refresh the shared Name's swarm HEAD.",
       "--no-force  Override swarm.forceRefresh and use valid cached headers.",
     ],
-    examples: ["ipab open CONTENT_CID", "ipab open --log my-note"],
+    examples: [
+      "ipab open CONTENT_CID",
+      "ipab open --log my-note",
+      "ipab open ipab:///documents/readme",
+    ],
     notes: [
       "Requires a saved registration and App support for the exact content type.",
+      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "Apps are NOT sandboxed; run only Apps you trust.",
       "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
       "--json is not supported; App stdio is passed through.",
@@ -550,7 +578,7 @@ const commandHelp: Record<
 
 export function help(path = ""): string {
   const globalOptions = `Global options (before COMMAND):
-  --swarm CID|ALIAS Select shared swarm (or IPAB_SWARM / swarm.default)
+  --swarm CID|ALIAS Select shared swarm (otherwise swarm.default; URI swarm takes precedence)
   --state-dir PATH  Set the local state directory
   --store-gateway URL  Use a read-only upstream HTTP gateway
   --json            Output management/development metadata, not App stdio`;
@@ -882,23 +910,25 @@ export function parse(argv: readonly string[]): Parsed {
       ? ["service", "resume", "name", "description", "alias"]
       : result.path === "swarm add" || result.path === "swarm join"
         ? ["alias"]
-        : result.path === "swarm approve"
-          ? ["expires-in"]
-          : result.path === "publish"
-            ? ["name", "expect"]
-            : result.path === "get"
-              ? ["output"]
-              : result.path === "init"
-                ? ["template"]
-                : result.path === "bundle build" || result.path === "build"
-                  ? ["output"]
-                  : result.path === "history list"
-                    ? ["app", "status", "since", "until", "limit", "before"]
-                    : result.path === "history remove"
-                      ? ["app", "status", "since", "until"]
-                      : result.path === "pin list"
-                        ? ["type"]
-                        : [];
+        : result.path === "swarm update"
+          ? ["name", "description"]
+          : result.path === "swarm approve"
+            ? ["expires-in"]
+            : result.path === "publish"
+              ? ["name", "expect"]
+              : result.path === "get"
+                ? ["output"]
+                : result.path === "init"
+                  ? ["template"]
+                  : result.path === "bundle build" || result.path === "build"
+                    ? ["output"]
+                    : result.path === "history list"
+                      ? ["app", "status", "since", "until", "limit", "before"]
+                      : result.path === "history remove"
+                        ? ["app", "status", "since", "until"]
+                        : result.path === "pin list"
+                          ? ["type"]
+                          : [];
   while (tokens.length) {
     const value = tokens.shift()!;
     if (value.startsWith("--") || value === "-o") {
@@ -915,7 +945,12 @@ export function parse(argv: readonly string[]): Parsed {
       if (booleans.includes(option)) result.options[option] = true;
       else if (values.includes(option)) {
         const input = tokens.shift();
-        if (!input || input.startsWith("--")) syntax(`${value} needs a value.`);
+        if (
+          input === undefined ||
+          input.startsWith("--") ||
+          (input === "" && result.path !== "swarm update")
+        )
+          syntax(`${value} needs a value.`);
         result.options[option] = input;
       } else syntax(`Unknown option "${value}".`);
     } else result.positional.push(value);
@@ -938,6 +973,7 @@ export function parse(argv: readonly string[]): Parsed {
     "swarm add": [1, 1],
     "swarm use": [1, 1],
     "swarm remove": [1, 1],
+    "swarm update": [0, 1],
     publish: [1, 1],
     get: [1, 1],
     search: [1, 1],
@@ -1144,6 +1180,7 @@ async function performCli(
         break;
       }
       case "swarm add":
+      case "swarm update":
       case "search":
       case "swarm create":
       case "swarm request":
@@ -1154,6 +1191,26 @@ async function performCli(
       case "get": {
         store = new IpfsStore(await storeConfiguration(value("store.gateway")));
         const context = swarmContext();
+        if (parsed.path === "swarm update") {
+          const cid = first ? state.resolveSwarm(first) : selectedSwarm;
+          if (!cid)
+            syntax(
+              "swarm update requires a registered alias, Swarm CID or current swarm.",
+            );
+          const result = await updateSwarm(context, cid, {
+            ...(typeof parsed.options.name === "string"
+              ? { name: parsed.options.name }
+              : {}),
+            ...(typeof parsed.options.description === "string"
+              ? { description: parsed.options.description }
+              : {}),
+          });
+          emit(
+            result,
+            `Swarm: ${result.cid}\nName: ${printable(result.properties.name)}\nDescription: ${printable(result.properties.description)}\nHEAD: ${result.root}\nRevision: ${result.revision}`,
+          );
+          break;
+        }
         if (parsed.path === "swarm add") {
           const cid = exactCid(first!);
           await addSwarm(
@@ -1174,11 +1231,10 @@ async function performCli(
           const source = items.find(
             (item) => item.key === "swarm.default",
           )!.source;
-          const limited =
-            parsed.options.current || source === "flag" || source === "env";
+          const limited = parsed.options.current || source === "flag";
           if (limited && !selectedSwarm)
             syntax(
-              "Search of the current swarm requires --swarm, IPAB_SWARM or swarm.default.",
+              "Search of the current swarm requires --swarm or swarm.default.",
             );
           const registrations = state.swarms();
           const scope = limited
@@ -1198,7 +1254,7 @@ async function performCli(
               ? result.matches
                   .map(
                     (match) =>
-                      `${printable(match.alias ?? match.swarm)}  ${printable(match.name)}  ${match.targetCid}\n  ipab --swarm ${match.swarm} get ${printable(match.reference)}`,
+                      `${printable(match.alias ?? match.swarm)}  ${printable(match.name)}  ${match.targetCid}\n  ipab get ${printable(match.reference)}`,
                   )
                   .join("\n")
               : "No matching Names.",
@@ -1210,10 +1266,16 @@ async function performCli(
           if (!cid)
             syntax("swarm status requires a Swarm CID or swarm.default.");
           const data = await descriptor(store, cid);
-          const { head } = await swarmHeader(context, cid, true);
+          const { head, snapshot } = await swarmHeader(context, cid, true);
           emit(
-            { cid, ...data, root: head.root, revision: head.revision },
-            `Swarm: ${cid}\nHEAD: ${head.root}\nRevision: ${head.revision}`,
+            {
+              cid,
+              ...data,
+              root: head.root,
+              revision: head.revision,
+              properties: snapshot.properties,
+            },
+            `Swarm: ${cid}\nName: ${printable(snapshot.properties.name)}\nDescription: ${printable(snapshot.properties.description)}\nHEAD: ${head.root}\nRevision: ${head.revision}`,
           );
           break;
         }

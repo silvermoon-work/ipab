@@ -1,7 +1,7 @@
 # @ipab/web-app
 
-The next npm release is being prepared as `0.1.0-rc.1`; `0.1.0-rc.0` is
-published.
+`0.1.0-rc.1` is published. The rc.2 release of the other IPAB packages keeps
+this framework at rc.1 because its delivered source has not changed.
 
 A small local browser bridge for **trusted Node IPAB Apps**. This is not a Node
 sandbox and does not make an untrusted application safe. The browser author page

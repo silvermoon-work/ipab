@@ -1,6 +1,6 @@
 {
   "name": "@ipab/bundle",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "private": false,
   "description": "Validated UnixFS Content Bundles and single-block DAG-CBOR schemas.",
   "type": "module",

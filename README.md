@@ -17,14 +17,14 @@ IPAB 使用 Node 子进程运行 App Bundle，保留应用的命令行参数和�
 
 ## 安装
 
-已发布 `0.1.0-rc.0`；当前源码准备 `0.1.0-rc.1`，尚未发布。支持 Windows、
+已发布 `0.1.0-rc.1`；当前 CLI 源码准备 `0.1.0-rc.2`，尚未发布。支持 Windows、
 macOS 和 Linux。安装现有 RC：
 
 ```sh
-npm install --global @ipab/cli@0.1.0-rc.0
+npm install --global @ipab/cli@0.1.0-rc.1
 ```
 
-使用当前候选源码（下文 Gateway 配置适用于 rc.1 候选）：
+使用当前 rc.2 候选源码：
 请先安装 Git、[指定版本的 Node](.node-version) 和
 [packageManager 指定版本的 pnpm](package.json)，然后执行：
 
@@ -68,13 +68,21 @@ ipab config set store.gateway http://127.0.0.1:8080
 ipab swarm add <swarm-cid> --alias work
 ipab swarm list
 ipab swarm use work
+ipab swarm update work --name "Team" --description "Shared workspace"
 ipab search hello
-ipab --swarm work get --force name:apps/hello
+ipab get --force ipab://work/apps/hello
+ipab get ipab:///apps/hello
 ```
 
-选择优先级为 `--swarm CID或别名`、`IPAB_SWARM`、保存的 `swarm.default`。
+共享名称使用 `ipab://<swarm CID或本机别名>/<path>`；URI 中的 swarm 优先，
+省略时用 `ipab:///<path>`，按 `--swarm CID或别名`、保存的 `swarm.default`
+选择。分享时使用 CID，搜索结果也输出带 swarm CID 的完整 URI。
+旧 `name:<path>` 已移除；`IPAB_SWARM` 不再支持，需移除该环境变量并改用
+`--swarm` 或 `swarm use`。
 `swarm use` 不需要设置环境变量；`swarm remove work` 只移除本机登记，
 不删除证书、内容或远程成员资格。
+`swarm update` 修改共享名称和描述，任何已授权 member 都可执行；
+只更新指定字段，最后成功的写入生效，不改变本地别名，也不要求旧值或版本号。
 
 `exec`、`open`、`get` 的共享名称解析默认复用 5 分钟内的已验证 swarm HEAD；
 有效缓存找不到名称时刷新一次。`--force` 要求立即刷新；`exec` 的该参数必须

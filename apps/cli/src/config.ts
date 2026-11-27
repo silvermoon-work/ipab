@@ -45,8 +45,7 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "output.retention": "history",
   "bundle.outputDir": "dist",
 };
-const environments: Record<ConfigKey, string> = {
-  "swarm.default": "IPAB_SWARM",
+const environments: Partial<Record<ConfigKey, string>> = {
   "swarm.service": "IPAB_SWARM_SERVICE",
   "swarm.provider": "IPAB_SWARM_PROVIDER",
   "swarm.cacheTtl": "IPAB_SWARM_CACHE_TTL",
@@ -282,13 +281,18 @@ export function effectiveConfig(
   env: NodeJS.ProcessEnv = process.env,
   resolveSwarm?: (reference: string) => string,
 ): ConfigItem[] {
+  if (env.IPAB_SWARM !== undefined)
+    syntax(
+      "IPAB_SWARM is no longer supported. Remove it and use --swarm CID_OR_ALIAS or ipab swarm use CID_OR_ALIAS.",
+    );
   if (env.IPAB_STORE_RPC !== undefined)
     syntax(
       "IPAB_STORE_RPC is no longer supported. Remove it and use IPAB_STORE_GATEWAY with an HTTP gateway URL.",
     );
   const result = (Object.keys(defaults) as ConfigKey[]).map(
     (key): ConfigItem => {
-      const variable = env[environments[key]];
+      const environment = environments[key];
+      const variable = environment === undefined ? undefined : env[environment];
       const flag =
         key === "store.gateway"
           ? flags.storeGateway

@@ -26,7 +26,8 @@ import {
 import { app, cli, content, fixture, importFiles, record } from "./helpers.js";
 
 function gatewayFixture() {
-  const gateway = "http://pin-fixture.invalid";
+  const origin = "http://pin-fixture.invalid";
+  const gateway = `${origin}/gateway`;
   const blocks = new Map<string, Uint8Array>();
   const calls: string[] = [];
   const original = globalThis.fetch;
@@ -37,9 +38,9 @@ function gatewayFixture() {
         input instanceof URL
           ? input
           : new URL(input instanceof Request ? input.url : input);
-      if (url.origin !== gateway) return original(input, options);
+      if (url.origin !== origin) return original(input, options);
       expect(options?.method ?? "GET").toBe("GET");
-      expect(url.pathname).toMatch(/^\/ipfs\//);
+      expect(url.pathname).toMatch(/^\/gateway\/ipfs\//);
       calls.push(url.pathname);
       const bytes = blocks.get(url.pathname.split("/").at(-1)!);
       return bytes

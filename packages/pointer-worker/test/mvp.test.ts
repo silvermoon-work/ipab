@@ -257,7 +257,11 @@ test(
       await mkdir(source);
       await writeFile(
         join(source, ".bundle.yaml"),
-        "name: Source\nentry:\n  path: main.cjs\n  contentType: text/plain\n",
+        "title: Source\nentry: main.cjs\ntype: .bundle-type.yaml\n",
+      );
+      await writeFile(
+        join(source, ".bundle-type.yaml"),
+        "contentType: text/plain\n",
       );
       await writeFile(
         join(source, "main.cjs"),
@@ -274,7 +278,18 @@ test(
       const project = join(work, "app");
       await mkdir(project);
       const { appSchema } = await import("@ipab/cli/devtools");
-      await writeFile(join(project, ".bundle.yaml"), JSON.stringify(appSchema));
+      await writeFile(
+        join(project, ".bundle.yaml"),
+        JSON.stringify({
+          title: "App",
+          entry: "app.json",
+          type: ".bundle-type.yaml",
+        }),
+      );
+      await writeFile(
+        join(project, ".bundle-type.yaml"),
+        JSON.stringify(appSchema),
+      );
       await writeFile(
         join(project, "app.json"),
         JSON.stringify({
@@ -291,7 +306,7 @@ test(
       );
       await writeFile(
         join(project, "ipab.build.yaml"),
-        "version: 1\nfiles:\n  - source: app.json\n    target: app.json\n  - source: main.cjs\n    target: resources/app.cjs\nimports: []\n",
+        "version: 1\nfiles:\n  - source: .bundle-type.yaml\n    target: .bundle-type.yaml\n  - source: app.json\n    target: app.json\n  - source: main.cjs\n    target: resources/app.cjs\nimports: []\n",
       );
       const built = await invoke(homeA, ["--json", "build", project]);
       expect(built, built.err).toMatchObject({ code: 0 });

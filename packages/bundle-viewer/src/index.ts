@@ -4,6 +4,7 @@ import {
   canonicalJson,
   encodeSchema,
   parseBundleManifest,
+  parseBundleType,
   parseData,
   validateSchemaValue,
 } from "@ipab/bundle/data";
@@ -108,11 +109,15 @@ export async function runBundleViewer(
       await readBytes(await contentRead(".bundle.yaml"), signal),
       1024 * 1024,
     );
-    if ((await encodeSchema(manifest)).cid.toString() !== schema.cid.toString())
+    const type = parseBundleType(
+      await readBytes(await contentRead(manifest.type), signal),
+      1024 * 1024,
+    );
+    if ((await encodeSchema(type)).cid.toString() !== schema.cid.toString())
       throw new Error("Content Bundle type does not match this viewer");
     const data = parseData(
-      await readBytes(await contentRead(manifest.entry.path), signal),
-      manifest.entry.contentType,
+      await readBytes(await contentRead(manifest.entry), signal),
+      type.contentType,
     );
     let work = 0;
     validateSchemaValue(schema, data, {

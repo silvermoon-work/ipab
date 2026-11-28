@@ -1,14 +1,4 @@
-name: Note
+title: Note
 description: A simple editable note
-entry:
-  path: data.json
-  schema:
-    type: object
-    additionalProperties: false
-    required: [title, text]
-    properties:
-      title:
-        type: string
-      text:
-        type: string
-  contentType: application/json
+entry: data.json
+type: .bundle-type.yaml

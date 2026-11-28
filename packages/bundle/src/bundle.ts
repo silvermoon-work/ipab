@@ -5,6 +5,7 @@ import { ContentBundleError } from "./errors.js";
 import {
   entryValidation,
   parseBundleManifest,
+  parseBundleType,
   parseData,
   safePath,
 } from "./parsing.js";
@@ -60,7 +61,7 @@ function contextual(
 ): ContentBundleError {
   if (cause instanceof ContentBundleError)
     return new ContentBundleError(
-      cause.code,
+      signal?.aborted ? "ABORTED" : cause.code,
       cause.message,
       cause.path || path,
       cause.pointer || pointer,
@@ -331,31 +332,43 @@ async function operation(
       limits.manifestBytes,
       charge,
     );
-    const schema = await encodeSchema(manifest, {
-      nodes: limits.nodes,
-      depth: limits.validationDepth,
-      jsonDepth: limits.jsonDepth,
-      schemaBytes: limits.schemaBytes,
-      charge,
-    });
+    let schema: SchemaBlock;
+    try {
+      schema = await encodeSchema(
+        parseBundleType(
+          await bytesAt(manifest.type, limits.manifestBytes),
+          limits.manifestBytes,
+          charge,
+        ),
+        {
+          nodes: limits.nodes,
+          depth: limits.validationDepth,
+          jsonDepth: limits.jsonDepth,
+          schemaBytes: limits.schemaBytes,
+          charge,
+        },
+      );
+    } catch (cause) {
+      throw contextual(cause, manifest.type, "", [], options.signal);
+    }
     if (expected && !schema.cid.equals(expected.cid))
       throw new ContentBundleError(
         "SCHEMA_INVALID",
         "Schema CID differs from the explicit validator.",
       );
-    const path = manifest.entry.path;
-    const validation = entryValidation(manifest.entry);
+    const path = manifest.entry;
+    const validation = entryValidation(schema.type);
     try {
       const bytes = await bytesAt(path, limits.documentBytes);
       if (validation.status !== "unsupported") {
         const value = parseData(
           bytes,
-          manifest.entry.contentType.toLowerCase(),
+          schema.type.contentType.toLowerCase(),
           limits.nodes,
           limits.jsonDepth,
           charge,
         );
-        if (manifest.entry.schema !== undefined)
+        if (schema.type.schema !== undefined)
           validateValue(schema, value, {
             charge,
             depth: limits.validationDepth,

@@ -3,10 +3,11 @@
 The generated App accepts one source: folder, named pin or CID, in that order.
 `--folder PATH` remains available to select folder mode explicitly. It provides
 automatic in-page updates and error recovery through the same viewer callback.
-The path is a local Bundle directory containing its exact `.bundle.yaml` and
-entry/resources; it is not an arbitrary document directory. Rebuild/import the
-App once after upgrading the framework/template. Content edits need no build,
-import or pin. See the [folder contract](../../packages/bundle-viewer).
+The path is a local Bundle directory containing its `.bundle.yaml`, referenced
+pure type file and entry/resources; it is not an arbitrary document directory.
+Rebuild/import the App once after upgrading the framework/template. Content
+edits need no build, import or pin. See the
+[folder contract](../../packages/bundle-viewer).
 
 This is a standard **data-only Project Template Bundle**, selectable through the
 existing explicit directory/CAR/CID template interface. It is not yet an
@@ -38,13 +39,15 @@ this declarative metadata is required in addition to the callback, not a second
 renderer implementation. Both entries import the same component.
 
 The example supports a Bundle named `IPAB Message` with a JSON `message.json`
-entry `{ "message": "..." }`. Its exact normalized `.bundle.yaml` definition
-must equal `schemas/content.json`. Build/import that Content Bundle with the
-existing bundle tools, build/import the reader App, register the exact type CID
-to the reader App, then `ipab open CONTENT_CID`. Direct
-`ipab exec APP_CID CONTENT_CID` also validates the type before serving.
-`--no-open` is preserved. The example's More/Less interaction is hydrated; its
-heading is already present in the initial HTTP HTML.
+entry `{ "message": "..." }`. Its referenced pure type file (usually
+`.bundle-type.yaml`) must equal `schemas/content.json`. Instance title,
+description and entry/type paths can vary without changing type identity.
+Build/import that Content Bundle with the existing bundle tools, build/import
+the reader App, register the exact type CID to the reader App, then
+`ipab open CONTENT_CID`. Direct `ipab exec APP_CID CONTENT_CID` also validates
+the type before serving. `--no-open` is preserved. The example's More/Less
+interaction is hydrated; its heading is already present in the initial HTTP
+HTML.
 
 Never access `window` or `document` during initial render. Browser-only
 navigation and responsive state must initialize deterministically and update in

@@ -120,27 +120,39 @@ describe("Worker consumers", { tags: ["unit"] }, () => {
   });
 
   it("validates type identity, descriptor and portable file paths before installation", async () => {
-    let manifest: unknown = definition;
+    let type: unknown = definition;
     let paths = ["worker.mjs"];
     const files = {
       appCid: "",
-      readFile: (_cid: string, path: string) =>
-        Promise.resolve(
+      readFile: (_cid: string, path: string) => {
+        expect([
+          ".bundle.yaml",
+          "types/worker.yaml",
+          "moved/descriptor.json",
+        ]).toContain(path);
+        return Promise.resolve(
           stream(
             JSON.stringify(
               path === ".bundle.yaml"
-                ? manifest
-                : {
-                    version: 1,
-                    files: paths,
-                    config: {
-                      main: "worker.mjs",
-                      compatibility_date: "2026-01-01",
+                ? {
+                    title: "Worker",
+                    entry: "moved/descriptor.json",
+                    type: "types/worker.yaml",
+                  }
+                : path === "types/worker.yaml"
+                  ? type
+                  : {
+                      version: 1,
+                      files: paths,
+                      config: {
+                        main: "worker.mjs",
+                        compatibility_date: "2026-01-01",
+                      },
                     },
-                  },
             ),
           ),
-        ),
+        );
+      },
     };
     await expect(readWorker(files, "input")).resolves.toMatchObject({
       paths: ["worker.mjs"],
@@ -154,7 +166,7 @@ describe("Worker consumers", { tags: ["unit"] }, () => {
       paths = invalid;
       await expect(readWorker(files, "input")).rejects.toThrow();
     }
-    manifest = { ...definition, name: "Other type" };
+    type = { ...definition, contentType: "application/yaml" };
     await expect(readWorker(files, "input")).rejects.toThrow("type");
   });
 

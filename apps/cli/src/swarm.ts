@@ -6,7 +6,7 @@ import { CarBlockIterator } from "@ipld/car/iterator";
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
-import { encodeSchema, openBundle, type BundleManifest } from "@ipab/bundle";
+import { encodeSchema, openBundle, type BundleType } from "@ipab/bundle";
 import {
   encodeBundleCar,
   memoryTree,
@@ -52,32 +52,25 @@ import { State } from "./state.js";
 
 const cidField = { type: "string", minLength: 1, maxLength: 128 } as const;
 function definition(
-  name: string,
   properties: Record<string, unknown>,
   required = Object.keys(properties),
-): BundleManifest {
+): BundleType {
   return {
-    name,
-    description: "",
-    entry: {
-      path: "entry.json",
-      contentType: "application/json",
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        required,
-        properties,
-      },
+    contentType: "application/json",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required,
+      properties,
     },
   };
 }
-export const swarmType = definition("IPAB Swarm", {
+export const swarmType = definition({
   service: { type: "string" },
   variable: { type: "string" },
   owner: { type: "string" },
 });
 export const artifactType = definition(
-  "IPAB Artifact",
   {
     value: cidField,
     previous: cidField,
@@ -85,7 +78,7 @@ export const artifactType = definition(
   },
   ["value", "timestamp"],
 );
-export const requestType = definition("IPAB Membership Request", {
+export const requestType = definition({
   swarm: cidField,
   member: { type: "string" },
   requestId: { type: "string" },
@@ -93,7 +86,7 @@ export const requestType = definition("IPAB Membership Request", {
   exp: { type: "integer" },
   signature: { type: "string" },
 });
-export const responseType = definition("IPAB Membership Response", {
+export const responseType = definition({
   swarm: cidField,
   request: cidField,
   certificate: { type: "object" },
@@ -204,22 +197,32 @@ function bindPointer(
 export async function typedJson<T>(
   store: IpfsStore,
   cid: string,
-  type: BundleManifest,
+  type: BundleType,
 ): Promise<T> {
   const { bundle, value } = await bundleJson(store, cid);
   if (bundle.schemaKey !== (await encodeSchema(type)).cid.toString())
-    throw new HostError(`Expected exact ${type.name} Bundle type.`);
+    throw new HostError("Expected exact Bundle type CID.");
   return value as T;
 }
 export async function jsonBundle(
   store: IpfsStore,
-  type: BundleManifest,
+  type: BundleType,
   value: unknown,
 ): Promise<string> {
   const encoded = await encodeBundleCar(
     memoryTree(
       new Map([
-        [".bundle.yaml", new TextEncoder().encode(stringify(type))],
+        [
+          ".bundle.yaml",
+          new TextEncoder().encode(
+            stringify({
+              title: "IPAB Data",
+              entry: "entry.json",
+              type: ".bundle-type.yaml",
+            }),
+          ),
+        ],
+        [".bundle-type.yaml", new TextEncoder().encode(stringify(type))],
         ["entry.json", new TextEncoder().encode(`${JSON.stringify(value)}\n`)],
       ]),
     ),
@@ -1068,10 +1071,7 @@ async function dependencies(
     const app = object(
       JSON.parse(
         new TextDecoder().decode(
-          await bytes(
-            await bundle.readFile(bundle.manifest.entry.path),
-            64 * 1024,
-          ),
+          await bytes(await bundle.readFile(bundle.manifest.entry), 64 * 1024),
         ),
       ) as unknown,
       "App",

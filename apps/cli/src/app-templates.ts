@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
 import { Liquid, type Template } from "liquidjs";
+import { parseBundleManifest } from "@ipab/bundle";
 import {
   listTree,
   readBytes,
@@ -248,7 +249,14 @@ export async function renderTemplate(
   options: AuthoringOptions & { parameters?: readonly string[] },
 ) {
   const definition = templateDefinition(
-    await readBytes(tree, "template.yaml", 64 * 1024, options),
+    await readBytes(
+      tree,
+      parseBundleManifest(
+        await readBytes(tree, ".bundle.yaml", 1024 * 1024, options),
+      ).entry,
+      64 * 1024,
+      options,
+    ),
   );
   const values = templateParameters(definition, name, options.parameters);
   const files = new Map<string, string | Uint8Array>();

@@ -503,10 +503,27 @@ export async function buildApp(
       flag: "wx",
       signal: options.signal,
     });
-    await writeFile(join(bundleStage, ".bundle.yaml"), stringify(appSchema), {
-      flag: "wx",
-      signal: options.signal,
-    });
+    await writeFile(
+      join(bundleStage, ".bundle.yaml"),
+      stringify({
+        title: description.name,
+        description: description.description,
+        entry: "app.json",
+        type: ".bundle-type.yaml",
+      }),
+      {
+        flag: "wx",
+        signal: options.signal,
+      },
+    );
+    await writeFile(
+      join(bundleStage, ".bundle-type.yaml"),
+      stringify(appSchema),
+      {
+        flag: "wx",
+        signal: options.signal,
+      },
+    );
     if (supportedSchemas)
       await writeFile(
         join(bundleStage, ...supportedSchemasPath.split("/")),
@@ -525,7 +542,7 @@ export async function buildApp(
             (part, index, parts) =>
               part.startsWith(".") &&
               !(
-                part === ".bundle.yaml" &&
+                [".bundle.yaml", ".bundle-type.yaml"].includes(part) &&
                 index === parts.length - 1 &&
                 index > 0
               ),

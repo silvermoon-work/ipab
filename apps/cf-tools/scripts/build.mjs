@@ -50,7 +50,18 @@ for (const mode of ["local", "deploy"]) {
     } finally {
       await supported.close();
     }
-    await writeFile(join(stage, ".bundle.yaml"), JSON.stringify(appSchema));
+    await writeFile(
+      join(stage, ".bundle.yaml"),
+      JSON.stringify({
+        title: `cf-${mode}`,
+        entry: "app.json",
+        type: ".bundle-type.yaml",
+      }),
+    );
+    await writeFile(
+      join(stage, ".bundle-type.yaml"),
+      JSON.stringify(appSchema),
+    );
     await writeFile(
       join(stage, "app.json"),
       JSON.stringify({

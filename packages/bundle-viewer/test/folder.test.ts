@@ -52,6 +52,19 @@ describe("bounded local folder snapshot", { tags: ["unit"] }, () => {
     controller.abort();
     await expect(stopped.readFile("large.md")).rejects.toThrow();
   });
+  it("includes the referenced type file in snapshot stability verification", async () => {
+    await writeFile(
+      join(root, ".bundle-type.yaml"),
+      "contentType: application/json\n",
+    );
+    const snapshot = await folderSnapshot(root, signal());
+    await snapshot.readFile(".bundle-type.yaml");
+    await writeFile(
+      join(root, ".bundle-type.yaml"),
+      "contentType: application/yaml\n",
+    );
+    await expect(snapshot.verify()).rejects.toThrow("changed during loading");
+  });
   it("rejects symbolic links without reading their targets", async () => {
     const target = join(root, "actual");
     await mkdir(target);

@@ -86,7 +86,7 @@ ipab register set <schema-cid> <app-cid> '--' '--cid' '%'
   可用 `exec --log APP [APP_ARGS...]` 或 `open --log CONTENT` 按次记录
   stdout／stderr；exec 的宿主 `--log` 必须在 APP 之前。
 - `open CONTENT`
-  校验存储完整性、路径、完整类型定义和入口数据，从 `.bundle.yaml`
+  校验存储完整性、路径、纯类型定义和入口数据，从 `.bundle.yaml` 引用的类型文件
   计算准确类型 CID，使用保存的
   Schema → App + argv 关联。没有 `--app` 或临时模板覆盖，也不自动选择应用。
   启动子进程前还要求所选 App 的 supportedSchemas CAR roots 包含输入的准确
@@ -159,10 +159,10 @@ GC 仅处理本轮开始时已枚举的 block。
 内置内容可直接用名字或准确 CID 供 Bundle 检查／模板初始化读取，
 不需要先导入用户 Store：
 
-| 内置 pin                   | 类型名                | 内容                    |
-| -------------------------- | --------------------- | ----------------------- |
-| `builtin:template.node`    | IPAB Project Template | 默认 Node 项目模板      |
-| `builtin:template.web-app` | IPAB Project Template | 前后端 Web App 项目模板 |
+| 内置 pin                   | 实例标题                      | 内容                    |
+| -------------------------- | ----------------------------- | ----------------------- |
+| `builtin:template.node`    | IPAB Node Project Template    | 默认 Node 项目模板      |
+| `builtin:template.web-app` | IPAB Web App Project Template | 前后端 Web App 项目模板 |
 
 内置 App／Template 类型 block 仍是离线类型定义来源，但不是 pin，
 不会出现在 `pin list/show` 或 `resolvePin` 中。
@@ -183,7 +183,7 @@ ipab init dashboard --template builtin:template.web-app
 - `pin add NAME CID` 要求未占用名字和准确 CID，不支持覆盖、replace 或名称链。
   CID 必须指向完整 Bundle，先校验定义、入口及完整 DAG，再建立持久保留。
   裸文件、无定义的目录、单独类型 block 或普通 DAG-CBOR 均拒绝；
-  图片等非结构化文件需与 `.bundle.yaml` 一起包装为 Bundle。
+  图片等非结构化文件需与 `.bundle.yaml` 和其类型文件一起包装为 Bundle。
   owner／retain／confirm 协调仅作用于本地。没有可获取内容的来源、缺块、损坏、类型
   校验或存储失败均非零，不凭空登记为成功。
 - `pin delete NAME` 释放该记录在**原后端**的保留责任并删除名字；不存在则失败。
@@ -193,13 +193,13 @@ ipab init dashboard --template builtin:template.web-app
   元数据、owner、register 和历史不变，不重新获取，也不执行 unpin → pin。
 - `pin list [--type TYPE]` 只列 IPAB 管理的可用 Bundle pin，
   不冒充上游节点的 pin 清单。`pin show NAME` 显示完整名字、CID、
-  非空类型名和准确类型 CID；`--kind` 已移除。
+  非空实例 title 和准确类型 CID；`--kind` 已移除。
 - `--type` 接受准确类型 CID或可用 Bundle pin 的名称，名称解析为该 Bundle 的
   类型 CID，不是其内容 CID；可使用内置模板 pin。
   不以可能重复的类型名称作为身份，不使用 `app.json` 的应用名称代替类型名。
   例如 `ipab pin list --type reader` 或
   `ipab pin list --type builtin:template.node`。
-- 类型识别复用 Bundle 校验，类型名来自完整定义的 `name`，不是 App 显示名；
+- 类型识别复用 Bundle 校验，显示标题来自 manifest 的 `title`，不伪造类型名；
   不 catch 校验失败并降级为普通内容。存储完整性通过不表示未知 MIME
   的入口业务校验已执行，具体能力仍遵循 Bundle 的校验报告。
   add 保存校验得到的类型元数据；list/show 只读用户登记与内置内容，不隐式联网或宣称刚
@@ -214,7 +214,7 @@ ipab init dashboard --template builtin:template.web-app
 
 pin 不意味着执行、安装依赖或信任 App；IPAB 不启动／配置 daemon、不自动换后端。
 `--json pin list` 返回 `items`、`pending`、`invalid`；成功项包含完整
-`name`、`cid`、`kind: "bundle"`、非空 `typeName` 和准确 `schemaCid`；
+`name`、`cid`、`kind: "bundle"`、非空实例 `title` 和准确 `schemaCid`；
 内置项另有 `builtin: true`，用户项保持原字段形状。
 
 旧版本的非 Bundle pin 不自动删除、转换或解除保留，list 将其单列为
@@ -261,7 +261,8 @@ App
 省略 DIR 时创建 NAME 目录。目标必须不存在或为空，没有覆盖
 源码的 force 选项。默认 Node 模板生成 `package.json`、严格
 `tsconfig.json`、`src/main.ts`、
-`ipab.yaml`、源码类型 `.bundle.yaml` 和 `.gitignore`；**不安装依赖**。脚本为普通
+`ipab.yaml`、源码 manifest `.bundle.yaml`、纯类型 `.bundle-type.yaml` 和
+`.gitignore`；**不安装依赖**。脚本为普通
 `tsc --noEmit` 与项目准备后调用通用打包器的 `build`，不声明不存在的 registry
 `@ipab/cli` 版本。
 项目声明准确稳定的 TypeScript `6.0.3` 和 `@types/node` `26.6.6`；
@@ -290,9 +291,11 @@ Template Bundle；Node 与 Web App 模板在 CLI 构建时生成经过校验的 
 不返回生成内容的 `schemaCid`：通用模板的输出不一定是 App 或 Bundle。
 未固化目录由同一确定性 Builder 计算身份，不写 CAR 或 Store。
 
-专用完整 `.bundle.yaml` 定义由 `template-definition.ts` 的 `templateSchema`
-唯一确定，入口固定为 `template.yaml`（YAML）。其准确类型 CID 为
-`bafyreihydmyx5qvemxlidzyc7yflwxnidllorpaq7xoxlh264ozjnalqra`；
+专用纯类型 `.bundle-type.yaml` 定义由 `template-definition.ts` 的
+`templateSchema`
+唯一确定，入口由 manifest.entry 指定（通常为
+`template.yaml`）。其准确类型 CID 为
+`bafyreieosvcalrhqa3brr3zmxuoryztfmqez2y5ugb37kgrsamvq6n6v5u`；
 离线类型快捷名为 `builtin:project-template.v1`，不是可执行 App／模板内容选择器。
 创建模板时复制完整模板类型定义，自行编写 `template.yaml` 与 `project/` 数据树。
 类型定义不包含默认入口，不能从 Schema 自动生成项目：
@@ -368,26 +371,13 @@ ipab init dashboard --template .\templates\web-app\dist\bundle.car `
 模板 CAR 只包含模板数据和项目文件，不包含构建后的 Web App、框架依赖或自己的
 `dist/` 输出。使用本地框架时先构建框架，再在生成项目内显式安装依赖。
 
-旧显式本地目录中的 `ipab-template.json` v1 暂时兼容（不接受 `--param`）；
-有 `.bundle.yaml` 时必须按新的 Bundle 契约验证，不能降级绕过校验。
-旧源文件按明确清单复制：
-
-```json
-{
-  "version": 1,
-  "files": [
-    { "source": "package.json", "target": "package.json", "render": true },
-    { "source": "ipab.json", "target": "ipab.json" },
-    { "source": "src/main.ts", "target": "src/main.ts" }
-  ]
-}
-```
-
-`render: true` 的文件必须是 UTF-8，可用 `{{name}}` 替换项目名；未知变量失败。
-未启用 render 的文件按原始字节复制，可包含二进制资源。目标必须包含
-`package.json` 和 `ipab.json`；拒绝穿越、符号链接、路径碰撞及
-`node_modules`／`.git`／`dist` 路径。最多 256 个文件，单文件 1 MiB、总计 8 MiB。
-清单本身不执行；只有用户之后显式构建才执行项目代码。
+无 `.bundle.yaml` 的显式本地目录仍支持独立 `ipab-template.json` v1 文件映射：
+`files: [{source, target, render?}]`，`render: true` 使用 `{{name}}` 替换，
+其他文件保留原始字节。它不解析 Bundle profile，不接受 `--param`，不执行脚本。
+输出须包含 package.json/ipab.json，路径／大小写碰撞、符号链接与既有字节预算仍检查。
+只要 `.bundle.yaml`
+存在，就严格使用拆分 Bundle 协议；旧／非法 manifest 或缺失类型文件
+不能降级到映射。
 
 ### 项目 `ipab-prebuild` 策略
 
@@ -517,7 +507,8 @@ app:
 i18n 与类型源文件。
 可选功能默认关闭，不生成虚构 icon／Schema 或空目录占位文件。启用 icon 时创建
 `assets/icon.png`，将 resources 的 `[]` 替换为 `[assets/icon.png]`，再取消 icon
-行的注释。启用类型时创建完整定义 `schemas/note.json`，将 supportedSchemas
+行的注释。启用类型时创建纯类型对象
+`schemas/note.json`（仅 contentType/schema），将 supportedSchemas
 的 `[]` 替换为 `[schemas/note.json]`。已有 `ipab.json` 仍支持；迁移时转换为
 `ipab.yaml` 并删除旧文件。只允许这两种配置且必须恰好存在一个，拒绝二者并存。
 两种格式使用严格数据解析，拒绝重复键、未知字段／非法类型；注释和格式不参与
@@ -535,7 +526,8 @@ App 身份。不加载 JS 配置、不执行 hooks。
   无 glob、目录扫描或符号链接。资源在 App Bundle 内为
   `resources/assets/message.txt`。App 本体不打包源码、node_modules、配置、
   `.env` 或未选中的资源；可信 prebuild 的目录资源允许嵌套 Bundle 的
-  `.bundle.yaml` 文件，其他隐藏文件与目录仍拒绝。应用通过自己的 App CID 和 Space
+  `.bundle.yaml` 与 `.bundle-type.yaml`
+  文件，其他隐藏文件与目录仍拒绝。应用通过自己的 App CID 和 Space
   context 读取资源，
   不依赖 materialized 程序旁的本地文件。
 - supportedSchemas 默认为 `[]`，旧源配置省略也按空处理。只接受 `schemas/`
@@ -561,7 +553,8 @@ App 身份。不加载 JS 配置、不执行 hooks。
   supportedSchemas 路径；空列表不生成文件或字段。坏／缺源定义使整次构建失败，
   保留旧 CAR，仅清理本次自有数据。
 
-- 每次使用全新唯一自有 staging，写入完整内置 `.bundle.yaml` 和默认 `app.json`，
+- 每次使用全新唯一自有 staging，写入实例 `.bundle.yaml`、内置
+  `.bundle-type.yaml` 和默认 `app.json`，
   再复用 Bundle Builder 固化 CAR／CID。失败不打包旧程序或旧资源，
   只清理本次 staging，不清空 `dist`、旧 staging 或 Store。
 - 默认 `dist/app.car`；沿用 `bundle.outputDir` 配置及其环境覆盖，
@@ -588,10 +581,12 @@ ipab publish .\dist\app.car --name apps/hello
 
 启用时生成独立 Content Bundle CAR：默认 `dist/app.source.car`，显式输出
 `release.car` 时为同目录 `release.source.car`。源码完整类型定义放在项目根
-`.bundle.yaml`；内置 Node/Web 模板生成 `IPAB App Source` 定义，以 `package.json`
-为 JSON object 入口，其余项目文件为资源。已有项目未提供定义时，在源码快照中
-使用此默认定义，不修改项目目录；已有定义必须正常通过通用 Bundle 校验，不降级。
-根定义、入口及明确选择的构建输入被忽略时失败，提示修正规则或禁用源码包。
+`.bundle.yaml` 引用 `.bundle-type.yaml`；内置 Node/Web 模板生成
+`IPAB App Source` 实例，以 `package.json`
+为 JSON object 入口，其余项目文件为资源。没有 manifest 的项目会在源码快照中生成
+新拆分协议的默认 manifest／类型文件，不修改项目目录。已有 manifest 必须严格通过
+通用 Bundle 校验；旧 profile 或缺失引用类型文件不补全、不降级。
+根 manifest、类型文件、入口及明确选择的构建输入被忽略时失败，提示修正规则或禁用源码包。
 
 源码来自当前工作目录内容，包含未提交、未跟踪且未忽略的文件，不是 Git HEAD。
 使用项目根及子目录的 `.gitignore`，支持目录剪枝、否定和子目录覆盖；
@@ -644,22 +639,22 @@ name／email／license／icon／version／supportedSchemas 路径的文本上限
 `ipab.yaml.app`（或旧 `ipab.json.app`）可覆盖这些字段并添加 icon/i18n；
 不可覆盖生成的 entry、supportedSchemas 或 source。脚手架显式展示 name/version/description，
 删除某个覆盖字段即可继承 package.json，描述未提供时为空。`.bundle.yaml`
-的 name/description
-命名共享 Node App 类型，不是单个 App；单个 App 元数据变化会改变内容根 CID，
+的 title/description 描述单个 App 实例，`.bundle-type.yaml` 定义共享纯类型；
+单个 App 元数据变化会改变内容根 CID，
 不会改变共享类型 CID。
 
 离线 alias `builtin:node-app.v1` 对应完整定义和 canonical DAG-CBOR CID：
-`bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq`。
+`bafyreifualoac4ddlzl63jlfstz4xsq75cai5t6ywu3j3khhyukoccmybm`。
 alias 可用于 bundle inspect 与 register set/remove；状态只保存 CID。
 这是有意的未发布协议迁移：旧 App 类型 CID 不再执行，app.json 的冗余
-profile/runtime 字段仍被拒绝。本次移除 entry.defaultValue 改变了共享类型身份，
+profile/runtime 字段仍被拒绝。本次实例／纯类型拆分改变了共享类型身份，
 旧 App CID 不被静默接受；旧包应重建并显式更新 pin/register，不自动迁移。
 Node 执行契约由完整类型 CID 唯一确定，不由 license 或 metadata 开关选择。
 
 app.json 的可选 supportedSchemas 是安全的 `resources/` 普通文件路径，必须存在，
 不可碰撞程序入口或控制文件；外部手工构建的 App 也须遵守。loader 在任何执行
 （包括 exec）前验证此嵌套 CAR。它是非空、多根 Schema collection：每个 root
-都必须为完整归一化 Bundle 定义的 CIDv1/DAG-CBOR/SHA-256，单 block 最多
+都必须为纯类型对象的 CIDv1/DAG-CBOR/SHA-256，单 block 最多
 1 MiB；必须含所有 roots，拒绝重复 roots／block records、额外 block、坏 hash、
 非 canonical 定义或非法 Schema。复用现有文件数、字节、深度和聚合
 work 预算，拒绝空的已声明 CAR。该声明不解析或改写 argv，exec 不做输入类型匹配。
@@ -669,15 +664,16 @@ work 预算，拒绝空的已声明 CAR。该声明不解析或改写 argv，exe
 
 ## Bundle 开发（底层）
 
-目录根 `.bundle.yaml` 本身就是完整类型定义，包含必填 `name`、
-缺省为空字符串的 `description` 和
-`entry: { path, contentType, schema? }`。入口路径和 MIME 是固定契约，
-`schema` 可选，采用标准 JSON Schema Draft 2020-12；缺省 `$schema` 即该版本，
+目录根 `.bundle.yaml` 是实例 manifest，只允许必填非空 `title`、
+可选 `description`（缺省空串）和必填安全相对文件路径字符串 `entry`、`type`。
+引用的类型文件通常为 `.bundle-type.yaml`，只允许必填合法 MIME `contentType`
+与可选标准 JSON Schema Draft 2020-12 `schema`；缺省 `$schema` 即该版本，
 显式声明仅接受 `https://json-schema.org/draft/2020-12/schema`。
 Schema 字面值保留，不注入 `$schema`、不应用 `default` 或删除字段；
-省略 schema 和显式 true 的类型身份不同。`entry.defaultValue` 已移除并被拒绝。
-完整定义的 canonical DAG-CBOR CID 用于注册；
-实际数据修改不改变类型 CID。
+省略 schema 和显式 true 的类型身份不同。旧嵌套 entry、name 和 defaultValue 被拒绝。
+纯类型对象的 canonical DAG-CBOR / SHA-256 / CIDv1 用于注册；
+title、description、entry/type 路径与实际数据修改均不改变类型 CID。
+全部原始文件字节仍参与 UnixFS 内容根。
 
 `contentType` 接受合法 MIME（含合法参数），不根据扩展名推测格式。
 `application/json`、`application/yaml`、`application/jsonl` 和 `text/markdown`
@@ -685,7 +681,7 @@ Schema 字面值保留，不注入 `$schema`、不应用 `default` 或删除字�
 即使声明 schema，也只检查 Schema 本身，不声称已校验不支持解码的入口。
 当前解析器忽略 MIME 大小写，但不剥离参数；带参数 MIME 合法，入口报告 unsupported。
 省略 schema 不约束解码值；有 schema 时验证实际入口，不生成数据。
-Markdown 的 `entry.schema` 只约束文件开头 YAML frontmatter
+Markdown 的纯类型 `schema` 只约束文件开头 YAML frontmatter
 对象，不约束正文。准确 `---` 行包围 frontmatter，支持 LF／CRLF；
 缺省或空 frontmatter 视为 `{}`，能否通过由 Schema 决定。
 未闭合 frontmatter、重复键、非对象数据及非法 YAML 明确失败。
@@ -702,7 +698,7 @@ format 仅作 annotation；支持文档内指针／anchor 与嵌套 $id，不加
 `node .\apps\cli\dist\main.js`）：
 
 ```powershell
-ipab bundle build .\examples\note-type\.bundle.yaml --schema-only --no-import
+ipab bundle build .\examples\note-type\.bundle-type.yaml --schema-only --no-import
 Copy-Item -Recurse .\examples\note-type .\my-note
 ipab bundle build .\my-note --no-import
 ipab --json bundle inspect .\my-note\dist\bundle.car
@@ -757,7 +753,8 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
 ### Agent Skill Bundle
 
 [示例目录](../examples/agent-skill)提供可复用的完整
-[类型定义](../examples/agent-skill/.bundle.yaml)，固定入口为 `SKILL.md`、
+[类型定义](../examples/agent-skill/.bundle-type.yaml)，示例 manifest 选择
+`SKILL.md`、
 `contentType: text/markdown`，遵循
 [Agent Skills 字段规范](https://agentskills.io/specification)：
 
@@ -781,13 +778,13 @@ Skill 的发现、渐进加载和执行仍由 Agent 适配层负责。
 ```powershell
 ipab bundle build .\examples\agent-skill --no-import
 ipab --json bundle inspect .\examples\agent-skill\dist\bundle.car
-ipab bundle build .\examples\agent-skill\.bundle.yaml --schema-only --no-import
+ipab bundle build .\examples\agent-skill\.bundle-type.yaml --schema-only --no-import
 ```
 
 类型 CAR 可以单独共享，但不是生成数据的模板。复制示例或通过通用 Template
 Bundle 生成实际 SKILL.md，自行补充指令和可选
 `scripts/`、`references/`、`assets/`。
-复用类型时保持完整定义不变，只修改实际
+复用类型时保持纯类型定义不变，实例可选择其他安全入口／类型文件路径，只修改实际
 `SKILL.md` 的元数据、正文和资源。
 当前 Bundle 仍要求完整 `entry`；无入口资源类型尚未引入。
 
@@ -937,11 +934,13 @@ Schema、
 当前协议、标准 Draft 2020-12 Schema、引用边界和共享预算见
 [Bundle runtime](../packages/bundle/README.md)，构建接口见
 [Bundle builder](../packages/bundle-builder/README.md)。
-完整 `.bundle.yaml` 定义直接编码为一个 DAG-CBOR block；编码后最多
+引用的纯类型文件对象直接编码为一个 DAG-CBOR block；编码后最多
 1 MiB，超限不分块。入口 Schema 支持 `$defs` 与本地 JSON Pointer `$ref`，
-不接受外部引用。`encodeSchema` 的输入是完整定义，不再是裸 JSON Schema。
+不接受外部引用。`encodeSchema` 的输入是纯类型对象，不是 manifest 或裸 JSON
+Schema。
 CAR 携带准确类型 block；保留内容根即可从定义重建类型，无需读取外部 Schema。
-旧 `entry.schemaCid` manifest 已移除；类型 CID 单独读取时仍须有对应 block。
+旧完整 `.bundle.yaml` profile 和 `entry.schemaCid`
+manifest 均拒绝；类型 CID 单独读取时仍须有对应 block。
 旧 Schema Bundle 目录、descriptor、builtin 注册键和专用 Builder 已移除，
 旧包须重建、更新 manifest 并按新 CID 重新注册，不提供自动迁移。
 `x-content-ref` 扩展和递归内容依赖校验

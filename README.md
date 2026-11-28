@@ -104,7 +104,8 @@ ipab exec reader
 ```
 
 `pin add` 只接受完整 Bundle，获取、验证并保留它，同时设置短名和类型信息；
-裸文件需先与 `.bundle.yaml` 包装，独立类型 block 不能 pin。
+裸文件需先与 `.bundle.yaml` 和其引用的 `.bundle-type.yaml`
+包装，独立类型 block 不能 pin。
 它不会运行应用或安装依赖。
 `exec` 也可以直接接受 App CID，应用名之后的参数会原样传给应用。
 

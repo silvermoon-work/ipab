@@ -103,27 +103,27 @@ describe(
       const encoded = await encodeSchema(appSchema);
       expect(encoded.cid.equals(appSchemaCid)).toBe(true);
       expect(encoded.cid.toString()).toBe(
-        "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
+        "bafyreifualoac4ddlzl63jlfstz4xsq75cai5t6ywu3j3khhyukoccmybm",
       );
       const legacy = {
         ...appSchema,
-        entry: {
-          ...appSchema.entry,
-          schema: {
-            ...appSchema.entry.schema,
-            properties: Object.fromEntries(
-              Object.entries(appSchema.entry.schema.properties).filter(
-                ([key]) => key !== "source",
-              ),
+        schema: {
+          ...appSchema.schema,
+          properties: Object.fromEntries(
+            Object.entries(appSchema.schema.properties).filter(
+              ([key]) => key !== "source",
             ),
-          },
+          ),
         },
       };
-      expect((await encodeSchema(legacy)).cid.toString()).toBe(
-        "bafyreigtn57hsga6hczap6qddxzjotdwju4c2navp7a3lopqgclomhropu",
-      );
+      expect((await encodeSchema(legacy)).cid.equals(encoded.cid)).toBe(false);
       const root = await importFiles(work.store, {
-        ".bundle.yaml": JSON.stringify(legacy),
+        ".bundle.yaml": JSON.stringify({
+          title: "Untitled App",
+          entry: "app.json",
+          type: ".bundle-type.yaml",
+        }),
+        ".bundle-type.yaml": JSON.stringify(legacy),
         "app.json": JSON.stringify({
           name: "Untitled App",
           version: "0.0.0",
@@ -164,6 +164,20 @@ describe(
         await owner.release();
       }
       expect(state.hold(owner.owner)).toBeUndefined();
+    });
+    it("executes an App whose descriptor was moved without changing its type identity", async () => {
+      const root = await app(
+        work.store,
+        "process.stdout.write('moved descriptor');",
+        undefined,
+        "metadata/description.json",
+      );
+      const result = await subprocess(
+        ["--state-dir", work.stateDir, "exec", root],
+        config,
+      );
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout.toString()).toBe("moved descriptor");
     });
 
     it.each([false, true])(
@@ -468,7 +482,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       const supported = await encodeSchema(input.definition);
       const other = await encodeSchema({
         ...input.definition,
-        name: "Other type",
+        contentType: "application/yaml",
       });
       const source =
         "process.stdout.write(JSON.stringify(process.argv.slice(2)));";
@@ -532,7 +546,7 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       const schema = await encodeSchema(input.definition);
       const other = await encodeSchema({
         ...input.definition,
-        name: "Other type",
+        contentType: "application/yaml",
       });
       const owner = await Ownership.create(
         state,
@@ -618,7 +632,12 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       );
       try {
         const files = {
-          ".bundle.yaml": JSON.stringify(appSchema),
+          ".bundle.yaml": JSON.stringify({
+            title: "App",
+            entry: "app.json",
+            type: ".bundle-type.yaml",
+          }),
+          ".bundle-type.yaml": JSON.stringify(appSchema),
           "resources/app.cjs": "throw new Error('must not execute');",
         };
         for (const supportedSchemas of [
@@ -661,7 +680,12 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       "enforces Node entry paths outside the structural schema: %s",
       async (entry) => {
         const root = await importFiles(work.store, {
-          ".bundle.yaml": JSON.stringify(appSchema),
+          ".bundle.yaml": JSON.stringify({
+            title: "App",
+            entry: "app.json",
+            type: ".bundle-type.yaml",
+          }),
+          ".bundle-type.yaml": JSON.stringify(appSchema),
           "app.json": JSON.stringify({
             name: "Fixture App",
             version: "0.0.0",
@@ -685,7 +709,12 @@ process.stderr.write(JSON.stringify(process.argv.slice(2)) + "\\n");
       },
     );
     const files = {
-      ".bundle.yaml": JSON.stringify(appSchema),
+      ".bundle.yaml": JSON.stringify({
+        title: "App",
+        entry: "app.json",
+        type: ".bundle-type.yaml",
+      }),
+      ".bundle-type.yaml": JSON.stringify(appSchema),
       "resources/app.cjs": 'process.stdout.write("licensed app still runs");',
       "resources/icon.svg": "<svg/>",
     };

@@ -349,7 +349,7 @@ const commandHelp: Record<
     ],
     notes: [
       "Recipe explicitly maps source files and exact CID imports to target paths.",
-      "Type and entry come from .bundle.yaml; imported DAG identities are preserved.",
+      "Instance paths come from .bundle.yaml; the referenced file defines the type. Imported DAG identities are preserved.",
       "Legacy App ipab.yaml is rejected; use project preparation tools separately.",
       "Select explicit files; review private files before providing Bundles.",
       "Store failures preserve the CAR; retry with ipab bundle import FILE.car.",
@@ -366,7 +366,7 @@ const commandHelp: Record<
     ],
     examples: [
       "ipab bundle build note",
-      "ipab bundle build types\\.bundle.yaml --schema-only",
+      "ipab bundle build types\\.bundle-type.yaml --schema-only",
     ],
     notes: [
       "Imports into the configured Store without pinning or executing Apps.",
@@ -1529,7 +1529,7 @@ async function performCli(
           } else
             emit(
               result,
-              `Kind: ${result.kind}\nName: ${printable(result.name)}\nSchema CID: ${result.schemaCid}\nEntry: ${result.entry.path} (${result.entry.contentType})\nDefinition validation: passed\nStorage verification: ${result.validation.storage}\nEntry validation: ${result.validation.entry?.status ?? "not-applicable"}`,
+              `Kind: ${result.kind}\n${result.manifest ? `Title: ${printable(result.manifest.title)}\nEntry: ${result.manifest.entry}\nType file: ${result.manifest.type}\n` : ""}Type CID: ${result.schemaCid}\nContent type: ${result.type.contentType}\nDefinition validation: passed\nStorage verification: ${result.validation.storage}\nEntry validation: ${result.validation.entry?.status ?? "not-applicable"}`,
             );
         } catch (cause) {
           if (cancelled)
@@ -1583,12 +1583,13 @@ async function performCli(
         emit(
           { items: listed, pending, invalid },
           table(
-            ["NAME", "CID", "KIND", "BUNDLE TYPE", "SOURCE"],
+            ["NAME", "CID", "KIND", "TITLE", "TYPE CID", "SOURCE"],
             listed.map((pin) => [
               pin.name,
               pin.cid,
               pin.kind,
-              pin.typeName,
+              pin.title,
+              pin.schemaCid,
               pin.builtin ? "built-in (read-only)" : "user",
             ]),
             "No named pins.",
@@ -1606,7 +1607,7 @@ async function performCli(
         );
         emit(
           result,
-          `${result.name} → ${result.cid}\nBundle type: ${printable(result.typeName)}`,
+          `${result.name} → ${result.cid}\nTitle: ${printable(result.title)}\nType CID: ${result.schemaCid}`,
         );
         break;
       }
@@ -1627,7 +1628,7 @@ async function performCli(
         const result = pinDetails(pin);
         emit(
           result,
-          `Name: ${printable(result.name)}\nCID: ${result.cid}\nBundle type: ${printable(result.typeName)}\nSchema CID: ${result.schemaCid}\nSource: ${result.builtin ? "built-in (read-only; content bundled with IPAB)" : "local registration (not live node verification)"}`,
+          `Name: ${printable(result.name)}\nCID: ${result.cid}\nTitle: ${printable(result.title)}\nType CID: ${result.schemaCid}\nSource: ${result.builtin ? "built-in (read-only; content bundled with IPAB)" : "local registration (not live node verification)"}`,
         );
         break;
       }

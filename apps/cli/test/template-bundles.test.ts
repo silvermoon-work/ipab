@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
@@ -48,6 +48,17 @@ const tree = (
 ) =>
   memoryTree(
     new Map([
+      [
+        ".bundle.yaml",
+        encode(
+          stringify({
+            title: "Template",
+            entry: "template.yaml",
+            type: ".bundle-type.yaml",
+          }),
+        ),
+      ],
+      [".bundle-type.yaml", encode(stringify(templateSchema))],
       ["template.yaml", encode(stringify(entry))],
       ...files.map(
         ([path, bytes]) =>
@@ -166,7 +177,15 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
   ) {
     const root = join(work.root, "template");
     await mkdir(join(root, "project", "src"), { recursive: true });
-    await writeFile(join(root, ".bundle.yaml"), stringify(templateSchema));
+    await writeFile(
+      join(root, ".bundle.yaml"),
+      stringify({
+        title: "Template",
+        entry: "template.yaml",
+        type: ".bundle-type.yaml",
+      }),
+    );
+    await writeFile(join(root, ".bundle-type.yaml"), stringify(templateSchema));
     await writeFile(join(root, "template.yaml"), stringify(entry));
     await writeFile(join(root, "project", "package.json.liquid"), file);
     await writeFile(
@@ -203,9 +222,33 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
     expect(created.files).not.toContain("template.yaml");
     expect(created.kind).toBe("project-init");
     expect(created).not.toHaveProperty("schemaCid");
-    expect((await inspectBundle(templateBuiltinAlias)).entry.path).toBe(
-      "template.yaml",
+    expect((await inspectBundle(templateBuiltinAlias)).type).toEqual(
+      templateSchema,
     );
+  });
+  it("renders a Template with a moved entry through directory, CAR and CID consumers", async () => {
+    const source = await bundle();
+    await mkdir(join(source, "metadata"));
+    await rename(
+      join(source, "template.yaml"),
+      join(source, "metadata", "template.yaml"),
+    );
+    await writeFile(
+      join(source, ".bundle.yaml"),
+      stringify({
+        title: "Moved template",
+        entry: "metadata/template.yaml",
+        type: ".bundle-type.yaml",
+      }),
+    );
+    const built = await buildBundle(source);
+    const car = await readCar(built.output, {});
+    for (const reference of [source, built.output, built.cid]) {
+      const rendered = await appTemplate(reference, "moved", {
+        resolveCid: car.resolveCid,
+      });
+      expect(rendered.files.get("package.json")).toBe('"moved"\n');
+    }
   });
   it("exposes complete read-only builtin pins and resolves their content without a Store", async () => {
     const builtins = await builtinContent();
@@ -336,14 +379,27 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
     await scaffoldFiles(
       source,
       new Map([
-        [".bundle.yaml", stringify(templateSchema)],
+        [
+          ".bundle.yaml",
+          stringify({
+            title: "Template",
+            entry: "template.yaml",
+            type: ".bundle-type.yaml",
+          }),
+        ],
+        [".bundle-type.yaml", stringify(templateSchema)],
         ["template.yaml", stringify(definition)],
         [
           "project/.bundle.yaml",
           stringify({
-            name: "Markdown document",
-            entry: { path: "README.md", contentType: "text/markdown" },
+            title: "Markdown document",
+            entry: "README.md",
+            type: ".bundle-type.yaml",
           }),
+        ],
+        [
+          "project/.bundle-type.yaml",
+          stringify({ contentType: "text/markdown" }),
         ],
         ["project/README.md.liquid", "# {{ name }}\n{{ description }}\n"],
       ]),
@@ -385,7 +441,7 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
         name: "My Document",
         directory: target,
         templateCid: built.cid,
-        files: [".bundle.yaml", "README.md"],
+        files: [".bundle-type.yaml", ".bundle.yaml", "README.md"],
       });
       expect(JSON.parse(created.out) as unknown).not.toHaveProperty(
         "schemaCid",
@@ -470,8 +526,11 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
   it("rejects wrong Bundle types, missing Store and incomplete CAR without writing output", async () => {
     const source = await bundle();
     await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({ ...templateSchema, name: "Other type" }),
+      join(source, ".bundle-type.yaml"),
+      stringify({
+        ...templateSchema,
+        schema: { ...templateSchema.schema, title: "Other type" },
+      }),
     );
     await expect(appTemplate(source, "demo", {})).rejects.toThrow(
       "exact builtin",

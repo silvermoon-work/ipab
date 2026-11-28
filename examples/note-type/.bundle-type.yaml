@@ -1,0 +1,10 @@
+schema:
+  type: object
+  additionalProperties: false
+  required: [title, text]
+  properties:
+    title:
+      type: string
+    text:
+      type: string
+contentType: application/json

@@ -77,13 +77,8 @@ describe(
     const origin = "https://pointers.example";
     const fixtureId = toBase64Url(new Uint8Array(32).fill(5));
     const noteType = {
-      name: "Note",
-      description: "",
-      entry: {
-        path: "entry.json",
-        contentType: "application/json",
-        schema: { type: "object" },
-      },
+      contentType: "application/json",
+      schema: { type: "object" },
     } as const;
     let work: string, store: IpfsStore, a: SwarmContext, b: SwarmContext;
     let root = "",
@@ -814,6 +809,16 @@ describe(
           new Map([
             [
               ".bundle.yaml",
+              new TextEncoder().encode(
+                JSON.stringify({
+                  title: "Note",
+                  entry: "entry.json",
+                  type: ".bundle-type.yaml",
+                }),
+              ),
+            ],
+            [
+              ".bundle-type.yaml",
               new TextEncoder().encode(JSON.stringify(noteType)),
             ],
             ["entry.json", new TextEncoder().encode('{"text":"CAR"}')],
@@ -880,6 +885,16 @@ describe(
           new Map([
             [
               ".bundle.yaml",
+              new TextEncoder().encode(
+                JSON.stringify({
+                  title: "App",
+                  entry: "app.json",
+                  type: ".bundle-type.yaml",
+                }),
+              ),
+            ],
+            [
+              ".bundle-type.yaml",
               new TextEncoder().encode(JSON.stringify(appSchema)),
             ],
             [

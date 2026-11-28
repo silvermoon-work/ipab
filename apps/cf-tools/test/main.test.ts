@@ -162,7 +162,11 @@ describe("bootstrap execution", { tags: ["mock"] }, () => {
       status: "dry-run",
     });
     expect(JSON.parse(outputs.get(".bundle.yaml")!)).toMatchObject({
-      entry: { path: "result.json", contentType: "application/json" },
+      entry: "result.json",
+      type: ".bundle-type.yaml",
+    });
+    expect(JSON.parse(outputs.get(".bundle-type.yaml")!)).toEqual({
+      contentType: "application/json",
     });
     process.argv.push("--deploy");
     await main("deploy");

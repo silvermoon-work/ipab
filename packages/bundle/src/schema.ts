@@ -1,12 +1,12 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { Check, Errors } from "typebox/schema";
 import { ContentBundleError } from "./errors.js";
-import { assertJson, record, normalizeBundleManifest } from "./parsing.js";
+import { assertJson, record, normalizeBundleType } from "./parsing.js";
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import type {
-  BundleManifest,
+  BundleType,
   JsonSchema,
   SchemaDefinitions,
   SchemaBlock,
@@ -18,7 +18,7 @@ const meta = new Ajv2020({ strict: false, validateFormats: false });
 
 export function declaresBundleSchema(bytes: Uint8Array): boolean {
   const value: unknown = dagCbor.decode(bytes);
-  return record(value) && Object.hasOwn(value, "entry");
+  return record(value) && Object.hasOwn(value, "contentType");
 }
 export interface SchemaOptions {
   nodes?: number;
@@ -347,7 +347,7 @@ function checkSize(bytes: Uint8Array, options: SchemaOptions): void {
 function schemaBlock(
   cid: CID,
   bytes: Uint8Array,
-  definitions: SchemaDefinitions & { manifest: BundleManifest },
+  definitions: SchemaDefinitions & { type: BundleType },
 ): SchemaBlock {
   const identity = Uint8Array.from(cid.bytes);
   const encoded = Uint8Array.from(bytes);
@@ -364,11 +364,11 @@ function schemaBlock(
 export function inspectBundleSchema(
   value: unknown,
   options: SchemaOptions = {},
-): SchemaDefinitions & { manifest: BundleManifest } {
-  let manifest: BundleManifest;
+): SchemaDefinitions & { type: BundleType } {
+  let type: BundleType;
   try {
     assertJson(value, options.nodes, options.jsonDepth, options.charge);
-    manifest = normalizeBundleManifest(value);
+    type = normalizeBundleType(value);
   } catch (cause) {
     if (cause instanceof ContentBundleError && cause.code !== "CONTENT_INVALID")
       throw cause;
@@ -381,14 +381,14 @@ export function inspectBundleSchema(
       { cause },
     );
   }
-  return { ...inspectSchema(manifest.entry.schema ?? true, options), manifest };
+  return { ...inspectSchema(type.schema ?? true, options), type };
 }
 export async function encodeSchema(
   value: unknown,
   options: SchemaOptions = {},
 ): Promise<SchemaBlock> {
   const definitions = inspectBundleSchema(value, options);
-  const bytes = dagCbor.encode(definitions.manifest);
+  const bytes = dagCbor.encode(definitions.type);
   checkSize(bytes, options);
   const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
   return schemaBlock(
@@ -432,7 +432,7 @@ export async function decodeSchema(
     );
   }
   const definitions = inspectBundleSchema(value, options);
-  const canonical = dagCbor.encode(definitions.manifest);
+  const canonical = dagCbor.encode(definitions.type);
   if (
     canonical.length !== bytes.length ||
     !canonical.every((byte, index) => byte === bytes[index])

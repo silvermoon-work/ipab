@@ -8,6 +8,7 @@ import {
   canonicalJson,
   type JsonSchema,
   type BundleManifest,
+  type BundleType,
 } from "@ipab/bundle";
 import {
   blockLength,
@@ -78,20 +79,19 @@ export async function content(
   store: IpfsStore,
   value: unknown = { hello: "world" },
   schema: JsonSchema = { type: "object" },
-): Promise<{ root: string; schema: string; definition: BundleManifest }> {
-  const definition: BundleManifest = {
-    name: "Fixture",
+): Promise<{ root: string; schema: string; definition: BundleType }> {
+  const manifest: BundleManifest = {
+    title: "Fixture",
     description: "",
-    entry: {
-      path: "data.json",
-      schema,
-      contentType: "application/json",
-    },
+    entry: "data.json",
+    type: ".bundle-type.yaml",
   };
+  const definition: BundleType = { schema, contentType: "application/json" };
   const encoded = await encodeSchema(definition);
   const schemaCid = encoded.cid.toString();
   const root = await importFiles(store, {
-    ".bundle.yaml": canonicalJson(definition),
+    ".bundle.yaml": canonicalJson(manifest),
+    ".bundle-type.yaml": canonicalJson(definition),
     "data.json": JSON.stringify(value),
   });
   return { root, schema: schemaCid, definition };
@@ -113,10 +113,16 @@ export async function app(
   store: IpfsStore,
   source: string,
   supportedSchemas?: Uint8Array,
+  entry = "app.json",
 ): Promise<string> {
   return importFiles(store, {
-    ".bundle.yaml": canonicalJson(appSchema),
-    "app.json": JSON.stringify({
+    ".bundle.yaml": canonicalJson({
+      title: "Fixture App",
+      entry,
+      type: ".bundle-type.yaml",
+    }),
+    ".bundle-type.yaml": canonicalJson(appSchema),
+    [entry]: JSON.stringify({
       name: "Fixture App",
       version: "0.0.0",
       description: "",
@@ -161,7 +167,7 @@ export function seedDisplayPin(state: State, name: string, cid: string): void {
     status: "ready",
     metadata: {
       kind: "bundle",
-      typeName: appSchema.name,
+      title: "Fixture App",
       schemaCid: appSchemaCid.toString(),
     },
   });

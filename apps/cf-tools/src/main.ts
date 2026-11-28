@@ -244,10 +244,15 @@ export async function main(mode: "local" | "deploy"): Promise<void> {
           ".bundle.yaml",
           stream(
             JSON.stringify({
-              name: "IPAB Worker Deployment Result",
-              entry: { path: "result.json", contentType: "application/json" },
+              title: "IPAB Worker Deployment Result",
+              entry: "result.json",
+              type: ".bundle-type.yaml",
             }),
           ),
+        );
+        await context.output.writeFile(
+          ".bundle-type.yaml",
+          stream(JSON.stringify({ contentType: "application/json" })),
         );
         await context.output.writeFile(
           "result.json",

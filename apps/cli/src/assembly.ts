@@ -154,14 +154,17 @@ export async function assembleBundle(
     },
   );
   if (
-    !files.has(definition.entry.path) &&
-    !imports.some((item) => item.path === definition.entry.path)
+    [definition.entry, definition.type].some(
+      (path) => !files.has(path) && !imports.some((item) => item.path === path),
+    )
   )
-    throw new HostError("Recipe must explicitly select the Bundle entry.");
+    throw new HostError(
+      "Recipe must explicitly select the Bundle entry and type files.",
+    );
   const output = options.output
     ? resolve(options.output)
     : join(root, options.outputDir ?? "dist", "bundle.car");
-  if (inputs.has(output))
+  if ([...inputs].some((input) => input.toLowerCase() === output.toLowerCase()))
     throw new HostError("CAR output cannot replace recipe or source inputs.");
   await outputAvailable(output, Boolean(options.replace));
   const encoded = await encodeBundleCar(fileTree(files), {

@@ -28,6 +28,14 @@ try {
   });
   await writeFile(
     join(stage, ".bundle.yaml"),
+    JSON.stringify({
+      title: "IPAB Pointer Worker",
+      entry: "worker.json",
+      type: ".bundle-type.yaml",
+    }),
+  );
+  await writeFile(
+    join(stage, ".bundle-type.yaml"),
     await readFile("bundle-definition.json"),
   );
   await writeFile(

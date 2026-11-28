@@ -19,16 +19,12 @@ import { object } from "../src/errors.js";
 import { cli, fixture } from "./helpers.js";
 
 const definition = {
-  name: "Note",
-  entry: {
-    path: "data.json",
-    schema: {
-      type: "object",
-      required: ["title"],
-      properties: { title: { type: "string" } },
-    },
-    contentType: "application/json",
+  schema: {
+    type: "object",
+    required: ["title"],
+    properties: { title: { type: "string" } },
   },
+  contentType: "application/json",
 };
 async function car(path: string) {
   const bytes = await readFile(path);
@@ -59,7 +55,15 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     vi.stubEnv("TASK_CONTENT_CONFIG", config);
     source = join(work.root, "source");
     await mkdir(source);
-    await writeFile(join(source, ".bundle.yaml"), stringify(definition));
+    await writeFile(
+      join(source, ".bundle.yaml"),
+      stringify({
+        title: "Note",
+        entry: "data.json",
+        type: ".bundle-type.yaml",
+      }),
+    );
+    await writeFile(join(source, ".bundle-type.yaml"), stringify(definition));
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -105,7 +109,7 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
       "http://127.0.0.1:1",
       "bundle",
       "build",
-      join(source, ".bundle.yaml"),
+      join(source, ".bundle-type.yaml"),
       "--schema-only",
       "--no-import",
     ]);
@@ -117,7 +121,7 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     const artifact = await car(join(source, "dist", "schema.car"));
     expect(artifact.blocks.size).toBe(1);
     const loaded = await openSchema(artifact.root, artifact);
-    expect(loaded.manifest).toEqual({ ...definition, description: "" });
+    expect(loaded.type).toEqual(definition);
     expect(result(response.out).cid).toBe(artifact.root.toString());
     expect(result(response.out).bytes).toBe(
       (await readFile(join(source, "dist", "schema.car"))).length,
@@ -146,11 +150,16 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
   ])(
     "builds and inspects an opaque %s entry without a schema",
     async (contentType) => {
-      const entry = { path: "payload", contentType };
+      const entry = { contentType };
       await writeFile(
         join(source, ".bundle.yaml"),
-        stringify({ name: "Opaque", entry }),
+        stringify({
+          title: "Opaque",
+          entry: "payload",
+          type: ".bundle-type.yaml",
+        }),
       );
+      await writeFile(join(source, ".bundle-type.yaml"), stringify(entry));
       const bytes = Buffer.from([0, 255, 128, 10]);
       await writeFile(join(source, "payload"), bytes);
       const built = await cli(work.stateDir, [
@@ -167,7 +176,7 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
       });
       const encoded = await car(String(result(built.out).output));
       const loaded = await openBundle(encoded.root, encoded);
-      expect(loaded.manifest.entry).toEqual(entry);
+      expect(loaded.manifest.entry).toBe("payload");
       expect(
         Buffer.from(
           await new Response(await loaded.readFile("payload")).arrayBuffer(),
@@ -180,7 +189,7 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
         source,
       ]);
       expect(inspected.code, inspected.err).toBe(0);
-      expect(result(inspected.out).entry).toEqual(entry);
+      expect(result(inspected.out).type).toEqual(entry);
       expect(result(inspected.out).validation).toEqual({
         definition: "valid",
         storage: "verified",
@@ -216,7 +225,6 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
   );
   it("validates a Draft 2020-12 entry schema and rejects malformed MIME strings", async () => {
     const entry = {
-      path: "data.json",
       contentType: "application/json",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -226,10 +234,7 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
         minItems: 1,
       },
     };
-    await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({ name: "Tuple", entry }),
-    );
+    await writeFile(join(source, ".bundle-type.yaml"), stringify(entry));
     await writeFile(join(source, "data.json"), '["valid"]');
     const valid = await cli(work.stateDir, [
       "bundle",
@@ -258,11 +263,8 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     expect(invalid.code).toBe(1);
     expect(invalid.out).toBe("");
     await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({
-        name: "Invalid MIME",
-        entry: { path: "data.json", contentType: "not a MIME type" },
-      }),
+      join(source, ".bundle-type.yaml"),
+      stringify({ contentType: "not a MIME type" }),
     );
     const malformed = await cli(work.stateDir, [
       "bundle",
@@ -278,21 +280,17 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     const ids: string[] = [];
     for (const schema of [undefined, true]) {
       await writeFile(
-        join(source, ".bundle.yaml"),
+        join(source, ".bundle-type.yaml"),
         stringify({
-          name: "Optional schema",
-          entry: {
-            path: "payload",
-            contentType: "image/png",
-            ...(schema === undefined ? {} : { schema }),
-          },
+          contentType: "image/png",
+          ...(schema === undefined ? {} : { schema }),
         }),
       );
       const inspected = await cli(work.stateDir, [
         "--json",
         "bundle",
         "inspect",
-        join(source, ".bundle.yaml"),
+        join(source, ".bundle-type.yaml"),
       ]);
       expect(inspected.code, inspected.err).toBe(0);
       ids.push(String(result(inspected.out).schemaCid));
@@ -383,19 +381,28 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
       "--json",
       "bundle",
       "inspect",
-      join(source, ".bundle.yaml"),
+      join(source, ".bundle-type.yaml"),
     ]);
     expect(standalone.code, standalone.err).toBe(0);
     expect(result(standalone.out)).toMatchObject({
       kind: "bundle-schema",
       sourceKind: "definition",
-      description: "",
+      type: definition,
     });
+    expect(result(standalone.out)).not.toHaveProperty("manifest");
     const target = join(work.root, "new");
     await scaffoldFiles(
       target,
       new Map([
-        [".bundle.yaml", stringify(definition)],
+        [
+          ".bundle.yaml",
+          stringify({
+            title: "Note",
+            entry: "data.json",
+            type: ".bundle-type.yaml",
+          }),
+        ],
+        [".bundle-type.yaml", stringify(definition)],
         ["data.json", '{"title":"Untitled"}\n'],
       ]),
     );
@@ -501,7 +508,11 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     expect(invalid.err).toContain("/title");
     expect(existsSync(join(source, "dist", "bundle.car"))).toBe(false);
     await writeFile(join(source, "data.json"), '{"title":"Valid"}');
-    for (const pattern of ["data.json\n", ".bundle.yaml\n"]) {
+    for (const pattern of [
+      "data.json\n",
+      ".bundle.yaml\n",
+      ".bundle-type.yaml\n",
+    ]) {
       await writeFile(join(source, ".bundle-ignore"), pattern);
       const response = await cli(work.stateDir, ["bundle", "build", source]);
       expect(response.code).toBe(1);
@@ -519,7 +530,12 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     ]);
     expect(conflict.code).toBe(1);
     expect(await readFile(output, "utf8")).toBe("existing");
-    for (const file of [".bundle.yaml", ".bundle-ignore", "data.json"]) {
+    for (const file of [
+      ".bundle.yaml",
+      ".bundle-type.yaml",
+      ".bundle-ignore",
+      "data.json",
+    ]) {
       const before = await readFile(join(source, file));
       for (const mode of [[], ["--schema-only"]]) {
         const response = await cli(work.stateDir, [
@@ -776,7 +792,10 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     await writeFile(join(source, "data.json"), '{"title":"Valid"}');
     await cli(work.stateDir, ["bundle", "build", source]);
     const path = join(source, "dist", "bundle.car");
-    const previous = await encodeSchema({ ...definition, name: "Other" });
+    const previous = await encodeSchema({
+      ...definition,
+      contentType: "application/yaml",
+    });
     await work.store.put(previous.cid, previous.bytes);
     await work.store.retain("other-owner", [previous.cid.toString()]);
     await work.store.confirmRetained("other-owner", [previous.cid.toString()]);
@@ -955,7 +974,15 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
         scaffoldFiles(
           target,
           new Map([
-            [".bundle.yaml", stringify(definition)],
+            [
+              ".bundle.yaml",
+              stringify({
+                title: "Note",
+                entry: "data.json",
+                type: ".bundle-type.yaml",
+              }),
+            ],
+            [".bundle-type.yaml", stringify(definition)],
             ["data.json", '{"title":"Untitled"}\n'],
           ]),
           {
@@ -1025,14 +1052,8 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
       0,
     );
     await writeFile(
-      join(source, ".bundle.yaml"),
-      stringify({
-        ...definition,
-        entry: {
-          ...definition.entry,
-          defaultValue: { title: "Untitled" },
-        },
-      }),
+      join(source, ".bundle-type.yaml"),
+      stringify({ ...definition, defaultValue: { title: "Untitled" } }),
     );
     const invalid = await cli(work.stateDir, [
       "--json",
@@ -1044,6 +1065,6 @@ describe("bundle development CLI", { tags: ["release-e2e"] }, () => {
     ]);
     expect(invalid.code).toBe(1);
     expect(invalid.out).toBe("");
-    expect(invalid.err).toContain("Invalid .bundle.yaml");
+    expect(invalid.err).toContain("Invalid bundle type definition");
   });
 });

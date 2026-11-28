@@ -13,16 +13,16 @@ import { readCar } from "../src/authoring.js";
 
 describe("generic assembly recipes", { tags: ["unit"] }, () => {
   const definition = {
-    name: "Assembly",
-    entry: {
-      path: "entry.json",
-      contentType: "application/json",
-      schema: { type: "object" },
-    },
+    title: "Assembly",
+    entry: "entry.json",
+    type: ".bundle-type.yaml",
   };
   const recipe = {
     version: 1,
-    files: [{ source: "input.json", target: "entry.json" }],
+    files: [
+      { source: "input.json", target: "entry.json" },
+      { source: ".bundle-type.yaml", target: ".bundle-type.yaml" },
+    ],
     imports: [],
   };
   let work: string;
@@ -30,6 +30,13 @@ describe("generic assembly recipes", { tags: ["unit"] }, () => {
     await mkdir(resolve(".test-work"), { recursive: true });
     work = await mkdtemp(join(resolve(".test-work"), "assembly-"));
     await writeFile(join(work, ".bundle.yaml"), JSON.stringify(definition));
+    await writeFile(
+      join(work, ".bundle-type.yaml"),
+      JSON.stringify({
+        contentType: "application/json",
+        schema: { type: "object" },
+      }),
+    );
     await writeFile(join(work, "input.json"), '{"text":"prepared"}');
     await writeFile(join(work, "ipab.build.yaml"), JSON.stringify(recipe));
   });
@@ -102,6 +109,15 @@ describe("generic assembly recipes", { tags: ["unit"] }, () => {
             new TextEncoder().encode(JSON.stringify(definition)),
           ],
           ["entry.json", new TextEncoder().encode('{"original":true}')],
+          [
+            ".bundle-type.yaml",
+            new TextEncoder().encode(
+              JSON.stringify({
+                contentType: "application/json",
+                schema: { type: "object" },
+              }),
+            ),
+          ],
         ]),
       ),
     );

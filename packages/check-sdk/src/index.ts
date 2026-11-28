@@ -131,14 +131,16 @@ export async function runCheck<Input>(
         await read(cid.toString(), ".bundle.yaml", "application/yaml"),
       ),
     );
-    const actual = await encodeSchema(manifest);
+    const actual = await encodeSchema(
+      await read(cid.toString(), manifest.type, "application/yaml"),
+    );
     const expected = await encodeSchema(checkSpecDefinition);
     if (!actual.cid.equals(expected.cid))
       throw new Error("Unsupported Check model type.");
     const data = await read(
       cid.toString(),
-      manifest.entry.path,
-      manifest.entry.contentType,
+      manifest.entry,
+      actual.type.contentType,
     );
     validateSchemaValue(actual, data, validationBudget());
     const model = await resolveCheckInstructions(data, {
@@ -164,14 +166,23 @@ export async function runCheck<Input>(
     await context.output.link("check", cid.toString(), { signal });
     await context.output.writeFile(
       ".bundle.yaml",
-      jsonStream(canonicalJson(resultDefinition)),
+      jsonStream(
+        canonicalJson({
+          title: "IPAB Check Result",
+          entry: "result.json",
+          type: ".bundle-type.yaml",
+        }),
+      ),
       { signal },
     );
     await context.output.writeFile(
-      resultDefinition.entry.path,
-      jsonStream(resultBytes),
+      ".bundle-type.yaml",
+      jsonStream(canonicalJson(resultDefinition)),
       { signal },
     );
+    await context.output.writeFile("result.json", jsonStream(resultBytes), {
+      signal,
+    });
     signal.throwIfAborted();
     return result;
   } finally {

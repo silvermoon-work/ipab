@@ -17,7 +17,12 @@ import {
   resolveBundleLimits,
   safePath,
 } from "@ipab/bundle";
-import type { BundleLimits, SchemaBlock, EntryValidation } from "@ipab/bundle";
+import type {
+  BundleLimits,
+  BundleManifest,
+  SchemaBlock,
+  EntryValidation,
+} from "@ipab/bundle";
 import { listTree, streamChunks } from "./tree.js";
 import type { ReadonlyFileTree, ReadOptions } from "./tree.js";
 
@@ -31,6 +36,7 @@ export interface BundleCarOptions extends ReadOptions {
 }
 export interface EncodedBundleCar {
   readonly cid: CID;
+  readonly manifest: BundleManifest | null;
   readonly schema: SchemaBlock;
   readonly validation: EntryValidation | null;
   readonly stream: ReadableStream<Uint8Array>;
@@ -383,6 +389,7 @@ export async function encodeBundleCar(
         return CID.decode(Uint8Array.from(rootBytes));
       },
       stream,
+      manifest: bundle.manifest,
       schema: bundle.schema,
       validation: bundle.validation,
       get retainedBytes() {
@@ -464,6 +471,7 @@ export async function encodeSchemaCar(
       return schema.cid;
     },
     schema,
+    manifest: null,
     validation: null,
     stream,
     get retainedBytes() {

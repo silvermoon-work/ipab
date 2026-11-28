@@ -1,5 +1,6 @@
 export {
   parseBundleManifest,
+  parseBundleType,
   parseData,
   canonicalJson,
   safePath,
@@ -13,6 +14,7 @@ export {
 export type { SchemaOptions, ValidationContext } from "./schema.js";
 export type {
   BundleManifest,
+  BundleType,
   SchemaDefinitions,
   SchemaBlock,
 } from "./types.js";

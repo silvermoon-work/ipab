@@ -113,10 +113,7 @@ export async function bundleJson(store: IpfsStore, root: string) {
   });
   const value: unknown = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(
-      await bytes(
-        await bundle.readFile(bundle.manifest.entry.path),
-        1024 * 1024,
-      ),
+      await bytes(await bundle.readFile(bundle.manifest.entry), 1024 * 1024),
     ),
   );
   return { bundle, value };

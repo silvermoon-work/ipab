@@ -1,6 +1,11 @@
 import { isMap, isSeq, parseAllDocuments } from "yaml";
 import { ContentBundleError } from "./errors.js";
-import type { BundleManifest, ContentType, EntryValidation } from "./types.js";
+import type {
+  BundleManifest,
+  BundleType,
+  ContentType,
+  EntryValidation,
+} from "./types.js";
 
 const mimeToken = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
 const mime = new RegExp(
@@ -14,9 +19,7 @@ const dataTypes = new Set([
   "text/markdown",
 ]);
 
-export function entryValidation(
-  entry: BundleManifest["entry"],
-): EntryValidation {
+export function entryValidation(entry: BundleType): EntryValidation {
   return Object.freeze({
     status: dataTypes.has(entry.contentType.toLowerCase())
       ? entry.schema === undefined
@@ -325,57 +328,101 @@ export function parseData(
 
 export function normalizeBundleManifest(value: unknown): BundleManifest {
   if (
-    record(value) &&
-    record(value.entry) &&
-    Object.hasOwn(value.entry, "defaultValue")
-  )
-    throw new Error(
-      "entry.defaultValue is no longer supported; initialize content through a Template Bundle.",
-    );
-  if (
     !record(value) ||
     Object.keys(value).some(
-      (key) => !["name", "description", "entry"].includes(key),
+      (key) => !["title", "description", "entry", "type"].includes(key),
     ) ||
-    typeof value.name !== "string" ||
-    !value.name.trim() ||
+    typeof value.title !== "string" ||
+    !value.title.trim() ||
     (value.description !== undefined &&
       typeof value.description !== "string") ||
-    !record(value.entry) ||
-    Object.keys(value.entry).some(
-      (key) => !["path", "schema", "contentType"].includes(key),
-    )
+    typeof value.entry !== "string" ||
+    typeof value.type !== "string"
   )
     throw new Error(
-      "Expected name, optional description and a complete entry definition.",
+      "Expected title, optional description, entry and type file paths.",
     );
-  const { path, schema, contentType } = value.entry;
+  const entry = safePath(value.entry);
+  const type = safePath(value.type);
+  const paths = [
+    entry.toLowerCase(),
+    type.toLowerCase(),
+    ".bundle.yaml",
+    ".bundle-ignore",
+  ];
   if (
-    typeof path !== "string" ||
+    paths.some((path, index) =>
+      paths.some(
+        (other, otherIndex) =>
+          index !== otherIndex &&
+          (path === other || path.startsWith(`${other}/`)),
+      ),
+    )
+  )
+    throw new Error("Required file paths conflict.");
+  return Object.freeze({
+    title: value.title,
+    description: value.description ?? "",
+    entry,
+    type,
+  });
+}
+
+export function normalizeBundleType(value: unknown): BundleType {
+  if (
+    !record(value) ||
+    Object.keys(value).some((key) => !["contentType", "schema"].includes(key))
+  )
+    throw new Error(
+      "Expected a pure type definition with contentType and optional schema.",
+    );
+  const { schema, contentType } = value;
+  if (
     (schema !== undefined && typeof schema !== "boolean" && !record(schema)) ||
-    (Object.hasOwn(value.entry, "schema") && schema === undefined)
+    (Object.hasOwn(value, "schema") && schema === undefined)
   )
-    throw new Error(
-      "Entry requires path and contentType, with an optional schema.",
-    );
-  safePath(path);
+    throw new Error("Expected an optional JSON Schema.");
   if (
-    [".bundle.yaml", ".bundle-ignore"].some(
-      (control) => path === control || path.startsWith(`${control}/`),
-    )
+    typeof contentType !== "string" ||
+    /[\r\n]/u.test(contentType) ||
+    !mime.test(contentType)
   )
-    throw new Error("Entry path conflicts with a bundle control file.");
-  if (typeof contentType !== "string" || !mime.test(contentType))
     throw new Error("contentType must be a valid MIME type.");
   return Object.freeze({
-    name: value.name,
-    description: value.description ?? "",
-    entry: Object.freeze({
-      path,
-      ...(schema === undefined ? {} : { schema }),
-      contentType,
-    } satisfies BundleManifest["entry"]),
+    ...(schema === undefined ? {} : { schema }),
+    contentType,
   });
+}
+
+export function parseBundleType(
+  bytes: Uint8Array,
+  maximum = 64 * 1024 * 1024,
+  charge: () => void = () => {},
+): BundleType {
+  if (bytes.byteLength > maximum)
+    throw new ContentBundleError(
+      "LIMIT_EXCEEDED",
+      "Type definition exceeds its parsing byte limit.",
+    );
+  try {
+    return normalizeBundleType(
+      parseData(bytes, "application/yaml", 100_000, 64, charge),
+    );
+  } catch (cause) {
+    if (
+      cause instanceof ContentBundleError &&
+      ["LIMIT_EXCEEDED", "ABORTED"].includes(cause.code)
+    )
+      throw cause;
+    throw new ContentBundleError(
+      "SCHEMA_INVALID",
+      "Invalid bundle type definition.",
+      "",
+      "",
+      [],
+      { cause },
+    );
+  }
 }
 
 export function parseBundleManifest(
@@ -392,7 +439,10 @@ export function parseBundleManifest(
     const value = parseData(bytes, "application/yaml", 100_000, 64, charge);
     return normalizeBundleManifest(value);
   } catch (cause) {
-    if (cause instanceof ContentBundleError && cause.code === "LIMIT_EXCEEDED")
+    if (
+      cause instanceof ContentBundleError &&
+      ["LIMIT_EXCEEDED", "ABORTED"].includes(cause.code)
+    )
       throw cause;
     throw new ContentBundleError(
       "MANIFEST_INVALID",

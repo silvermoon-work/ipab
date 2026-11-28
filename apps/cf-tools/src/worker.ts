@@ -1,6 +1,7 @@
 import {
   encodeSchema,
   parseBundleManifest,
+  parseBundleType,
   parseData,
   safePath,
   validateSchemaValue,
@@ -18,12 +19,16 @@ export async function readWorker(files: Files, cid: string) {
   const manifest = parseBundleManifest(
     await bytes(await files.readFile(cid, ".bundle.yaml"), 1024 * 1024),
   );
-  const actual = await encodeSchema(manifest);
+  const actual = await encodeSchema(
+    parseBundleType(
+      await bytes(await files.readFile(cid, manifest.type), 1024 * 1024),
+    ),
+  );
   if (!actual.cid.equals(expected.cid))
     throw new Error("Input is not the supported Worker Bundle type.");
   const value = parseData(
-    await bytes(await files.readFile(cid, "worker.json"), 1024 * 1024),
-    "application/json",
+    await bytes(await files.readFile(cid, manifest.entry), 1024 * 1024),
+    actual.type.contentType,
   );
   let work = 0;
   validateSchemaValue(expected, value, {
@@ -47,7 +52,13 @@ export async function readWorker(files: Files, cid: string) {
     )
       throw new Error("Worker files must use portable, non-hidden paths.");
     const key = path.toLowerCase();
-    if (seen.has(key) || key === "worker.json" || key === "wrangler.json")
+    if (
+      seen.has(key) ||
+      key === manifest.entry.toLowerCase() ||
+      key === manifest.type.toLowerCase() ||
+      key === ".bundle.yaml" ||
+      key === "wrangler.json"
+    )
       throw new Error("Worker file paths collide.");
     seen.add(key);
     paths.push(path);

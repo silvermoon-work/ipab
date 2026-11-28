@@ -31,16 +31,16 @@ Content Bundle 校验存储完整性、路径、`.bundle.yaml`
 只是本地完整类型定义的快捷解析；register set/remove 可接受它，
 但注册状态永远保存准确 CID，builtin 字符串不成为协议身份。
 
-.bundle.yaml 本身是类型定义：必填 name、缺省为空字符串的 description，
-以及必填 entry: { path, contentType, schema? }。path 与合法 MIME 为必填，
-schema 可选，采用标准 JSON Schema Draft 2020-12。
-entry.defaultValue 已移除且被拒绝，不从 Schema 生成或补全数据。
-完整定义归一化后直接编码为
+.bundle.yaml 是实例 manifest：必填非空 title、缺省为空字符串的 description，
+以及必填安全相对文件路径 entry/type。type 引用通常为 .bundle-type.yaml 的纯类型文件：
+只允许必填合法 MIME contentType 和可选标准 JSON Schema Draft 2020-12 schema。
+旧完整定义与 defaultValue 均拒绝，不从 Schema 生成或补全数据。
+纯类型对象直接编码为
 CIDv1/DAG-CBOR/SHA-256 block，准确 CID 是 register 键，编码后最多 1 MiB。
-缺省描述与显式空串归一化为相同类型 CID；名称、描述、MIME、Schema 等变化影响该 CID，
-实际入口数据变化不影响它。原始 YAML 排版仍参与内容根 CID。
+只有 MIME、Schema 变化影响该 CID；实例 title、description、entry/type 路径和
+实际入口数据均不影响它。原始 manifest/类型文件排版仍参与内容根 CID。
 $schema 缺省表示 Draft 2020-12，不注入声明或改写 Schema 字面值；
-省略 schema 与显式 true 的身份不同。Schema 引用在 entry.schema 文档内封闭。
+省略 schema 与显式 true 的身份不同。Schema 引用在纯类型 schema 文档内封闭。
 构建和打开内容根无需读取外部 Schema；保留内容根即可从文件再生类型 block。
 
 标准 Draft 2020-12 关键字、无数据变换的入口校验、
@@ -85,7 +85,7 @@ CLI 默认在生成 CAR 后将其导入当前 Store；--no-import 可关闭，�
 用户短名由具名 pin 统一管理，不再维护独立 Alias 与 pin 开关。
 `pin add/delete/list/show/rename` 详见 [使用说明](reference.md#具名-pin)。
 pin 不是执行或信任授权，删除只释放本记录保留，不删除 block 或执行 GC。
-只接受完整 Bundle；add 保存经过验证的非空 Bundle 类型名和准确类型 CID，
+只接受完整 Bundle；add 保存经过验证的非空实例 title 和准确类型 CID，
 list/show 不联网。`--kind` 已移除，`--type CID|Bundle短名` 按类型 CID 过滤；
 Bundle 短名取其类型而非内容 CID，App 元数据名称不是 Bundle 类型身份。
 内置模板是只读 Bundle pin，内置类型 block 不再充当 pin。
@@ -128,57 +128,62 @@ CommonJS 入口，不调用导出的 main(context)，不 override Console，也�
 Output Space 或 Store pin。日志模式 stdout/stderr 不再是 TTY。
 
 ```yaml
-name: IPAB Node App
+title: IPAB Node App
 description: Self-contained Node CommonJS application and declarative metadata.
-entry:
-  path: app.json
-  contentType: application/json
-  schema:
-    $id: urn:ipab:node-app.v1
-    type: object
-    additionalProperties: false
-    required: [name, version, entry]
-    properties:
-      name:
-        type: string
-      version:
-        type: string
-      description:
-        type: string
-      entry:
-        type: string
-      source:
+entry: app.json
+type: .bundle-type.yaml
+```
+
+The referenced pure type (the App descriptor path is not part of its identity):
+
+```yaml
+contentType: application/json
+schema:
+  $id: urn:ipab:node-app.v1
+  type: object
+  additionalProperties: false
+  required: [name, version, entry]
+  properties:
+    name:
+      type: string
+    version:
+      type: string
+    description:
+      type: string
+    entry:
+      type: string
+    source:
+      type: object
+      additionalProperties: false
+      required: [cid]
+      properties:
+        cid:
+          type: string
+    supportedSchemas:
+      type: string
+    author:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+    license:
+      type: string
+    icon:
+      type: string
+    i18n:
+      type: object
+      additionalProperties:
         type: object
         additionalProperties: false
-        required: [cid]
-        properties:
-          cid:
-            type: string
-      supportedSchemas:
-        type: string
-      author:
-        type: object
-        additionalProperties: false
-        required: [name]
         properties:
           name:
             type: string
-          email:
+          description:
             type: string
-      license:
-        type: string
-      icon:
-        type: string
-      i18n:
-        type: object
-        additionalProperties:
-          type: object
-          additionalProperties: false
-          properties:
-            name:
-              type: string
-            description:
-              type: string
 ```
 
 `app.json` 的最小形状（不允许其他字段）：
@@ -193,7 +198,7 @@ entry:
 ```
 
 上述完整定义通过 encodeSchema 生成单个 DAG-CBOR block；
-准确 CID 为 `bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq`。
+准确 CID 为 `bafyreifualoac4ddlzl63jlfstz4xsq75cai5t6ywu3j3khhyukoccmybm`。
 CLI 的 app-definition.ts 集中保存完整定义与固定 CID，authoring 重新编码核对身份；
 runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 离线映射到此完整定义／CID，
@@ -202,7 +207,7 @@ runtime 不在启动时构造 VFS/CAR。`builtin:node-app.v1`
 可选 app.json supportedSchemas 是安全、存在的 resources/ 普通文件路径，
 不得碰撞 entry／控制文件。声明时在所有执行前校验单个嵌套 CAR，省略意味着
 没有 open 支持类型。CAR 非空，roots 恰好定义支持的完整 Bundle Schema CIDs：
-每 root 为 CIDv1/DAG-CBOR/SHA-256 的完整归一化定义，单 block 最多 1 MiB，
+每 root 为 CIDv1/DAG-CBOR/SHA-256 的纯类型对象，单 block 最多 1 MiB，
 校验所有 hash、canonical 编码和 Schema。拒绝缺 root、重复 root／record、
 额外 block；复用现有 64 MiB 字节、2048 文件数及 100000 聚合 work／深度预算。
 上层 build 从显式 schemas/ 非隐藏 .json 文件构建，按实际 CID 去重与排序，
@@ -227,7 +232,8 @@ CID。字段本身不是 IPLD link；带源码构建还在 App 的 `source/` 建
 完整文件选择、结果形状、两产物提交边界与可复现性限制见
 [源码包参考](reference.md#app-car-中的源码)。
 
-app.json 的 name/version 描述具体 App；.bundle.yaml 的 name/description 描述共享类型。
+app.json 的 name/version 描述具体 App；.bundle.yaml 的 title/description 描述实例，
+.bundle-type.yaml 定义共享纯类型，不包含名称或路径。
 实际 App 元数据变动不修改共享类型 CID。description 缺省为空，
 author{name,email?}、license、icon 和 i18n 可选。专用 App 校验要求非空白名称、
 准确 SemVer 2.0、简单 email、Intl 接受的语言 tag（规范化重复也失败），
@@ -358,7 +364,8 @@ callback 在 Store participant mutex 内重新读持久根，不捕获旧数组�
 下列内容是原始讨论档案，保留协议说明及设计来由，**不是当前实现状态**。
 其中“当前只有脚手架”“App 唯一业务输入 CID”“apps”“Open With 覆盖”
 和“迁移公共库”均已被上述实现及确认决定取代。当前仍用单 block DAG-CBOR，
-但 .bundle.yaml 已内嵌完整类型定义；下文 schemaCid manifest、完整方言、
+但 .bundle.yaml 只描述实例，引用的 .bundle-type.yaml 才定义纯类型；
+下文 schemaCid manifest、旧完整命名类型定义、完整方言、
 旧外部 $ref 及 content refs 均是历史协议，不用于当前构建。
 
 ## 历史设计草案（实现前）

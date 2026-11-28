@@ -14,47 +14,42 @@ const parameterSchema = {
 } as const;
 
 export const templateSchema = {
-  name: "IPAB Project Template",
-  description: "Data-only Liquid project content bundle.",
-  entry: {
-    path: "template.yaml",
-    contentType: "application/yaml",
-    schema: {
-      $id: "urn:ipab:project-template.v1",
-      type: "object",
-      additionalProperties: false,
-      required: ["version", "root", "render", "parameters"],
-      properties: {
-        version: { enum: [1] },
-        root: { enum: ["project"] },
-        render: {
-          type: "object",
-          additionalProperties: false,
-          required: ["suffix"],
-          properties: { suffix: { enum: [".liquid"] } },
-        },
-        parameters: {
-          type: "object",
-          required: ["name", "description"],
-          additionalProperties: parameterSchema,
-          properties: {
-            name: {
-              type: "object",
-              additionalProperties: false,
-              required: ["type", "required"],
-              properties: {
-                type: { enum: ["string"] },
-                required: { enum: [true] },
-              },
+  contentType: "application/yaml",
+  schema: {
+    $id: "urn:ipab:project-template.v1",
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "root", "render", "parameters"],
+    properties: {
+      version: { enum: [1] },
+      root: { enum: ["project"] },
+      render: {
+        type: "object",
+        additionalProperties: false,
+        required: ["suffix"],
+        properties: { suffix: { enum: [".liquid"] } },
+      },
+      parameters: {
+        type: "object",
+        required: ["name", "description"],
+        additionalProperties: parameterSchema,
+        properties: {
+          name: {
+            type: "object",
+            additionalProperties: false,
+            required: ["type", "required"],
+            properties: {
+              type: { enum: ["string"] },
+              required: { enum: [true] },
             },
-            description: {
-              type: "object",
-              additionalProperties: false,
-              required: ["type", "default"],
-              properties: {
-                type: { enum: ["string"] },
-                default: { enum: [""] },
-              },
+          },
+          description: {
+            type: "object",
+            additionalProperties: false,
+            required: ["type", "default"],
+            properties: {
+              type: { enum: ["string"] },
+              default: { enum: [""] },
             },
           },
         },
@@ -65,7 +60,7 @@ export const templateSchema = {
 
 export const templateBuiltinAlias = "builtin:project-template.v1";
 export const templateSchemaCid = CID.parse(
-  "bafyreihydmyx5qvemxlidzyc7yflwxnidllorpaq7xoxlh264ozjnalqra",
+  "bafyreieosvcalrhqa3brr3zmxuoryztfmqez2y5ugb37kgrsamvq6n6v5u",
 );
 export async function builtinTemplateSchema() {
   const block = await encodeSchema(templateSchema);

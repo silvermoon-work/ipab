@@ -19,15 +19,18 @@ it.each(["valid", "invalid"])(
   async (initial) => {
     folder = await mkdtemp(join(tmpdir(), "ipab-watch-"));
     const schema = {
-      name: "Watch",
-      description: "",
-      entry: {
-        path: "entry.json",
-        contentType: "application/json",
-        schema: { type: "object" },
-      },
+      contentType: "application/json",
+      schema: { type: "object" },
     };
-    await writeFile(join(folder, ".bundle.yaml"), JSON.stringify(schema));
+    await writeFile(
+      join(folder, ".bundle.yaml"),
+      JSON.stringify({
+        title: "Watch",
+        entry: "entry.json",
+        type: ".bundle-type.yaml",
+      }),
+    );
+    await writeFile(join(folder, ".bundle-type.yaml"), JSON.stringify(schema));
     await writeFile(
       join(folder, "entry.json"),
       initial === "invalid" ? "{" : "{}",

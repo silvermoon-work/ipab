@@ -7,6 +7,7 @@ export {
 } from "./bundle.js";
 export {
   parseBundleManifest,
+  parseBundleType,
   parseData,
   canonicalJson,
   safePath,
@@ -29,6 +30,7 @@ export type {
   OpenBundleOptions,
   BundleLimits,
   BundleManifest,
+  BundleType,
   ContentType,
   JsonSchema,
   SchemaBlock,

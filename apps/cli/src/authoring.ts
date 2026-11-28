@@ -28,12 +28,14 @@ import {
   openBundle,
   openSchema,
   parseBundleManifest,
+  parseBundleType,
   ContentBundleError,
 } from "@ipab/bundle";
 import type {
   EntryValidation,
   OpenBundleOptions,
   SchemaBlock,
+  BundleManifest,
 } from "@ipab/bundle";
 import {
   encodeBundleCar,
@@ -69,9 +71,8 @@ export interface InspectResult {
   sourceKind: "directory" | "definition" | "car" | "cid";
   cid: string | null;
   schemaCid: string;
-  name: string;
-  description: string;
-  entry: { path: string; contentType: string };
+  manifest?: BundleManifest;
+  type: SchemaBlock["type"];
   validation: {
     definition: "valid";
     storage: "verified" | "not-applicable";
@@ -110,7 +111,7 @@ async function localFile(
   return readBytes(tree, basename(path), maximum, options);
 }
 async function definitionAt(path: string, options: AuthoringOptions) {
-  return parseBundleManifest(
+  return parseBundleType(
     await localFile(path, bundleLimits.parsingBytes, options),
   );
 }
@@ -160,7 +161,7 @@ export async function selectedTree(
         pathKey(path).startsWith(`${pathKey(outputDir)}/`)),
     ) ||
     matcher.ignores(directory ? `${path}/` : path);
-  for (const required of [".bundle.yaml", definition.entry.path])
+  for (const required of [".bundle.yaml", definition.entry, definition.type])
     if (excluded(required, false))
       throw new HostError(
         `Required bundle file is excluded: ${required}. Fix .bundle-ignore or choose an output outside the entry tree.`,
@@ -307,19 +308,18 @@ async function fromRoot(
   });
   return {
     schema: bundle.schema,
+    manifest: bundle.manifest,
     validation: bundle.validation,
     kind: "content-bundle" as const,
     sourceKind,
     cid: root.toString(),
   };
 }
-function summary(schema: SchemaBlock) {
-  const { name, description, entry } = schema.manifest;
+function summary(schema: SchemaBlock, manifest?: BundleManifest) {
   return {
     schemaCid: schema.cid.toString(),
-    name,
-    description,
-    entry: { path: entry.path, contentType: entry.contentType },
+    type: schema.type,
+    ...(manifest ? { manifest } : {}),
   };
 }
 export async function inspectBundle(
@@ -342,7 +342,7 @@ export async function inspectBundle(
         kind: "content-bundle",
         sourceKind: "directory",
         cid: null,
-        ...summary(encoded.schema),
+        ...summary(encoded.schema, encoded.manifest ?? undefined),
         validation: {
           definition: "valid",
           storage: "verified",
@@ -358,7 +358,10 @@ export async function inspectBundle(
     kind: loaded.kind,
     sourceKind: loaded.sourceKind,
     cid: loaded.cid,
-    ...summary(loaded.schema),
+    ...summary(
+      loaded.schema,
+      "manifest" in loaded ? loaded.manifest : undefined,
+    ),
     validation: {
       definition: "valid",
       storage: loaded.kind === "content-bundle" ? "verified" : "not-applicable",
@@ -473,14 +476,28 @@ export async function buildBundle(
   const output = options.output
     ? resolve(options.output)
     : join(outputDirectory, options.schemaOnly ? "schema.car" : "bundle.car");
-  const definitionPath = stat.isDirectory() ? join(root, ".bundle.yaml") : path;
+  const manifestPath = join(root, ".bundle.yaml");
+  const manifest =
+    !options.schemaOnly || (await existing(manifestPath))
+      ? parseBundleManifest(
+          await localFile(manifestPath, bundleLimits.manifestBytes, options),
+        )
+      : undefined;
+  const definitionPath = stat.isDirectory()
+    ? join(root, manifest?.type ?? ".bundle-type.yaml")
+    : path;
   const definition = await definitionAt(definitionPath, options);
   if (
     [
       definitionPath,
       join(root, ".bundle.yaml"),
       join(root, ".bundle-ignore"),
-      resolve(root, ...definition.entry.path.split("/")),
+      ...(manifest
+        ? [
+            resolve(root, ...manifest.entry.split("/")),
+            resolve(root, ...manifest.type.split("/")),
+          ]
+        : []),
     ].some((input) => pathKey(output) === pathKey(input))
   )
     throw new HostError(

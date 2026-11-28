@@ -3,16 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runBundleViewer, type RunBundleViewerOptions } from "../src/index.js";
 
 const definition = {
-  name: "Message",
-  description: "",
-  entry: {
-    path: "message.json",
-    contentType: "application/json",
-    schema: {
-      type: "object",
-      required: ["message"],
-      properties: { message: { type: "string" } },
-    },
+  contentType: "application/json",
+  schema: {
+    type: "object",
+    required: ["message"],
+    properties: { message: { type: "string" } },
   },
 };
 const page =
@@ -27,7 +22,17 @@ afterEach(async () => {
 });
 function options(
   files = new Map([
-    [".bundle.yaml", encode(JSON.stringify(definition))],
+    [
+      ".bundle.yaml",
+      encode(
+        JSON.stringify({
+          title: "Message",
+          entry: "message.json",
+          type: ".bundle-type.yaml",
+        }),
+      ),
+    ],
+    [".bundle-type.yaml", encode(JSON.stringify(definition))],
     ["message.json", encode('{"message":"Real content"}')],
     ["resources/web/index.html", encode(page)],
   ]),
@@ -142,11 +147,46 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
       "connect-src 'none'",
     );
   });
+  it("reads a moved instance entry and independently referenced pure type", async () => {
+    const app = await start(
+      options(
+        new Map([
+          [
+            ".bundle.yaml",
+            encode(
+              JSON.stringify({
+                title: "Moved message",
+                entry: "data/message.json",
+                type: "types/message.yaml",
+              }),
+            ),
+          ],
+          ["types/message.yaml", encode(JSON.stringify(definition))],
+          ["data/message.json", encode('{"message":"Moved content"}')],
+          ["resources/web/index.html", encode(page)],
+        ]),
+      ),
+    );
+    const html = await fetch(new URL("frame/index.html", app.url)).then(
+      (response) => response.text(),
+    );
+    expect(html).toContain("Moved content");
+  });
   it("preserves large content outside the RPC budget and escapes state markup", async () => {
     const message = "</script><script>alert(1)</script>&>" + "x".repeat(65_536);
     const configured = options(
       new Map([
-        [".bundle.yaml", encode(JSON.stringify(definition))],
+        [
+          ".bundle.yaml",
+          encode(
+            JSON.stringify({
+              title: "Message",
+              entry: "message.json",
+              type: ".bundle-type.yaml",
+            }),
+          ),
+        ],
+        [".bundle-type.yaml", encode(JSON.stringify(definition))],
         ["message.json", encode(JSON.stringify({ message }))],
         ["resources/web/index.html", encode(page)],
       ]),
@@ -163,8 +203,8 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
   it.each([
     [".bundle.yaml", '{"name":"Wrong"}', "Invalid"],
     [
-      ".bundle.yaml",
-      JSON.stringify({ ...definition, name: "Other" }),
+      ".bundle-type.yaml",
+      JSON.stringify({ ...definition, contentType: "application/yaml" }),
       "does not match",
     ],
     ["message.json", '{"message":12}', "must be string"],
@@ -172,7 +212,17 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
     ["message.json", "x".repeat(1024 * 1024 + 1), "exceeds 1 MiB"],
   ])("rejects invalid %s before starting HTTP", async (path, value, error) => {
     const files = new Map([
-      [".bundle.yaml", encode(JSON.stringify(definition))],
+      [
+        ".bundle.yaml",
+        encode(
+          JSON.stringify({
+            title: "Message",
+            entry: "message.json",
+            type: ".bundle-type.yaml",
+          }),
+        ),
+      ],
+      [".bundle-type.yaml", encode(JSON.stringify(definition))],
       ["message.json", encode('{"message":"Real content"}')],
     ]);
     files.set(path, typeof value === "string" ? encode(value) : value);
@@ -208,11 +258,21 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
   it("enforces expanded state and structural validation budgets", async () => {
     const yamlDefinition = {
       ...definition,
-      entry: { ...definition.entry, contentType: "application/yaml" },
+      contentType: "application/yaml",
     };
     const yaml = options(
       new Map([
-        [".bundle.yaml", encode(JSON.stringify(yamlDefinition))],
+        [
+          ".bundle.yaml",
+          encode(
+            JSON.stringify({
+              title: "Message",
+              entry: "message.json",
+              type: ".bundle-type.yaml",
+            }),
+          ),
+        ],
+        [".bundle-type.yaml", encode(JSON.stringify(yamlDefinition))],
         ["message.json", encode(`message: |\n  ${"\t".repeat(530_000)}\n`)],
       ]),
     );
@@ -222,18 +282,25 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
     );
     const arrayDefinition = {
       ...definition,
-      entry: {
-        path: "message.json",
-        contentType: "application/json",
-        schema: {
-          type: "array",
-          items: { anyOf: [{ type: "number" }, { type: "string" }] },
-        },
+      contentType: "application/json",
+      schema: {
+        type: "array",
+        items: { anyOf: [{ type: "number" }, { type: "string" }] },
       },
     };
     const array = options(
       new Map([
-        [".bundle.yaml", encode(JSON.stringify(arrayDefinition))],
+        [
+          ".bundle.yaml",
+          encode(
+            JSON.stringify({
+              title: "Message",
+              entry: "message.json",
+              type: ".bundle-type.yaml",
+            }),
+          ),
+        ],
+        [".bundle-type.yaml", encode(JSON.stringify(arrayDefinition))],
         [
           "message.json",
           encode(JSON.stringify(Array<string>(60_000).fill("a"))),
@@ -250,7 +317,17 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
     async (failure) => {
       const configured = options(
         new Map([
-          [".bundle.yaml", encode(JSON.stringify(definition))],
+          [
+            ".bundle.yaml",
+            encode(
+              JSON.stringify({
+                title: "Message",
+                entry: "message.json",
+                type: ".bundle-type.yaml",
+              }),
+            ),
+          ],
+          [".bundle-type.yaml", encode(JSON.stringify(definition))],
           ["message.json", encode('{"message":"Real content"}')],
           [
             "resources/web/index.html",

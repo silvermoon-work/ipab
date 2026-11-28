@@ -106,7 +106,7 @@ export async function loadApp(
   const bundle = await validatedBundle(root, store, owner, signal);
   if (
     bundle.schemaKey !== appSchemaCid.toString() ||
-    bundle.manifest.entry.contentType !== "application/json"
+    bundle.schema.type.contentType !== "application/json"
   )
     throw new HostError(
       "App must use the documented exact builtin Node App type CID.",
@@ -117,10 +117,7 @@ export async function loadApp(
   const description = appDescription(
     JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
-        await bytes(
-          await bundle.readFile(bundle.manifest.entry.path),
-          64 * 1024,
-        ),
+        await bytes(await bundle.readFile(bundle.manifest.entry), 64 * 1024),
       ),
     ) as unknown,
   );

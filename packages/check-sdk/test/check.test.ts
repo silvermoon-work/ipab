@@ -373,8 +373,16 @@ function host(check = create()) {
   const { spec, files: instructions } = splitCheckSpec(modelOf(check));
   const files = new Map<string, Uint8Array>([
     ["resources/check-model.json", canonicalJson({ cid })],
-    [".bundle.yaml", canonicalJson(checkSpecDefinition)],
-    ["check.yaml", canonicalJson(spec)],
+    [
+      ".bundle.yaml",
+      canonicalJson({
+        title: "Check model",
+        entry: "moved/model.yaml",
+        type: "types/check.yaml",
+      }),
+    ],
+    ["types/check.yaml", canonicalJson(checkSpecDefinition)],
+    ["moved/model.yaml", canonicalJson(spec)],
     ...[...instructions].map(([path, text]): [string, Uint8Array] => [
       path,
       Buffer.from(text),
@@ -422,7 +430,11 @@ it(
     expect(JSON.stringify(fixture.written.get("result.json"))).not.toContain(
       "output",
     );
-    expect(fixture.written.has(".bundle.yaml")).toBe(true);
+    expect(fixture.written.get(".bundle.yaml")).toMatchObject({
+      entry: "result.json",
+      type: ".bundle-type.yaml",
+    });
+    expect(fixture.written.has(".bundle-type.yaml")).toBe(true);
   },
 );
 
@@ -454,15 +466,18 @@ it.each([
       );
     if (mode === "type")
       fixture.files.set(
-        ".bundle.yaml",
-        canonicalJson({ ...checkSpecDefinition, name: "Other type" }),
+        "types/check.yaml",
+        canonicalJson({
+          ...checkSpecDefinition,
+          contentType: "application/json",
+        }),
       );
     if (mode === "model") {
       const { spec } = splitCheckSpec({
         ...modelOf(fixture.check),
         name: "Other Check",
       });
-      fixture.files.set("check.yaml", canonicalJson(spec));
+      fixture.files.set("moved/model.yaml", canonicalJson(spec));
     }
     if (mode === "instructions") fixture.files.delete("instructions/text.md");
     if (mode === "link")

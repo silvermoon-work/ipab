@@ -3,20 +3,21 @@ import type { CID } from "multiformats/cid";
 export type JsonSchema = boolean | { readonly [key: string]: unknown };
 export type ContentType = string;
 export interface BundleManifest {
-  readonly name: string;
+  readonly title: string;
   readonly description: string;
-  readonly entry: {
-    readonly path: string;
-    readonly schema?: JsonSchema;
-    readonly contentType: ContentType;
-  };
+  readonly entry: string;
+  readonly type: string;
+}
+export interface BundleType {
+  readonly contentType: ContentType;
+  readonly schema?: JsonSchema;
 }
 export interface SchemaDefinitions {
   readonly schema: JsonSchema;
   readonly definitions: ReadonlyMap<string, JsonSchema>;
 }
 export interface SchemaBlock extends SchemaDefinitions {
-  readonly manifest: BundleManifest;
+  readonly type: BundleType;
   readonly cid: CID;
   readonly bytes: Uint8Array;
 }

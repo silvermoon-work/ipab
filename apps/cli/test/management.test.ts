@@ -349,7 +349,7 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
     state.close();
     const pins = await cli(work.stateDir, ["pin", "list"]);
     expect(pins.out).toMatch(
-      /^NAME\s+CID\s+KIND\s+BUNDLE TYPE\s+SOURCE\nreader\s+/,
+      /^NAME\s+CID\s+KIND\s+TITLE\s+TYPE CID\s+SOURCE\nreader\s+/,
     );
     expect(pins.out).toContain(another);
     expect(
@@ -362,7 +362,7 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
           name: "reader",
           cid: another,
           kind: "bundle",
-          typeName: "IPAB Node App",
+          title: "Fixture App",
           schemaCid: schema,
         },
         ...builtinPins,
@@ -948,14 +948,14 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
           name: "a",
           cid: schema,
           kind: "bundle",
-          typeName: "IPAB Node App",
+          title: "Fixture App",
           schemaCid: schema,
         },
         {
           name: "z",
           cid: another,
           kind: "bundle",
-          typeName: "IPAB Node App",
+          title: "Fixture App",
           schemaCid: schema,
         },
         ...builtinPins,

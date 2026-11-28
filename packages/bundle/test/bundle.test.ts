@@ -14,6 +14,7 @@ import {
   openBundle,
   openSchema,
   parseBundleManifest,
+  parseBundleType,
   parseData,
   safePath,
   schemaBlockBytes,
@@ -27,7 +28,9 @@ it(
   "recognizes schema declarations without treating arbitrary DAG-CBOR as a schema",
   { tags: ["unit"] },
   () => {
-    expect(declaresBundleSchema(dagCbor.encode({ entry: null }))).toBe(true);
+    expect(declaresBundleSchema(dagCbor.encode({ contentType: null }))).toBe(
+      true,
+    );
     expect(
       declaresBundleSchema(dagCbor.encode({ name: "ordinary object" })),
     ).toBe(false);
@@ -38,14 +41,14 @@ it(
 
 const text = (value: string) => new TextEncoder().encode(value);
 const json = (value: unknown) => canonicalJson(value);
-const definition = (
-  schema: JsonSchema,
-  path = "data.json",
-  contentType = "application/json",
-) => ({
-  name: "Fixture",
-  description: "",
-  entry: { schema, path, contentType },
+const definition = (schema: JsonSchema, contentType = "application/json") => ({
+  schema,
+  contentType,
+});
+const manifest = (entry = "data.json") => ({
+  title: "Fixture",
+  entry,
+  type: ".bundle-type.yaml",
 });
 async function tree(files: Record<string, Uint8Array>) {
   const blocks = new Map<string, Uint8Array>();
@@ -81,11 +84,12 @@ async function fixture(
   type = "application/json",
 ) {
   // Raw encoding lets the loader tests exercise malformed schemas too.
-  const typeDefinition = definition(schema, "data.json", type);
+  const typeDefinition = definition(schema, type);
   const bytes = dagCbor.encode(typeDefinition);
   const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
   const f = await tree({
-    ".bundle.yaml": json(typeDefinition),
+    ".bundle.yaml": json(manifest()),
+    ".bundle-type.yaml": json(typeDefinition),
     "data.json":
       type === "application/json" ? json(value) : text(String(value)),
     ...files,
@@ -121,11 +125,13 @@ describe(
         const entry = Uint8Array.of(0, 255, 17, 128);
         for (const extra of [{}, { schema: false }]) {
           const manifest = {
-            name: "Binary",
-            entry: { path: "file.bin", contentType, ...extra },
+            title: "Binary",
+            entry: "file.bin",
+            type: ".bundle-type.yaml",
           };
           const f = await tree({
             ".bundle.yaml": json(manifest),
+            ".bundle-type.yaml": json({ contentType, ...extra }),
             "file.bin": entry,
           });
           const bundle = await openBundle(f.root, f);
@@ -140,11 +146,13 @@ describe(
     );
     it("checks structured syntax even without a schema and keeps missing entries invalid", async () => {
       const manifest = {
-        name: "JSON",
-        entry: { path: "data.json", contentType: "application/json" },
+        title: "JSON",
+        entry: "data.json",
+        type: ".bundle-type.yaml",
       };
       const good = await tree({
         ".bundle.yaml": json(manifest),
+        ".bundle-type.yaml": json({ contentType: "application/json" }),
         "data.json": text("{}"),
       });
       expect((await openBundle(good.root, good)).validation.status).toBe(
@@ -152,13 +160,17 @@ describe(
       );
       const bad = await tree({
         ".bundle.yaml": json(manifest),
+        ".bundle-type.yaml": json({ contentType: "application/json" }),
         "data.json": text("{"),
       });
       await expect(openBundle(bad.root, bad)).rejects.toMatchObject({
         code: "CONTENT_INVALID",
         path: "data.json",
       });
-      const missing = await tree({ ".bundle.yaml": json(manifest) });
+      const missing = await tree({
+        ".bundle.yaml": json(manifest),
+        ".bundle-type.yaml": json({ contentType: "application/json" }),
+      });
       await expect(openBundle(missing.root, missing)).rejects.toMatchObject({
         code: "CONTENT_UNAVAILABLE",
         path: "data.json",
@@ -346,17 +358,16 @@ describe(
       });
     });
     it("validates Markdown metadata while preserving the entry body and type identity", async () => {
-      const manifest = definition(
+      const typeDefinition = definition(
         {
           type: "object",
           required: ["title"],
           properties: { title: { type: "string" } },
           additionalProperties: false,
         },
-        "note.md",
         "text/markdown",
       );
-      const type = await encodeSchema(manifest);
+      const type = await encodeSchema(typeDefinition);
       const sources = [
         "---\r\ntitle: Note\r\n---\r\n# Body\r\ninvalid: [\r\n",
         "---\ntitle: Other\n---\n# Different body\n",
@@ -364,7 +375,8 @@ describe(
       const roots: string[] = [];
       for (const source of sources) {
         const f = await tree({
-          ".bundle.yaml": json(manifest),
+          ".bundle.yaml": json(manifest("note.md")),
+          ".bundle-type.yaml": json(typeDefinition),
           "note.md": text(source),
         });
         const bundle = await openBundle(f.root, f);
@@ -386,7 +398,8 @@ describe(
         ["---\ntitle: 1\n---\n", "/title"],
       ] satisfies [string, string][]) {
         const f = await tree({
-          ".bundle.yaml": json(manifest),
+          ".bundle.yaml": json(manifest("note.md")),
+          ".bundle-type.yaml": json(typeDefinition),
           "note.md": text(source),
         });
         await expect(openBundle(f.root, f)).rejects.toMatchObject({
@@ -413,7 +426,8 @@ describe(
         },
         {
           "invalid.json": new Uint8Array(1024).fill(255),
-          "child/.bundle.yaml": json(missing.manifest),
+          "child/.bundle.yaml": json(manifest()),
+          "child/.bundle-type.yaml": json(missing.type),
           "child/data.json": json("not an integer"),
         },
       );
@@ -451,11 +465,15 @@ describe(
           openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
         ).rejects.toMatchObject({ code: "SCHEMA_INVALID" });
       }
-      // Omitted description must be normalized before the block is encoded.
-      const bytes = dagCbor.encode({
-        name: "Fixture",
-        entry: definition({}).entry,
-      });
+      const bytes = Uint8Array.from(
+        Buffer.concat([
+          Buffer.from([0xa2]),
+          dagCbor.encode("contentType"),
+          dagCbor.encode("application/json"),
+          dagCbor.encode("schema"),
+          dagCbor.encode({}),
+        ]),
+      );
       const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
       await expect(
         openSchema(cid, { resolveCid: () => Promise.resolve(bytes) }),
@@ -589,12 +607,10 @@ describe(
       expect(changed.cid.equals(a.cid)).toBe(false);
       const overhead =
         dagCbor.encode({
-          ...definition(true),
-          description: "x".repeat(schemaBlockBytes),
+          ...definition({ description: "x".repeat(schemaBlockBytes) }),
         }).length - schemaBlockBytes;
       const schema = {
-        ...definition(true),
-        description: "x".repeat(schemaBlockBytes - overhead),
+        ...definition({ description: "x".repeat(schemaBlockBytes - overhead) }),
       };
       const exact = await encodeSchema(schema);
       expect(exact.bytes.length).toBe(schemaBlockBytes);
@@ -605,13 +621,20 @@ describe(
       ).resolves.toHaveProperty("cid");
       await expect(
         encodeSchema(
-          { ...schema, description: `${schema.description}x` },
+          {
+            ...schema,
+            schema: {
+              description: `${(schema.schema as { description: string }).description}x`,
+            },
+          },
           { schemaBytes: schemaBlockBytes + 1 },
         ),
       ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
       const oversized = dagCbor.encode({
         ...schema,
-        description: `${schema.description}x`,
+        schema: {
+          description: `${(schema.schema as { description: string }).description}x`,
+        },
       });
       const cid = CID.createV1(dagCbor.code, await sha256.digest(oversized));
       await expect(
@@ -783,45 +806,133 @@ describe("closed schema profile and safe parsing", { tags: ["unit"] }, () => {
       ),
     ).toThrow("UTF-8");
   });
-  it("requires an entry media type, permits optional schema, and rejects removed defaults", async () => {
+  it("accepts only pure types, preserves absent schema and rejects old profiles", async () => {
     const valid = definition({ type: "object" });
     for (const value of [
-      { ...valid, name: "" },
-      { ...valid, name: "  " },
-      { ...valid, name: null },
-      { ...valid, description: null },
+      { ...valid, name: "Old" },
+      { ...valid, title: "Instance" },
+      { ...valid, description: "" },
+      { ...valid, entry: "data.json" },
       { ...valid, extra: true },
-      { ...valid, entry: { ...valid.entry, defaultValue: {} } },
-      { ...valid, entry: { ...valid.entry, contentType: "not a MIME type" } },
-      { ...valid, entry: { ...valid.entry, path: "../x" } },
-      { ...valid, entry: { ...valid.entry, path: ".bundle.yaml" } },
-      { ...valid, entry: { ...valid.entry, schema: 1 } },
-      { ...valid, entry: { path: "x", schema: {} } },
+      { ...valid, defaultValue: {} },
+      { ...valid, contentType: "not a MIME type" },
+      { ...valid, contentType: "application/json\n" },
+      { ...valid, contentType: "application/json\r\n" },
+      { ...valid, path: "../x" },
+      { ...valid, schema: 1 },
+      { schema: {} },
     ])
       expect(() => inspectBundleSchema(value)).toThrow(ContentBundleError);
-    const omitted = { name: valid.name, entry: valid.entry };
-    const a = await encodeSchema(valid);
-    const b = await encodeSchema(omitted);
-    expect(a.cid.equals(b.cid)).toBe(true);
-    expect(b.manifest.description).toBe("");
-    const renamed = await encodeSchema({ ...valid, name: "Other" });
-    expect(renamed.cid.equals(a.cid)).toBe(false);
-    const noSchema = {
-      name: valid.name,
-      entry: { path: "image.png", contentType: "image/png" },
-    };
+    const noSchema = { contentType: "image/png" };
     const plain = await encodeSchema(noSchema);
     const explicit = await encodeSchema({
       ...noSchema,
-      entry: { ...noSchema.entry, schema: true },
+      schema: true,
     });
-    expect(plain.manifest.entry).not.toHaveProperty("schema");
+    expect(plain.type).not.toHaveProperty("schema");
     expect(plain.cid.equals(explicit.cid)).toBe(false);
     expect(() => inspectBundleSchema(definition(false))).not.toThrow();
-    const changed = await fixture(valid.entry.schema, { changed: true });
-    const original = await fixture(valid.entry.schema, {});
+    const changed = await fixture(valid.schema, { changed: true });
+    const original = await fixture(valid.schema, {});
     expect(changed.schemaCid.equals(original.schemaCid)).toBe(true);
     expect(changed.root.equals(original.root)).toBe(false);
+  });
+  it("separates instance metadata and paths from formatting-invariant type identity", async () => {
+    const type = {
+      contentType: "application/json",
+      schema: { type: "object" },
+    };
+    const roots: string[] = [];
+    for (const instance of [
+      { title: "One", entry: "one.json", type: ".bundle-type.yaml" },
+      {
+        title: "Two",
+        description: "Other",
+        entry: "nested/two.json",
+        type: "types/data.yaml",
+      },
+    ]) {
+      const f = await tree({
+        ".bundle.yaml": json(instance),
+        [instance.type]: text(
+          "schema: {type: object}\ncontentType: application/json\n",
+        ),
+        [instance.entry]: text("{}"),
+      });
+      const bundle = await openBundle(f.root, f);
+      expect(bundle.schema.cid.equals((await encodeSchema(type)).cid)).toBe(
+        true,
+      );
+      roots.push(bundle.cid.toString());
+    }
+    expect(roots[0]).not.toBe(roots[1]);
+    const encoded = await encodeSchema(type);
+    for (const changed of [
+      { ...type, contentType: "application/yaml" },
+      { ...type, schema: false },
+    ])
+      expect((await encodeSchema(changed)).cid.equals(encoded.cid)).toBe(false);
+    expect(
+      (
+        await encodeSchema(parseBundleType(text(JSON.stringify(type))))
+      ).cid.equals(encoded.cid),
+    ).toBe(true);
+  });
+  it("rejects missing type files, invalid paths, file collisions and old manifests", async () => {
+    const valid = manifest();
+    expect(parseBundleManifest(json(valid)).description).toBe("");
+    for (const invalid of [
+      { ...valid, title: " " },
+      { ...valid, type: undefined },
+      { ...valid, type: "../type.yaml" },
+      { ...valid, entry: "/absolute" },
+      { ...valid, type: "data.json" },
+      { ...valid, entry: ".bundle.yaml" },
+      {
+        name: "Old",
+        entry: { path: "data.json", contentType: "application/json" },
+      },
+    ])
+      expect(() =>
+        parseBundleManifest(text(JSON.stringify(invalid))),
+      ).toThrow();
+    const f = await tree({
+      ".bundle.yaml": json(valid),
+      "data.json": text("{}"),
+    });
+    await expect(openBundle(f.root, f)).rejects.toMatchObject({
+      code: "CONTENT_UNAVAILABLE",
+      path: ".bundle-type.yaml",
+    });
+    const invalidType = await tree({
+      ".bundle.yaml": json(valid),
+      ".bundle-type.yaml": text("name: Old profile\n"),
+      "data.json": text("{}"),
+    });
+    await expect(
+      openBundle(invalidType.root, invalidType),
+    ).rejects.toMatchObject({
+      code: "SCHEMA_INVALID",
+      path: ".bundle-type.yaml",
+    });
+  });
+  it("preserves cancellation while parsing or decoding the pure type", async () => {
+    expect(() =>
+      parseBundleType(text("contentType: application/json\n"), 1024, () => {
+        throw new ContentBundleError("ABORTED", "cancelled");
+      }),
+    ).toThrow(expect.objectContaining({ code: "ABORTED" }));
+    const schema = await encodeSchema(definition({}));
+    const controller = new AbortController();
+    await expect(
+      openSchema(schema.cid, {
+        signal: controller.signal,
+        resolveCid: () => {
+          controller.abort(new Error("cancelled after fetch"));
+          return Promise.resolve(schema.bytes);
+        },
+      }),
+    ).rejects.toMatchObject({ code: "ABORTED" });
   });
   it.each([
     { $defs: [] },

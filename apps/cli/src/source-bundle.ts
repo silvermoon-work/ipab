@@ -2,21 +2,15 @@ import { relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import ignore from "ignore";
 import { stringify } from "yaml";
-import { bundleLimits } from "@ipab/bundle";
+import { bundleLimits, parseBundleManifest } from "@ipab/bundle";
 import { listTree, readBytes } from "@ipab/bundle-builder";
 import { filesystemTree } from "@ipab/bundle-builder/node";
 import { nodeError, type AuthoringOptions } from "./authoring.js";
 import { HostError } from "./errors.js";
 
 export const sourceSchema = {
-  name: "IPAB App Source",
-  description:
-    "App project source snapshot; build inputs are ordinary resources.",
-  entry: {
-    path: "package.json",
-    contentType: "application/json",
-    schema: { type: "object" },
-  },
+  contentType: "application/json",
+  schema: { type: "object" },
 } as const;
 
 export async function captureSource(
@@ -113,11 +107,30 @@ export async function captureSource(
       throw new HostError("Source .bundle.yaml is excluded by .gitignore.");
     files.set(
       ".bundle.yaml",
-      new TextEncoder().encode(stringify(sourceSchema)),
+      new TextEncoder().encode(
+        stringify({
+          title: "IPAB App Source",
+          entry: "package.json",
+          type: ".bundle-type.yaml",
+        }),
+      ),
     );
+    if (excluded(".bundle-type.yaml", false))
+      throw new HostError(
+        "Source .bundle-type.yaml is excluded by .gitignore.",
+      );
+    if (!files.has(".bundle-type.yaml"))
+      files.set(
+        ".bundle-type.yaml",
+        new TextEncoder().encode(stringify(sourceSchema)),
+      );
   }
-  if (!files.has("package.json"))
-    throw new HostError("Source package.json is excluded by .gitignore.");
+  const manifest = parseBundleManifest(files.get(".bundle.yaml")!);
+  for (const required of [manifest.entry, manifest.type])
+    if (!files.has(required))
+      throw new HostError(
+        `Source required file is excluded or missing: ${required}.`,
+      );
   return files;
 }
 

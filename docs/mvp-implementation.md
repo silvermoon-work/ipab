@@ -282,6 +282,8 @@ a directory containing `.bundle.yaml` and `ipab.build.yaml`, or the recipe path:
 ```yaml
 version: 1
 files:
+  - source: .bundle-type.yaml
+    target: .bundle-type.yaml
   - source: app.json
     target: app.json
   - source: compiled/main.cjs
@@ -291,10 +293,11 @@ imports:
     target: resources/original
 ```
 
-Type and entry come only from `.bundle.yaml`, not duplicate recipe fields. Files
-use explicit relative local source/target paths; no scans or implicit
-resolution. CID imports are exact UnixFS content, not Names or Artifact values.
-Imported root/subtree CIDs and block bytes are preserved. Only ancestor
+Instance entry/type paths come only from `.bundle.yaml`; its referenced file
+defines pure MIME/schema. The recipe must select both files, not duplicate their
+fields. Files use explicit relative local source/target paths; no scans or
+implicit resolution. CID imports are exact UnixFS content, not Names or Artifact
+values. Imported root/subtree CIDs and block bytes are preserved. Only ancestor
 directories are rebuilt. Needed blocks are hash-verified and included in the
 final CAR. Missing/corrupt content, path collisions (including case-only
 collisions), crossing files and missing entry selections fail. `bundle build`

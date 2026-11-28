@@ -116,7 +116,7 @@ describe(
         cid,
         owner: "test-pin",
         status: "ready",
-        metadata: { kind: "bundle", typeName: "App", schemaCid: cid },
+        metadata: { kind: "bundle", title: "App", schemaCid: cid },
       });
       expect(await client.context.resolvePin("check")).toBe(cid);
       expect(await client.context.resolvePin("absent")).toBeUndefined();
@@ -141,7 +141,7 @@ describe(
         cid,
         owner: "legacy-pin",
         status: "ready",
-        metadata: { kind: "schema", typeName: "App", schemaCid: cid },
+        metadata: { kind: "schema", title: "App", schemaCid: cid },
       });
       await expect(client.context.resolvePin("legacy")).rejects.toThrow(
         "not a Bundle pin",

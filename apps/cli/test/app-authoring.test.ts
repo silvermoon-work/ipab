@@ -27,6 +27,7 @@ import { State } from "../src/state.js";
 import { buildChain, projectBuild, runPrebuild } from "../src/app-prebuild.js";
 import { readCar } from "../src/authoring.js";
 import { message } from "../src/errors.js";
+import { templateSchema } from "../src/template-definition.js";
 
 const require = createRequire(import.meta.url);
 const appData = {
@@ -722,21 +723,16 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       ).toContain("Hello from your IPAB App.");
       await mkdir(join(project, "schemas"));
       const definition = {
-        name: "Note",
-        entry: {
-          path: "note.json",
-          schema: { type: "string" },
-          contentType: "application/json",
-        },
+        schema: { type: "string" },
+        contentType: "application/json",
       };
       const second = {
         ...definition,
-        name: "Other note",
-        description: "Second type",
+        schema: { type: "string", minLength: 1 },
       };
       for (const [name, value] of [
         ["note.json", definition],
-        ["same.json", { ...definition, description: "" }],
+        ["same.json", definition],
         ["other.json", second],
       ] as const)
         await writeFile(join(project, "schemas", name), JSON.stringify(value));
@@ -807,7 +803,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
         JSON.stringify({ type: "string" }),
         JSON.stringify({
           ...definition,
-          entry: { ...definition.entry, defaultValue: 1 },
+          defaultValue: 1,
         }),
       ]) {
         await writeFile(join(project, "schemas", "note.json"), invalid);
@@ -921,7 +917,7 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
   }, 60_000);
   it("extends init with explicit data-only local templates and preserves binary files", async () => {
     const template = join(work.root, "template");
-    await mkdir(template);
+    await mkdir(join(template, "project", "assets"), { recursive: true });
     const definition = {
       version: 1,
       files: [
@@ -931,18 +927,41 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       ],
     };
     await writeFile(
-      join(template, "ipab-template.json"),
-      JSON.stringify(definition),
+      join(template, ".bundle.yaml"),
+      stringify({
+        title: "Custom template",
+        entry: "template.yaml",
+        type: ".bundle-type.yaml",
+      }),
     );
     await writeFile(
-      join(template, "package.txt"),
+      join(template, ".bundle-type.yaml"),
+      stringify(templateSchema),
+    );
+    await writeFile(
+      join(template, "template.yaml"),
+      stringify({
+        version: 1,
+        root: "project",
+        render: { suffix: ".liquid" },
+        parameters: {
+          name: { type: "string", required: true },
+          description: { type: "string", default: "" },
+        },
+      }),
+    );
+    await writeFile(
+      join(template, "project", "package.json.liquid"),
       '{"name":"{{name}}","private":true}',
     );
     await writeFile(
-      join(template, "config.json"),
+      join(template, "project", "ipab.json"),
       '{"entry":"src/main.ts","resources":[]}',
     );
-    await writeFile(join(template, "image.bin"), new Uint8Array([0, 255, 128]));
+    await writeFile(
+      join(template, "project", "assets", "image.bin"),
+      new Uint8Array([0, 255, 128]),
+    );
     const created = await cli(work.stateDir, [
       "--json",
       "init",
@@ -963,6 +982,46 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       (await cli(work.stateDir, ["init", "unknown", "--template", "unknown"]))
         .err,
     ).toContain("Unknown template");
+    const legacy = join(work.root, "legacy-template");
+    await mkdir(legacy);
+    await writeFile(
+      join(legacy, "ipab-template.json"),
+      JSON.stringify(definition),
+    );
+    await writeFile(
+      join(legacy, "package.txt"),
+      '{"name":"{{name}}","private":true}',
+    );
+    await writeFile(
+      join(legacy, "config.json"),
+      '{"entry":"src/main.ts","resources":[]}',
+    );
+    await writeFile(join(legacy, "image.bin"), new Uint8Array([0, 255, 128]));
+    const legacyProject = join(work.root, "legacy-project");
+    const mapped = await initApp("legacy", legacyProject, { template: legacy });
+    expect(mapped.templateCid).toBeNull();
+    expect(
+      JSON.parse(await readFile(join(legacyProject, "package.json"), "utf8")),
+    ).toMatchObject({ name: "legacy" });
+    expect(await readFile(join(legacyProject, "assets", "image.bin"))).toEqual(
+      Buffer.from([0, 255, 128]),
+    );
+    await expect(
+      initApp("invalid", join(work.root, "invalid"), {
+        template: legacy,
+        parameters: ["description=unused"],
+      }),
+    ).rejects.toThrow("--param requires a Template Bundle");
+    for (const manifest of [
+      "name: Old profile\nentry: {path: template.yaml, contentType: application/yaml}\n",
+      "title: Incomplete\nentry: template.yaml\ntype: .bundle-type.yaml\n",
+    ]) {
+      await writeFile(join(legacy, ".bundle.yaml"), manifest);
+      await expect(
+        initApp("invalid", join(work.root, "invalid"), { template: legacy }),
+      ).rejects.toThrow();
+    }
+    await unlink(join(legacy, ".bundle.yaml"));
     for (const files of [
       [{ source: "../outside", target: "package.json" }],
       [{ source: "package.txt", target: "../outside" }],
@@ -980,21 +1039,28 @@ describe("App-first authoring", { tags: ["release-e2e"] }, () => {
       [{ source: "package.txt", target: "package.json" }],
     ]) {
       await writeFile(
-        join(template, "ipab-template.json"),
+        join(legacy, "ipab-template.json"),
         JSON.stringify({ version: 1, files }),
       );
       await expect(
-        initApp("invalid", join(work.root, "invalid"), { template }),
+        initApp("invalid", join(work.root, "invalid"), { template: legacy }),
       ).rejects.toThrow();
     }
     await writeFile(
-      join(template, "ipab-template.json"),
+      join(legacy, "ipab-template.json"),
       JSON.stringify(definition),
     );
-    await writeFile(join(template, "package.txt"), "{{unknown}}");
+    await writeFile(join(legacy, "package.txt"), "{{unknown}}");
+    await expect(
+      initApp("invalid", join(work.root, "invalid"), { template: legacy }),
+    ).rejects.toThrow("Unknown template variable");
+    await writeFile(
+      join(template, "project", "package.json.liquid"),
+      "{{unknown}}",
+    );
     await expect(
       initApp("invalid", join(work.root, "invalid"), { template }),
-    ).rejects.toThrow("Unknown template variable");
+    ).rejects.toThrow("undefined variable");
   });
   it("validates hook contracts and detects recursive builds without guessing a strategy", async () => {
     expect(projectBuild(undefined)).toBeUndefined();

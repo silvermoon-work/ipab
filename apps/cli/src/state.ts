@@ -51,9 +51,9 @@ export interface Hold {
   recordId: string | null;
 }
 export type PinMetadata =
-  | { kind: "bundle"; typeName: string; schemaCid: string }
-  | { kind: "schema"; typeName: string; schemaCid: string }
-  | { kind: "content"; typeName: null; schemaCid: null };
+  | { kind: "bundle"; title: string; schemaCid: string }
+  | { kind: "schema"; title: string; schemaCid: string }
+  | { kind: "content"; title: null; schemaCid: null };
 export interface NamedPin {
   name: string;
   cid: string;
@@ -369,20 +369,20 @@ export class State {
     if (data.metadata !== null) {
       const value = object(data.metadata, "pin type metadata");
       if (value.kind === "content") {
-        if (value.typeName !== null || value.schemaCid !== null)
+        if (value.title !== null || value.schemaCid !== null)
           throw new HostError("Invalid persisted pin type metadata.");
-        metadata = { kind: "content", typeName: null, schemaCid: null };
+        metadata = { kind: "content", title: null, schemaCid: null };
       } else {
         if (
           (value.kind !== "bundle" && value.kind !== "schema") ||
-          typeof value.typeName !== "string" ||
-          !value.typeName.trim() ||
+          typeof value.title !== "string" ||
+          !value.title.trim() ||
           typeof value.schemaCid !== "string"
         )
           throw new HostError("Invalid persisted pin type metadata.");
         metadata = {
           kind: value.kind,
-          typeName: value.typeName,
+          title: value.title,
           schemaCid: exactCid(value.schemaCid, true),
         };
       }

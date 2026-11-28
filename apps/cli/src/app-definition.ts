@@ -8,46 +8,40 @@ import {
 
 export const appBuiltinAlias = "builtin:node-app.v1";
 export const appSchema = {
-  name: "IPAB Node App",
-  description:
-    "Self-contained Node CommonJS application and declarative metadata.",
-  entry: {
-    path: "app.json",
-    contentType: "application/json",
-    schema: {
-      $id: "urn:ipab:node-app.v1",
-      type: "object",
-      additionalProperties: false,
-      required: ["name", "version", "entry"],
-      properties: {
-        name: { type: "string" },
-        version: { type: "string" },
-        description: { type: "string" },
-        entry: { type: "string" },
-        source: {
+  contentType: "application/json",
+  schema: {
+    $id: "urn:ipab:node-app.v1",
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "version", "entry"],
+    properties: {
+      name: { type: "string" },
+      version: { type: "string" },
+      description: { type: "string" },
+      entry: { type: "string" },
+      source: {
+        type: "object",
+        additionalProperties: false,
+        required: ["cid"],
+        properties: { cid: { type: "string" } },
+      },
+      supportedSchemas: { type: "string" },
+      author: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: { name: { type: "string" }, email: { type: "string" } },
+      },
+      license: { type: "string" },
+      icon: { type: "string" },
+      i18n: {
+        type: "object",
+        additionalProperties: {
           type: "object",
           additionalProperties: false,
-          required: ["cid"],
-          properties: { cid: { type: "string" } },
-        },
-        supportedSchemas: { type: "string" },
-        author: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name"],
-          properties: { name: { type: "string" }, email: { type: "string" } },
-        },
-        license: { type: "string" },
-        icon: { type: "string" },
-        i18n: {
-          type: "object",
-          additionalProperties: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              description: { type: "string" },
-            },
+          properties: {
+            name: { type: "string" },
+            description: { type: "string" },
           },
         },
       },
@@ -57,7 +51,7 @@ export const appSchema = {
 
 // This is the canonical full definition, not a separate identity for the alias.
 export const appSchemaCid = CID.parse(
-  "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
+  "bafyreifualoac4ddlzl63jlfstz4xsq75cai5t6ywu3j3khhyukoccmybm",
 );
 export const builtinTypes: ReadonlyMap<string, string> = new Map([
   [appBuiltinAlias, appSchemaCid.toString()],

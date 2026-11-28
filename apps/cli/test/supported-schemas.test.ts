@@ -40,23 +40,19 @@ it(
       ),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
     const definition = {
-      name: "Collection",
-      entry: {
-        path: "data.json",
-        schema: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: Object.fromEntries(
-              Array.from({ length: 3000 }, (_, index) => [
-                `value-${index}`,
-                { type: "string" },
-              ]),
-            ),
-          },
+      schema: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: Object.fromEntries(
+            Array.from({ length: 3000 }, (_, index) => [
+              `value-${index}`,
+              { type: "string" },
+            ]),
+          ),
         },
-        contentType: "application/json",
       },
+      contentType: "application/json",
     };
     const source = Buffer.from(JSON.stringify(definition));
     await expect(
@@ -72,7 +68,10 @@ it(
     ).rejects.toThrow("aggregate work");
     const blocks = await Promise.all(
       Array.from({ length: 5 }, (_, index) =>
-        encodeSchema({ ...definition, name: `Type ${index}` }),
+        encodeSchema({
+          ...definition,
+          schema: { ...definition.schema, title: `Type ${index}` },
+        }),
       ),
     );
     await expect(

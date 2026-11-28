@@ -48,13 +48,14 @@ no automatic stdout report or input publication.
 
 The App embeds a real Check Spec Bundle at `resources/check/` and its accurate
 CID at `resources/check-model.json`. Runtime verifies its type and resolved
-model against the executable definition before checking. The model uses the
-existing `IPAB Check Spec` identity and can be opened by Check viewer.
+model against the executable definition before checking. The model uses the pure
+Check Spec type identity and can be opened by the rebuilt Check viewer.
 
 Normal completion writes:
 
 ```text
 .bundle.yaml
+.bundle-type.yaml # pure MIME / JSON Schema type
 result.json       # entry
 check/            # real UnixFS DAG link to the embedded original model
 ```
@@ -103,5 +104,6 @@ Checks retains the user's filesystem, process, network and environment access.
 
 Use `pnpm exec turbo run test typecheck --filter=@ipab/check-sdk`. Tests include
 real template creation, strict compilation, App CAR import, STDIN execution,
-pass/fail commitment and exact model-DAG reuse. The root `pnpm check` also
-enforces all four existing 90% coverage thresholds.
+pass/fail commitment and exact model-DAG reuse. Root `pnpm check` runs daily
+unit/mock validation; `pnpm check-release` retains full E2E and all four
+existing 90% coverage thresholds.

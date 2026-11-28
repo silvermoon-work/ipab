@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { mkdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { encodeSchema } from "@ipab/bundle";
+import {
+  encodeSchema,
+  parseBundleManifest,
+  parseBundleType,
+} from "@ipab/bundle";
 import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
-import { captureSource, sourceFingerprint } from "../src/source-bundle.js";
+import {
+  captureSource,
+  sourceFingerprint,
+  sourceSchema,
+} from "../src/source-bundle.js";
 import { appDescription, appSchema } from "../src/app-definition.js";
 import { fixture } from "./helpers.js";
 
@@ -14,6 +22,18 @@ beforeEach(async () => {
   project = join(work.root, "project");
   await mkdir(project);
   await writeFile(join(project, "package.json"), '{"name":"example"}\n');
+  await writeFile(
+    join(project, ".bundle.yaml"),
+    JSON.stringify({
+      title: "Source",
+      entry: "package.json",
+      type: ".bundle-type.yaml",
+    }),
+  );
+  await writeFile(
+    join(project, ".bundle-type.yaml"),
+    JSON.stringify(sourceSchema),
+  );
 });
 afterEach(async () => {
   await work.cleanup();
@@ -57,6 +77,7 @@ it(
     ];
     const first = await captureSource(project, outputs);
     expect([...first.keys()].sort()).toEqual([
+      ".bundle-type.yaml",
       ".bundle.yaml",
       ".gitignore",
       "package.json",
@@ -86,14 +107,18 @@ it(
   { tags: ["unit"] },
   async () => {
     const definition =
-      '{"name":"Custom","entry":{"path":"package.json","schema":{"type":"object"},"contentType":"application/json"}}\n';
+      '{"title":"Custom","entry":"package.json","type":".bundle-type.yaml"}\n';
     await writeFile(join(project, ".bundle.yaml"), definition);
+    await writeFile(
+      join(project, ".bundle-type.yaml"),
+      '{"contentType":"application/json","schema":{"type":"object"}}',
+    );
     expect(
       new TextDecoder().decode(
         (await captureSource(project, [])).get(".bundle.yaml"),
       ),
     ).toBe(definition);
-    for (const path of [".bundle.yaml", "package.json"]) {
+    for (const path of [".bundle.yaml", ".bundle-type.yaml", "package.json"]) {
       await writeFile(join(project, ".gitignore"), `${path}\n`);
       await expect(captureSource(project, [])).rejects.toThrow("excluded");
     }
@@ -113,6 +138,43 @@ it(
         signal: AbortSignal.abort(new Error("cancelled")),
       }),
     ).rejects.toThrow("cancelled");
+  },
+);
+
+it(
+  "synthesizes split source controls only when the manifest is absent, without modifying the project",
+  { tags: ["unit"] },
+  async () => {
+    await unlink(join(project, ".bundle-type.yaml"));
+    await expect(captureSource(project, [])).rejects.toThrow("missing");
+    await unlink(join(project, ".bundle.yaml"));
+    const files = await captureSource(project, []);
+    expect(parseBundleManifest(files.get(".bundle.yaml")!)).toEqual({
+      title: "IPAB App Source",
+      description: "",
+      entry: "package.json",
+      type: ".bundle-type.yaml",
+    });
+    expect(parseBundleType(files.get(".bundle-type.yaml")!)).toEqual(
+      sourceSchema,
+    );
+    const encoded = await encodeBundleCar(memoryTree(files));
+    expect(encoded.schema.type).toEqual(sourceSchema);
+    await encoded.close();
+    for (const path of [".bundle.yaml", ".bundle-type.yaml"])
+      await expect(readFile(join(project, path))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    await writeFile(join(project, ".gitignore"), ".bundle-type.yaml\n");
+    await expect(captureSource(project, [])).rejects.toThrow("excluded");
+    await unlink(join(project, ".gitignore"));
+    await writeFile(
+      join(project, ".bundle.yaml"),
+      "name: Old profile\nentry: {path: package.json, contentType: application/json}\n",
+    );
+    await expect(captureSource(project, [])).rejects.toThrow(
+      "Invalid .bundle.yaml",
+    );
   },
 );
 

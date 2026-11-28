@@ -46,7 +46,7 @@ import { splitCheckSpec } from "@ipab/check-spec/bundle";
 
 const { spec, files } = splitCheckSpec(oldSpec);
 // Serialize spec into check.yaml; write each files entry below the Bundle root.
-// Include the viewer's exact complete .bundle.yaml definition, then build.
+// Include .bundle.yaml instance paths/title and the viewer's exact pure .bundle-type.yaml, then build.
 ```
 
 Conversion preserves ordered checkpoints, rules, inline documentation and

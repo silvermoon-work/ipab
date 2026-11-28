@@ -23,7 +23,8 @@ instead of a content CID:
 node apps\cli\dist\main.js exec <viewer-app-cid> .\examples\check-spec
 ```
 
-The folder must include `.bundle.yaml`, `check.yaml` and the referenced Markdown
+The folder must include `.bundle.yaml`, its referenced pure type file and entry
+(usually `.bundle-type.yaml` and `check.yaml`), and the referenced Markdown
 files. Relative folders resolve from the CLI's working directory. Add
 `--no-open` to open the reported URL manually. You do not need to build or
 import the content folder after editing it.
@@ -80,12 +81,12 @@ build targets, and the App stays private. No publishing, registration, shared
 Store writes or automatic association happens during root build.
 
 The authoritative App-supported definition is
-[schemas/check.json](schemas/check.json). The example's `.bundle.yaml` carries
-the same complete definition; a real CAR/SSR regression checks their normalized
-type identity. Copy that definition for other Check bundles; do not substitute
-the old Check JSON Schema (which describes a different data contract). Entry
-schemas use standard JSON Schema Draft 2020-12; the Bundle definition carries no
-entry default data.
+[schemas/check.json](schemas/check.json). The example's `.bundle-type.yaml`
+carries the same complete definition; a real CAR/SSR regression checks their
+normalized type identity. Copy that definition for other Check bundles; do not
+substitute the old Check JSON Schema (which describes a different data
+contract). Entry schemas use standard JSON Schema Draft 2020-12; the Bundle
+definition carries no entry default data.
 
 Use [check.yaml](../../examples/check-spec/check.yaml) for short structural
 data, with explicit [instructions](../../examples/check-spec/instructions)

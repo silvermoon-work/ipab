@@ -96,10 +96,15 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
             ".bundle.yaml",
             new TextEncoder().encode(
               JSON.stringify({
-                name: "File",
-                entry: { path: "file.txt", contentType: "text/plain" },
+                title: "File",
+                entry: "file.txt",
+                type: ".bundle-type.yaml",
               }),
             ),
+          ],
+          [
+            ".bundle-type.yaml",
+            new TextEncoder().encode('{"contentType":"text/plain"}'),
           ],
           ["file.txt", new TextEncoder().encode(value)],
         ]),
@@ -180,7 +185,7 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
           name: "reader",
           cid: root,
           kind: "bundle",
-          typeName: "IPAB Node App",
+          title: "Fixture App",
           schemaCid: schema.cid.toString(),
         },
         ...builtinPins,
@@ -196,16 +201,17 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
       invalid: [],
     });
     const human = await cli(work.stateDir, ["pin", "list"]);
-    expect(human.out).toContain("BUNDLE TYPE");
-    expect(human.out).not.toContain("Fixture App");
+    expect(human.out).toContain("TITLE");
+    expect(human.out).toContain("TYPE CID");
+    expect(human.out).toContain("Fixture App");
     const details = await cli(work.stateDir, ["pin", "show", "reader"]);
-    expect(details.out).toContain(`Schema CID: ${schema.cid.toString()}`);
+    expect(details.out).toContain(`Type CID: ${schema.cid.toString()}`);
     expect(details.out).toContain("local registration");
     expect(await jsonCli(["pin", "show", "reader"])).toEqual({
       name: "reader",
       cid: root,
       kind: "bundle",
-      typeName: "IPAB Node App",
+      title: "Fixture App",
       schemaCid: schema.cid.toString(),
     });
     expect((await cli(work.stateDir, ["pin", "show", "file"])).code).toBe(1);
@@ -262,14 +268,14 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
       {
         name: "raw",
         cid: raw,
-        metadata: { kind: "content", typeName: null, schemaCid: null },
+        metadata: { kind: "content", title: null, schemaCid: null },
       },
       {
         name: "type",
         cid: type.cid.toString(),
         metadata: {
           kind: "schema",
-          typeName: appSchema.name,
+          title: "IPAB Node App",
           schemaCid: type.cid.toString(),
         },
       },
@@ -693,8 +699,8 @@ describe("named pins", { tags: ["release-e2e"] }, () => {
       { cid: 2 },
       { metadata: null },
       { metadata: { kind: "wrong" } },
-      { metadata: { kind: "content", typeName: "invented", schemaCid: null } },
-      { metadata: { kind: "schema", typeName: null, schemaCid: root } },
+      { metadata: { kind: "content", title: "invented", schemaCid: null } },
+      { metadata: { kind: "schema", title: null, schemaCid: root } },
     ]) {
       state.db
         .prepare("UPDATE named_pins SET value=? WHERE name=?")

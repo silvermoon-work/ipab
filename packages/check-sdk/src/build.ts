@@ -57,7 +57,15 @@ export async function buildCheckApp(options: {
     );
     const encode = (text: string) => new TextEncoder().encode(text);
     const files = new Map<string, Uint8Array>([
-      [".bundle.yaml", canonicalJson(checkSpecDefinition)],
+      [
+        ".bundle.yaml",
+        canonicalJson({
+          title: "IPAB Check Spec",
+          entry: "check.yaml",
+          type: ".bundle-type.yaml",
+        }),
+      ],
+      [".bundle-type.yaml", canonicalJson(checkSpecDefinition)],
       ["check.yaml", canonicalJson(spec)],
       ...[...instructions].map(([path, text]): [string, Uint8Array] => [
         path,

@@ -1,12 +1,23 @@
 import { spawn, execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  rename,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { encodeSchema, parseBundleManifest } from "@ipab/bundle";
+import {
+  encodeSchema,
+  parseBundleManifest,
+  parseBundleType,
+} from "@ipab/bundle";
 import { describe, expect, it, vi } from "vitest";
 import { viewer } from "../src/shared/viewer.js";
 import definition from "../schemas/check.json" with { type: "json" };
@@ -86,10 +97,13 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
       let child: ReturnType<typeof spawn> | undefined;
       let closed: Promise<number | null> | undefined;
       try {
-        const schema = parseBundleManifest(
+        const manifest = parseBundleManifest(
           await readFile(join(example, ".bundle.yaml")),
         );
-        expect((await encodeSchema(schema)).cid.toString()).toBe(
+        const type = parseBundleType(
+          await readFile(join(example, manifest.type)),
+        );
+        expect((await encodeSchema(type)).cid.toString()).toBe(
           (await encodeSchema(definition)).cid.toString(),
         );
         const appIdentity = await command(["bundle", "import", app]);
@@ -99,6 +113,7 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
           await mkdir(join(local, "instructions"), { recursive: true });
           for (const path of [
             ".bundle.yaml",
+            ".bundle-type.yaml",
             "check.yaml",
             "instructions/project.md",
             "instructions/workspace.md",
@@ -107,6 +122,24 @@ describe("built Check viewer App", { tags: ["release-e2e"] }, () => {
               join(local, ...path.split("/")),
               await readFile(join(example, ...path.split("/"))),
             );
+          await mkdir(join(local, "data"));
+          await mkdir(join(local, "types"));
+          await rename(
+            join(local, manifest.entry),
+            join(local, "data", "check.yaml"),
+          );
+          await rename(
+            join(local, manifest.type),
+            join(local, "types", "check.yaml"),
+          );
+          await writeFile(
+            join(local, ".bundle.yaml"),
+            JSON.stringify({
+              ...manifest,
+              entry: "data/check.yaml",
+              type: "types/check.yaml",
+            }),
+          );
         } else {
           const content = await command([
             "bundle",

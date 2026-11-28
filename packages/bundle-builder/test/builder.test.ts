@@ -10,6 +10,7 @@ import {
   encodeSchema,
   openBundle,
   parseBundleManifest,
+  parseBundleType,
   parseData,
 } from "@ipab/bundle";
 import {
@@ -31,17 +32,20 @@ import type {
 
 const text = (value: string) => new TextEncoder().encode(value);
 const definition = {
-  name: "Builder",
-  description: "",
-  entry: {
-    path: "data.json",
-    schema: { type: "object" },
-    contentType: "application/json",
-  },
+  schema: { type: "object" },
+  contentType: "application/json",
 };
 const schema = await encodeSchema(definition);
 const controls = new Map([
-  [".bundle.yaml", canonicalJson(definition)],
+  [
+    ".bundle.yaml",
+    canonicalJson({
+      title: "Builder",
+      entry: "data.json",
+      type: ".bundle-type.yaml",
+    }),
+  ],
+  [".bundle-type.yaml", canonicalJson(definition)],
   ["data.json", text("{}")],
 ]);
 const options: BundleCarOptions = {};
@@ -199,14 +203,16 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     { tags: ["unit"] },
     async () => {
       const manifest = {
-        name: "Image",
-        entry: { path: "image.png", contentType: "image/png" },
+        title: "Image",
+        entry: "image.png",
+        type: ".bundle-type.yaml",
       };
       const image = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10, 255);
       const encoded = await encodeBundleCar(
         memoryTree(
           new Map([
             [".bundle.yaml", canonicalJson(manifest)],
+            [".bundle-type.yaml", canonicalJson({ contentType: "image/png" })],
             ["image.png", image],
           ]),
         ),
@@ -218,14 +224,14 @@ describe("deterministic bounded UnixFS CAR construction", () => {
         });
         const decoded = await decode(await consume(encoded.stream));
         const bundle = await openBundle(decoded.root, decoded);
-        expect(bundle.manifest.entry).not.toHaveProperty("schema");
+        expect(bundle.schema.type).not.toHaveProperty("schema");
         expect(await consume(await bundle.readFile("image.png"))).toEqual(
           image,
         );
       } finally {
         await encoded.close();
       }
-      const type = await encodeSchemaCar(manifest);
+      const type = await encodeSchemaCar({ contentType: "image/png" });
       try {
         expect(type.validation).toBeNull();
       } finally {
@@ -241,7 +247,9 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       const manifest = parseBundleManifest(
         await readFile(join(directory, ".bundle.yaml")),
       );
-      const type = await encodeSchema(manifest);
+      const type = await encodeSchema(
+        parseBundleType(await readFile(join(directory, manifest.type))),
+      );
       const encoded = await encodeBundleCar(
         await filesystemTree(directory, {
           exclude: (path) => path === ".bundle-ignore" || path === "dist",
@@ -256,7 +264,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
           await readFile(join(directory, "SKILL.md")),
         );
         expect(
-          await consume(await bundle.readFile(bundle.manifest.entry.path)),
+          await consume(await bundle.readFile(bundle.manifest.entry)),
         ).toEqual(source);
         expect(parseData(source, "text/markdown")).toMatchObject({
           name: "agent-skill",
@@ -293,6 +301,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
             memoryTree(
               new Map([
                 [".bundle.yaml", canonicalJson(manifest)],
+                [manifest.type, await readFile(join(directory, manifest.type))],
                 [
                   "SKILL.md",
                   text(`---\n${JSON.stringify(metadata)}\n---\n# Body\n`),
@@ -348,10 +357,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
           .Links.every((link) => link.Hash.code !== 0x71),
       ).toBe(true);
       expect(root.toString()).toBe(
-        "bafybeia6aweeyn7qf367g37z2zrpbix6qgzywgmg7zsw64nur2rbsxv2oa",
+        "bafybeigphskije6rdk5qcswzblb4xpi4csw7h3upcqo5hzq326eyhjwv3m",
       );
       expect(createHash("sha256").update(bytes).digest("hex")).toBe(
-        "ef044475d040e690345b5a578072bc1f4e6067a26945102dc5f912c45747eb4e",
+        "d2c34a9de00d04b9ca5c7a9722ce43f5194ed70727343298d8d14668d3355368",
       );
     },
   );
@@ -372,10 +381,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       const encoded = await encodeBundleCar(input, options);
       const archive = await consume(encoded.stream);
       expect(encoded.cid.toString()).toBe(
-        "bafybeidtimybgyrdccovrtcrewp5iy5lzgilvugpwebtw5fdz7fvqsmeye",
+        "bafybeifzaw5cpoz7bte3lk5d6mwdhsp7zpcdmkdxe4uyqpg4ida7cajxq4",
       );
       expect(createHash("sha256").update(archive).digest("hex")).toBe(
-        "ef7dc310bf005529fc21ad464d037c839d4f17f04b590e00e68d1cda4b4fce97",
+        "3e74cf925e68d8d319c0f05abde6282e5967d13ba7b7e1d9e2a0857415508ea4",
       );
       const decoded = await decode(archive);
       const bundle = await openBundle(encoded.cid, decoded);
@@ -442,10 +451,10 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       );
       const archive = await consume(output.stream);
       expect(output.cid.toString()).toBe(
-        "bafybeicwzfzvlw7x4m52ijrsapx6iqarogwggsodzv4upjxumjpyskpwty",
+        "bafybeigingmu424nal7xuxfekxp5vdmpez6gnxoxvwuwciyu6nme6q26y4",
       );
       expect(createHash("sha256").update(archive).digest("hex")).toBe(
-        "72466b6d60ac1ad4d46158559986cb088da33423e24fc6caa7b0b4088923abd4",
+        "a7126403a539be31c7569e2d428bab79839b36c64f0fb4e84a02d88dc0c32574",
       );
     },
   );
@@ -454,7 +463,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
     { tags: ["unit"] },
     async () => {
       const manifest = text(
-        "name: Builder\r\nentry:\r\n  path: data.json\r\n  schema:\r\n    type: object\r\n  contentType: application/json\r\n",
+        "title: Builder\r\nentry: data.json\r\ntype: .bundle-type.yaml\r\n",
       );
       const encoded = await encodeBundleCar(
         memoryTree(
@@ -588,7 +597,7 @@ describe("deterministic bounded UnixFS CAR construction", () => {
       await expect(
         encodeBundleCar(
           memoryTree(new Map([...controls, ["nested/file", text("test")]])),
-          { limits: { nodes: 4 } },
+          { limits: { nodes: 5 } },
         ),
       ).rejects.toMatchObject({
         code: "LIMIT_EXCEEDED",

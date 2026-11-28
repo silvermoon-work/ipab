@@ -1,7 +1,6 @@
 import { builtinAppSchema } from "./app-definition.js";
 import {
   builtinTemplateSchema,
-  templateSchema,
   templateSchemaCid,
 } from "./template-definition.js";
 import { builtinTemplateNames } from "./app-templates.js";
@@ -36,7 +35,7 @@ async function loadBuiltins(): Promise<{
     for (const [cid, bytes] of template.blocks) blocks.set(cid, bytes);
     add(name, template.cid, {
       kind: "bundle",
-      typeName: templateSchema.name,
+      title: template.manifest.title,
       schemaCid: templateSchemaCid.toString(),
     });
   }

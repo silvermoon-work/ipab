@@ -57,7 +57,7 @@ async function classify(
   const bundle = await openBundle(root, { resolveCid });
   return {
     kind: "bundle",
-    typeName: bundle.manifest.name,
+    title: bundle.manifest.title,
     schemaCid: bundle.schemaKey,
   };
 }

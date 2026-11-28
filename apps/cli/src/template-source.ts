@@ -2,8 +2,12 @@ import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CID } from "multiformats/cid";
-import { bundleLimits, openBundle } from "@ipab/bundle";
-import { encodeBundleCar, type ReadonlyFileTree } from "@ipab/bundle-builder";
+import { bundleLimits, openBundle, parseBundleManifest } from "@ipab/bundle";
+import {
+  encodeBundleCar,
+  readBytes,
+  type ReadonlyFileTree,
+} from "@ipab/bundle-builder";
 import { openContent } from "@ipab/ipfs-store";
 import { readCar, selectedTree, type AuthoringOptions } from "./authoring.js";
 import { HostError } from "./errors.js";
@@ -124,5 +128,8 @@ export async function templateSource(
       },
     };
   }
-  return { tree, cid: identity };
+  const manifest = parseBundleManifest(
+    await readBytes(tree, ".bundle.yaml", bundleLimits.manifestBytes, options),
+  );
+  return { tree, cid: identity, manifest };
 }

@@ -11,7 +11,6 @@ export async function folderSnapshot(directory: string, signal: AbortSignal) {
     );
   const identity = await realpath(root);
   const files = new Map<string, Uint8Array>();
-  let total = 0;
   async function read(path: string): Promise<Uint8Array> {
     signal.throwIfAborted();
     safePath(path);
@@ -35,10 +34,8 @@ export async function folderSnapshot(directory: string, signal: AbortSignal) {
     const file = await open(current, "r");
     try {
       const before = await file.stat();
-      if (!before.isFile() || before.size > 1024 * 1024)
-        throw new Error(
-          `Viewer resource must be a regular file within 1 MiB: ${path}`,
-        );
+      if (!before.isFile())
+        throw new Error(`Viewer resource must be a regular file: ${path}`);
       const bytes = new Uint8Array(before.size);
       let offset = 0;
       while (offset < bytes.length) {
@@ -75,12 +72,7 @@ export async function folderSnapshot(directory: string, signal: AbortSignal) {
     async readFile(path: string) {
       let bytes = files.get(path);
       if (!bytes) {
-        if (files.size >= 258)
-          throw new Error("Viewer folder exceeds 258 input files");
         bytes = await read(path);
-        total += bytes.byteLength;
-        if (total > 3 * 1024 * 1024)
-          throw new Error("Viewer folder inputs exceed 3 MiB");
         files.set(path, bytes);
       }
       const content = bytes;

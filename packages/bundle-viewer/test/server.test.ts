@@ -209,7 +209,6 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
     ],
     ["message.json", '{"message":12}', "must be string"],
     ["message.json", new Uint8Array([255]), "Invalid"],
-    ["message.json", "x".repeat(1024 * 1024 + 1), "exceeds 1 MiB"],
   ])("rejects invalid %s before starting HTTP", async (path, value, error) => {
     const files = new Map([
       [
@@ -227,6 +226,32 @@ describe("React Content Bundle server", { tags: ["release-e2e"] }, () => {
     ]);
     files.set(path, typeof value === "string" ? encode(value) : value);
     await expect(runBundleViewer(options(files))).rejects.toThrow(error);
+  });
+  it("lets business preparation reduce entries larger than 1 MiB for rendering", async () => {
+    const message = "x".repeat(1024 * 1024 + 1);
+    const configured = options();
+    const readFile = configured.context.readFile.bind(configured.context);
+    configured.context.readFile = (cid, path, request) =>
+      path === "message.json"
+        ? Promise.resolve(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(encode(JSON.stringify({ message })));
+                controller.close();
+              },
+            }),
+          )
+        : readFile(cid, path, request);
+    const prepareData = vi.fn((data: unknown) => {
+      expect(data).toEqual({ message });
+      return Promise.resolve({ message: "Business summary" });
+    });
+    const app = await start({ ...configured, prepareData });
+    const html = await fetch(new URL("frame/index.html", app.url)).then(
+      (response) => response.text(),
+    );
+    expect(html).toContain("Business summary");
+    expect(prepareData).toHaveBeenCalledTimes(1);
   });
   it("honours cancellation while loading, including cleanup failure", async () => {
     const controller = new AbortController();

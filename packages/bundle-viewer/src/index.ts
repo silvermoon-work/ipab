@@ -38,7 +38,6 @@ async function readBytes(
       write(part) {
         signal.throwIfAborted();
         length += part.byteLength;
-        if (length > 1024 * 1024) throw new Error("Viewer input exceeds 1 MiB");
         parts.push(part);
       },
     }),
@@ -107,11 +106,9 @@ export async function runBundleViewer(
           options.context.readFile(options.contentCid!, path, { signal });
     const manifest = parseBundleManifest(
       await readBytes(await contentRead(".bundle.yaml"), signal),
-      1024 * 1024,
     );
     const type = parseBundleType(
       await readBytes(await contentRead(manifest.type), signal),
-      1024 * 1024,
     );
     if ((await encodeSchema(type)).cid.toString() !== schema.cid.toString())
       throw new Error("Content Bundle type does not match this viewer");

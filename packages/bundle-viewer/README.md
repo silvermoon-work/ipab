@@ -16,12 +16,15 @@ rather than raising the 64 KiB RPC limit. No arbitrary filesystem path is
 accepted by the browser.
 
 Folder reloads validate the exact type, prepare referenced resources and recheck
-all selected bytes before publishing. Inputs are limited to 258 distinct files,
-1 MiB per input file, 3 MiB aggregate raw inputs and the existing 1 MiB
-canonical state budget. Symbolic links and path escapes are rejected. These are
-best-effort local filesystem checks, not a sandbox/transactional filesystem
-snapshot. No whole-directory scanner, Store import or background daemon runs.
-Reloads are demand-driven while tabs are connected, not unlimited file watchers.
+all selected bytes before publishing. Input file counts and byte sizes are
+controlled by each viewer's business layer, not fixed by this SDK. Folder
+snapshots cache selected files in memory for one reload; business resource
+loaders should enforce their own budgets. The existing 1 MiB canonical state
+budget still applies to prepared rendering data. Symbolic links and path escapes
+are rejected. These are best-effort local filesystem checks, not a
+sandbox/transactional filesystem snapshot. No whole-directory scanner, Store
+import or background daemon runs. Reloads are demand-driven while tabs are
+connected, not unlimited file watchers.
 
 Invalid initial contents still start a preview page showing the error; editing
 into a valid Bundle recovers. Invalid edits hide the last successful view rather
@@ -65,13 +68,14 @@ automatically become SSR. This synchronous adapter does not promise async
 Suspense/streaming SSR. No CLI alias, legacy Task runtime or old Viewer manifest
 is migrated; IPAB `register` / `open` remains the routing mechanism.
 
-Input files and canonical state are bounded to 1 MiB each; HTML to 8 MiB.
-Bootstrap state is embedded as escaped inert JSON rather than going through the
-64 KiB RPC channel. The dynamic index is `no-store`; static bundle assets retain
-their immutable cache and existing CSP. Rendering errors produce HTTP 500 plus a
-backend diagnostic, not a successful empty shell. Hydration errors are reported
-to the browser console. Close, pagehide and abort unmount React and disconnect
-the existing Web App lease.
+Canonical state is bounded to 1 MiB; HTML to 8 MiB. These transport/rendering
+limits do not restrict raw input size: `prepareData` can summarize larger
+inputs. Bootstrap state is embedded as escaped inert JSON rather than going
+through the 64 KiB RPC channel. The dynamic index is `no-store`; static bundle
+assets retain their immutable cache and existing CSP. Rendering errors produce
+HTTP 500 plus a backend diagnostic, not a successful empty shell. Hydration
+errors are reported to the browser console. Close, pagehide and abort unmount
+React and disconnect the existing Web App lease.
 
 The adapter reads the manifest and entry through the caller's IPAB context; the
 context owns storage integrity/access. It does not independently scan all

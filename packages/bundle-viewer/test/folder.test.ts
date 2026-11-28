@@ -19,7 +19,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
-describe("bounded local folder snapshot", { tags: ["unit"] }, () => {
+describe("local folder snapshot", { tags: ["unit"] }, () => {
   it("reads cached exact bytes, verifies stability and detects atomic saves", async () => {
     await writeFile(join(root, "entry.md"), "one");
     const snapshot = await folderSnapshot(root, signal());
@@ -38,11 +38,11 @@ describe("bounded local folder snapshot", { tags: ["unit"] }, () => {
       "two",
     );
   });
-  it("rejects unsafe paths, missing files, directories, large files and abort", async () => {
+  it("rejects unsafe paths, missing files, directories and abort", async () => {
     await mkdir(join(root, "dir"));
     await writeFile(join(root, "large.md"), new Uint8Array(1024 * 1024 + 1));
     const snapshot = await folderSnapshot(root, signal());
-    for (const path of ["../out.md", "missing.md", "dir", "large.md"])
+    for (const path of ["../out.md", "missing.md", "dir"])
       await expect(snapshot.readFile(path)).rejects.toThrow();
     await expect(
       folderSnapshot(join(root, "large.md"), signal()),
@@ -83,20 +83,25 @@ describe("bounded local folder snapshot", { tags: ["unit"] }, () => {
       "symbolic links",
     );
   });
-  it("limits aggregate bytes and distinct file count", async () => {
+  it("leaves input size and distinct file limits to the viewer business layer", async () => {
     const snapshot = await folderSnapshot(root, signal());
     for (let index = 0; index < 4; index++) {
       const path = `${index}.md`;
-      await writeFile(join(root, path), new Uint8Array(1024 * 1024));
-      if (index < 3) await snapshot.readFile(path);
-      else await expect(snapshot.readFile(path)).rejects.toThrow("3 MiB");
+      const bytes = new Uint8Array(1024 * 1024 + 1);
+      await writeFile(join(root, path), bytes);
+      expect(
+        new Uint8Array(
+          await new Response(await snapshot.readFile(path)).arrayBuffer(),
+        ),
+      ).toEqual(bytes);
     }
     const tiny = await folderSnapshot(root, signal());
     for (let index = 0; index < 259; index++) {
       const path = `tiny${index}.md`;
       await writeFile(join(root, path), "");
-      if (index < 258) await tiny.readFile(path);
-      else await expect(tiny.readFile(path)).rejects.toThrow("258 input files");
+      expect(await new Response(await tiny.readFile(path)).text()).toBe("");
     }
+    await snapshot.verify();
+    await tiny.verify();
   });
 });

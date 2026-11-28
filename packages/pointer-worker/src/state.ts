@@ -1,9 +1,4 @@
-import {
-  MAX_NONCES,
-  NONCE_TTL_SECONDS,
-  ServiceError,
-  type PointerState,
-} from "./protocol.ts";
+import { MAX_NONCES, NONCE_TTL_SECONDS, ServiceError } from "./protocol.ts";
 
 export function consumeNonce(
   nonces: Record<string, number>,
@@ -23,16 +18,4 @@ export function consumeNonce(
     );
   next[nonce] = now + NONCE_TTL_SECONDS;
   return next;
-}
-export type OpResult = { status: number; state: PointerState };
-export function compareAndSwap(
-  current: PointerState,
-  root: string,
-  revision: string,
-): OpResult {
-  if (revision !== current.revision) return { status: 412, state: current };
-  return {
-    status: 200,
-    state: { root, revision: String(BigInt(current.revision) + 1n) },
-  };
 }

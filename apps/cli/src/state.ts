@@ -6,6 +6,7 @@ import { CID } from "multiformats/cid";
 import type { StoreConfiguration } from "@ipab/ipfs-store";
 import {
   validateUserConfig,
+  swarmUrl,
   type ConfigKey,
   type ConfigValue,
 } from "./config.js";
@@ -18,6 +19,7 @@ export interface Association {
   argv: string[];
 }
 export interface RegisteredSwarm {
+  // Keep the storage column name, but values are configuration URLs; old CID rows are rejected.
   cid: string;
   alias: string | null;
 }
@@ -225,15 +227,14 @@ export class State {
           (row.alias !== null && typeof row.alias !== "string")
         )
           throw new HostError("Invalid persisted swarm registration.");
-        const cid = exactCid(row.cid);
+        const cid = swarmUrl(row.cid);
         if (row.alias !== null) swarmAlias(row.alias);
         return { cid, alias: row.alias };
       });
   }
   resolveSwarm(reference: string): string {
-    try {
-      return CID.parse(reference).toV1().toString();
-    } catch {
+    if (/^https?:/.test(reference)) return swarmUrl(reference);
+    {
       const entry = this.swarms().find((entry) => entry.alias === reference);
       if (entry) return entry.cid;
       throw new HostError(
@@ -260,7 +261,7 @@ export class State {
       );
   }
   registerSwarm(cid: string, alias?: string): RegisteredSwarm {
-    cid = exactCid(cid);
+    cid = swarmUrl(cid);
     return this.transaction(() => {
       if (alias !== undefined) this.checkSwarmAlias(alias, cid);
       const previous = this.swarms().find((entry) => entry.cid === cid);

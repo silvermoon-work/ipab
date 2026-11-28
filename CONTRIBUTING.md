@@ -17,12 +17,18 @@ check-release 保留全部测试、四项 90% 覆盖率门槛和交付安装 smo
 根 workspace 保持 private。每个交付包都有 `deliverable.yaml`、`files` 清单和
 真实 `publint --strict` 检查，不把零任务当作发布验证。
 Check Spec 组件和 Check viewer App 是 private 成员，不加入这五个 npm 交付项。
-private `@ipab/pointer-worker` 是个人 swarm 的签名指针服务（Cloudflare
-Worker），
+private `@ipab/pointer-worker` 是 Scope / Variable 服务（Cloudflare Worker），
 不属于 npm 交付项；CLI 已接入其授权与共享 Name/HEAD 同步。
-portable 协议在 Bundle 包复用；最新确认的 pointers API 使用受保护、origin-bound
-API key（安全 STDIN 设置、查询掩码）与 owner 签名创建。独立服务实现仍需
-与共享签名字节编码、opaque ID 和 revision 字符串协议集成，不能回退旧管理面。
+portable Scope 协议在 Bundle 包复用；创建 Scope 使用受保护、origin-bound API
+key（安全 STDIN 设置、查询掩码）与 Owner 持钥证明。每 Scope 一个 SQLite DO
+原子协调 Variable 内容 CID CAS、freeze/delete 和 nonce；公开读、准确 ID
+certificate 写，不设过期或历史 revision，无旧 Swarm/Pointer fallback。
+生成 Worker binding types 后须检查配置／类型一致。
+完整 [Onboarding](docs/onboarding.md) 及
+`packages/pointer-worker/test/mvp.test.ts` 覆盖真实 checksum-installed Kubo、
+独立 repo/key/PeerID/ports、receiver 缓存 miss 后双向新内容获取、CLI 退出常驻，
+以及 Owner freeze 中断与 resume。测试只控制本次创建并验证 PeerID 的节点；
+不读取 HOME 身份或管理已有 daemon。首版仅 LAN/VPN。
 根 `ipab build` 只做通用组装，App 准备由项目显式调用 `prepareApp` 完成；
 迁移及验收边界见 [MVP 实现](docs/mvp-implementation.md)。
 Check SDK 同样 private；其显式模板的真实测试覆盖 STDIN 输入、正常业务失败报告

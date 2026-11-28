@@ -843,12 +843,14 @@ Get-Content -Raw .keys\api-key.txt | ipab config set pointers.apiKey -
 保存非空 key 时，将状态目录和已有 SQLite／WAL／SHM 文件限制为当前
 OS 账号可访问；Unix 目录 `700`、文件 `600`，Windows 使用当前账号 SID 的
 受保护 ACL。读取已存 key 时校验权限；这不是对所有既有状态目录的自动迁移。
-服务 key 只用于创建 pointer，不进入 Swarm Bundle，也不赋予 owner/member 资格。
-这些配置尚不代表完整 swarm 创建、授权与同步命令已接入；
+服务 key 只用于创建 Scope，也不赋予 owner/member 资格。私钥、Swarm Key 与
+证书明文不会进入公开组织配置；成员获得 Owner 签署的加密授权包。
+完整的新 Swarm 创建、Request/审批、懒接入、同步与成员移除恢复已经接入，
+流程和明确限制见 [Onboarding](onboarding.md)；
 服务运维工具使用显式参数、`IPAB_POINTERS_*` 环境变量或受保护的平面 JSON
 cfg，不直接读取 IPAB 的 SQLite 配置。具体配置输入见
 [pointer-worker](../packages/pointer-worker/README.md)，HTTP 契约见
-[Pointers service API](pointers-service.md)。
+[Scope / Variable service API](pointers-service.md)。
 
 成功执行（包括空输出）固化整个输出 UnixFS 目录根；输出不要求 `.bundle.yaml`
 或 Schema。执行失败／取消或固化前发生错误时，不固化部分输出，记录

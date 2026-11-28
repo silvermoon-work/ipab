@@ -12,6 +12,7 @@ describe(
   { tags: ["unit"] },
   () => {
     const cid = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+    const url = `https://pointer.example/v1/${"A".repeat(43)}/${"B".repeat(43)}`;
     it("parses explicit shared references/raw modes without leaking exec flags to the host", () => {
       expect(
         parse(["--swarm", cid, "exec", "ipab:///apps/hello", "--raw"])
@@ -29,7 +30,10 @@ describe(
         "swarm create",
         "swarm request",
         "swarm approve",
-        "swarm join",
+        "swarm export",
+        "swarm exclude",
+        "swarm resume",
+        "swarm profile",
         "swarm status",
         "get",
         "publish",
@@ -41,29 +45,19 @@ describe(
     });
     it("round-trips stored swarm settings and honors flag precedence", () => {
       const user = validateUserConfig({
-        "swarm.default": parseValue("swarm.default", cid, true),
-        "swarm.service": parseValue(
-          "swarm.service",
-          "https://pointer.example",
-          true,
-        ),
-        "swarm.provider": parseValue(
-          "swarm.provider",
-          "http://127.0.0.1:5001",
-          true,
-        ),
+        "swarm.default": parseValue("swarm.default", url, true),
       });
-      expect(user["swarm.default"]).toBe(cid);
+      expect(user["swarm.default"]).toBe(url);
       expect(
         effectiveConfig(user, { json: false }, {}).find(
           (item) => item.key === "swarm.default",
         ),
-      ).toMatchObject({ value: cid, source: "user" });
+      ).toMatchObject({ value: url, source: "user" });
       expect(
-        effectiveConfig(user, { json: false, swarm: cid }, {}).find(
+        effectiveConfig(user, { json: false, swarm: url }, {}).find(
           (item) => item.key === "swarm.default",
         ),
-      ).toMatchObject({ value: cid, source: "flag" });
+      ).toMatchObject({ value: url, source: "flag" });
       expect(validateUserConfig({ "swarm.default": null })).toEqual({
         "swarm.default": null,
       });
@@ -72,6 +66,13 @@ describe(
       ).toThrow("Malformed");
     });
     it("keeps force options before exec's App boundary and parses swarm management/search", () => {
+      const opaque = `--${"A".repeat(41)}`;
+      expect(parse(["swarm", "exclude", opaque, "--yes"]).positional).toEqual([
+        opaque,
+      ]);
+      expect(
+        parse(["swarm", "create", "--resume", opaque]).options.resume,
+      ).toBe(opaque);
       expect(
         parse([
           "--swarm",
@@ -127,7 +128,9 @@ describe(
       expect(() => parse(["swarm", "update", "--expect", cid])).toThrow(
         "Unknown option",
       );
-      expect(help("swarm update")).toContain("Any authorized member");
+      expect(help("swarm update")).toContain(
+        "Members can change only their own profile",
+      );
     });
     it("validates cache configuration, resolves alias selection and rejects removed swarm environment selection", () => {
       expect(parseValue("swarm.cacheTtl", "0", true)).toBe(0);
@@ -143,13 +146,13 @@ describe(
       );
       const resolve = (alias: string) => {
         if (alias !== "work") throw new Error("Unknown alias");
-        return cid;
+        return url;
       };
       expect(
         effectiveConfig({}, { json: false, swarm: "work" }, {}, resolve).find(
           (item) => item.key === "swarm.default",
         ),
-      ).toMatchObject({ value: cid, source: "flag" });
+      ).toMatchObject({ value: url, source: "flag" });
       expect(() =>
         effectiveConfig(
           {},

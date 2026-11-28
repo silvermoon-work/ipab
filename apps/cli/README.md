@@ -3,6 +3,10 @@
 Node subprocess App host for IPAB (InterPlanetary Artifact Bundle). **Not a
 sandbox**: only execute Apps you trust.
 
+`ipab setup --yes` verifies/installs the shared Kubo program and prepares the
+protected HOME identity without contacting or starting a daemon. It is
+idempotent; independent CID/local Store use still does not require Kubo.
+
 `0.1.0-rc.2` is published. Install this RC:
 
 ```sh
@@ -29,13 +33,22 @@ caching, local swarm registration/selection and named search. See the
 [MVP implementation](../../docs/mvp-implementation.md) for force controls and
 the migration from legacy creation/membership records.
 
-Shared references use `ipab://SWARM_CID_OR_ALIAS/PATH`; `ipab:///PATH` selects
-`--swarm` or the saved `swarm.default`, in that order. URI swarm authorities
-take precedence and local aliases are case-sensitive. Search emits full
-CID-based URIs for sharing across devices. Legacy `name:PATH` references and
-`IPAB_SWARM` are no longer supported; remove the variable and use `--swarm` or
-`swarm use`.
+The current source implements
+[Scope / Variable onboarding](../../docs/onboarding.md): signed Request files,
+trusted Owner fingerprints, encrypted nonexpiring exact-ID certificates, lazy
+membership activation and checksum-verified managed Kubo 0.43.2 nodes. Each
+Swarm uses a separate protected repo, key and ports; daemons start on demand and
+survive CLI exit. No Invite/Response/Join or old Swarm CID protocol fallback
+exists.
 
-Authorized members can also use `swarm update --name TEXT --description TEXT` to
-edit shared swarm information with last-write-wins semantics while preserving
-concurrent Name mappings.
+Shared references use `ipab://ALIAS_OR_ENCODED_CONFIG_URL/PATH`; `ipab:///PATH`
+selects `--swarm` or the saved `swarm.default`, in that order. URI swarm
+authorities take precedence and local aliases are case-sensitive. Search emits
+full configuration-URL-based URIs for sharing across devices. Legacy `name:PATH`
+references and `IPAB_SWARM` are no longer supported; remove the variable and use
+`--swarm` or `swarm use`.
+
+Owner uses `swarm update` for organization information and `swarm exclude` /
+`swarm resume` for irreversible, resumable member removal. Members change only
+their own public profile using `swarm profile`. HEAD uses content-CID CAS, not a
+history revision.

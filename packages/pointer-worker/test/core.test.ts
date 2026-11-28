@@ -2,15 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_BODY_SHA256,
   canonicalService,
-  certificateSigningMessage,
   isCanonicalCid,
   isCanonicalPublicKey,
-  normalizeScope,
-  requestSigningMessage,
-  scopeIsSubset,
-  scopeToString,
-  subjectMatches,
-  subjectPatternIsNarrower,
 } from "../src/protocol.ts";
 import {
   decodeText,
@@ -31,9 +24,16 @@ import {
   utf8,
   verifyEd25519,
 } from "../src/crypto.ts";
-import { narrowScope } from "../src/certificates.ts";
-import { compareAndSwap, consumeNonce } from "../src/state.ts";
-import { ROOT, NOW, makeCert } from "./helpers.ts";
+import {
+  scopeCertificateMessage,
+  scopeSigningMessage,
+  issueScopeCertificate,
+  uniqueId,
+  valueCid,
+  verifyScopeCertificate,
+} from "@ipab/bundle/pointer/scope";
+import { consumeNonce } from "../src/state.ts";
+import { ROOT, NOW } from "./helpers.ts";
 
 describe(
   "protocol and retained crypto/scope utilities",
@@ -84,9 +84,10 @@ describe(
     it("signs an unambiguous complete request tuple", () => {
       const p = {
         service: "https://pointer.example",
-        pointerId: "id",
+        scopeId: "scope",
+        variableId: "id",
         method: "put",
-        path: "/v1/pointers/id",
+        path: "/v1/scope/id",
         timestamp: 42,
         nonce: "abcdefghijklmnopqrstuv",
         bodySha256: "00".repeat(32),
@@ -94,9 +95,10 @@ describe(
         idempotencyKey: "retry",
         subject: "pub",
       };
-      expect(JSON.parse(requestSigningMessage(p))).toEqual([
-        "IPAB-POINTER/2",
+      expect(JSON.parse(scopeSigningMessage(p))).toEqual([
+        "IPAB-SCOPE/1",
         p.service,
+        "scope",
         "id",
         "PUT",
         p.path,
@@ -107,109 +109,135 @@ describe(
         p.nonce,
         "pub",
       ]);
-      expect(requestSigningMessage({ ...p, idempotencyKey: "a\nb" })).not.toBe(
-        requestSigningMessage({ ...p, idempotencyKey: "a", subject: "b\npub" }),
+      expect(scopeSigningMessage({ ...p, idempotencyKey: "a\nb" })).not.toBe(
+        scopeSigningMessage({ ...p, idempotencyKey: "a", subject: "b\npub" }),
       );
     });
     it("signs every member certificate field including ID and audience", async () => {
       const owner = await generateKeyPair(),
         member = await generateKeyPair();
-      const cert = await makeCert(owner, member, "id");
-      expect(JSON.parse(certificateSigningMessage(cert.body))).toEqual([
-        "IPAB-POINTER-CERT/2",
+      const cert = await issueScopeCertificate(
+        {
+          v: 1,
+          service: "https://pointer.example",
+          scopeId: "scope",
+          subject: member.publicRaw,
+          write: ["id"],
+        },
+        owner.privateKey,
+      );
+      expect(JSON.parse(scopeCertificateMessage(cert.body))).toEqual([
+        "IPAB-SCOPE-CERT/1",
         cert.body.service,
-        "id",
-        owner.publicRaw,
+        "scope",
         member.publicRaw,
-        cert.body.cid,
-        cert.body.iat,
-        cert.body.exp,
+        ["id"],
       ]);
       expect(
-        certificateSigningMessage({ ...cert.body, cid: "another" }),
-      ).not.toBe(certificateSigningMessage(cert.body));
+        scopeCertificateMessage({ ...cert.body, write: ["another"] }),
+      ).not.toBe(scopeCertificateMessage(cert.body));
     });
-    it("serializes scopes without ambiguity", () => {
-      expect(scopeToString({ read: true, write: false })).toBe("read:-:*");
-      expect(normalizeScope(undefined)).toEqual({ read: false, write: false });
-      expect(normalizeScope({ read: true, sub: "a" })).toEqual({
-        read: true,
-        write: false,
-        sub: "a",
-      });
-      expect(normalizeScope({ read: 1 as unknown as boolean })).toEqual({
-        read: false,
-        write: false,
-      });
+    it("does not grant wildcard or read/management capabilities", async () => {
+      const owner = await generateKeyPair(),
+        member = await generateKeyPair(),
+        scopeId = uniqueId(),
+        id = uniqueId();
+      const cert = await issueScopeCertificate(
+        {
+          v: 1,
+          service: "https://pointer.example",
+          scopeId,
+          subject: member.publicRaw,
+          write: ["*"],
+        },
+        owner.privateKey,
+      );
+      await expect(
+        verifyScopeCertificate(
+          cert,
+          owner.publicRaw,
+          cert.body.service,
+          scopeId,
+          id,
+          member.publicRaw,
+        ),
+      ).rejects.toThrow("certificate");
     });
-    it("rejects scope capabilities that exceed the issuer", () => {
-      expect(
-        scopeIsSubset(
-          { read: true, write: false },
-          { read: false, write: true },
+    it("rejects subject impersonation under a valid certificate", async () => {
+      const owner = await generateKeyPair(),
+        member = await generateKeyPair(),
+        scopeId = uniqueId(),
+        id = uniqueId();
+      const cert = await issueScopeCertificate(
+        {
+          v: 1,
+          service: "https://pointer.example",
+          scopeId,
+          subject: member.publicRaw,
+          write: [id],
+        },
+        owner.privateKey,
+      );
+      await expect(
+        verifyScopeCertificate(
+          cert,
+          owner.publicRaw,
+          cert.body.service,
+          scopeId,
+          id,
+          owner.publicRaw,
         ),
-      ).toBe(false);
-      expect(
-        scopeIsSubset(
-          { read: false, write: true },
-          { read: true, write: false },
+      ).rejects.toThrow("certificate");
+    });
+    it("allows exactly granted IDs, never lexical prefix containment", async () => {
+      const owner = await generateKeyPair(),
+        member = await generateKeyPair(),
+        scopeId = uniqueId(),
+        id = uniqueId();
+      const cert = await issueScopeCertificate(
+        {
+          v: 1,
+          service: "https://pointer.example",
+          scopeId,
+          subject: member.publicRaw,
+          write: [id],
+        },
+        owner.privateKey,
+      );
+      await verifyScopeCertificate(
+        cert,
+        owner.publicRaw,
+        cert.body.service,
+        scopeId,
+        id,
+        member.publicRaw,
+      );
+      await expect(
+        verifyScopeCertificate(
+          cert,
+          owner.publicRaw,
+          cert.body.service,
+          scopeId,
+          id.slice(0, -1) + "x",
+          member.publicRaw,
         ),
-      ).toBe(false);
-      expect(scopeToString({ read: true, write: true, sub: "alice/x" })).toBe(
-        "read:write:alice/x",
+      ).rejects.toThrow("certificate");
+    });
+    it("canonical JSON identity ignores property insertion order", async () => {
+      expect(await valueCid({ a: true, b: null })).toBe(
+        await valueCid({ b: null, a: true }),
       );
     });
-    it("compares scopes by containment, not equality", () => {
-      const full = { read: true, write: true },
-        readOnly = { read: true, write: false };
-      expect(scopeIsSubset(readOnly, full)).toBe(true);
-      expect(scopeIsSubset(full, readOnly)).toBe(false);
-      expect(
-        scopeIsSubset({ ...full, sub: "alice/x" }, { ...full, sub: "alice/*" }),
-      ).toBe(true);
-      expect(
-        scopeIsSubset({ ...full, sub: "alice/*" }, { ...full, sub: "alice/x" }),
-      ).toBe(false);
-      expect(
-        scopeIsSubset(
-          { ...readOnly, sub: "alice/x" },
-          { ...full, sub: "alice/x" },
-        ),
-      ).toBe(true);
+    it("rejects unpaired Unicode and unsafe/nonfinite numeric values", async () => {
+      for (const value of ["\ud800", "\udc00", Infinity, NaN, 2 ** 53])
+        await expect(valueCid(value)).rejects.toThrow();
     });
-    it("only narrows subject patterns it can prove", () => {
-      expect(subjectPatternIsNarrower(undefined, undefined)).toBe(true);
-      expect(subjectPatternIsNarrower("alice", undefined)).toBe(true);
-      expect(subjectPatternIsNarrower(undefined, "alice")).toBe(false);
-      expect(subjectPatternIsNarrower("alice/x", "alice/x")).toBe(true);
-      expect(subjectPatternIsNarrower("alice/x*", "alice/*")).toBe(true);
-      expect(subjectPatternIsNarrower("alice/*", "alice/x*")).toBe(false);
-      expect(subjectPatternIsNarrower("alice/x", "alice/*")).toBe(true);
-      expect(subjectPatternIsNarrower("alice/x", "alice/?")).toBe(false);
-      expect(subjectPatternIsNarrower("alice/x?", "alice/*")).toBe(true);
-      expect(subjectPatternIsNarrower("alice/*", "alice/x?")).toBe(false);
-    });
-    it("matches subject globs without regex injection", () => {
-      expect(subjectMatches("alice/*", "alice/agent-1")).toBe(true);
-      expect(subjectMatches("alice/?", "alice/a")).toBe(true);
-      expect(subjectMatches("alice/?", "alice/ab")).toBe(false);
-      expect(subjectMatches(undefined, "anyone")).toBe(true);
-      expect(subjectMatches("*", "anyone")).toBe(true);
-      expect(subjectMatches("alice/*", "bob/agent-1")).toBe(false);
-      expect(subjectMatches("a.*", "aXb")).toBe(false);
-      expect(subjectMatches("a+b", "a+b")).toBe(true);
-    });
-    it("narrows a leaf scope only downwards", () => {
-      const scope = { read: true, write: true, sub: "alice/*" };
-      expect(narrowScope(scope, null)).toEqual(scope);
-      expect(narrowScope(scope, { read: true, write: false })).toEqual({
-        read: true,
-        write: false,
-        sub: "alice/*",
-      });
-      expect(
-        narrowScope({ read: true, write: false }, { read: true, write: true }),
-      ).toBeNull();
+    it("bounds encoding size and depth without excluding valid null/boolean/arrays", async () => {
+      await valueCid([null, true, false, "hello", 1.5]);
+      await expect(valueCid("x".repeat(65536))).rejects.toThrow("64 KiB");
+      let value: unknown = null;
+      for (let i = 0; i < 34; i++) value = [value];
+      await expect(valueCid(value)).rejects.toThrow("complexity");
     });
     it("hashes bodies with SHA-256", async () => {
       expect(await sha256Hex("")).toBe(EMPTY_BODY_SHA256);
@@ -282,20 +310,11 @@ describe(
         nonce: NOW + 260,
       });
     });
-    it("CAS uses arbitrary precision revisions and prevents ABA", () => {
-      expect(
-        compareAndSwap(
-          { root: ROOT, revision: "999999999999999999" },
-          ROOT,
-          "999999999999999999",
-        ),
-      ).toEqual({
-        status: 200,
-        state: { root: ROOT, revision: "1000000000000000000" },
-      });
-      expect(
-        compareAndSwap({ root: ROOT, revision: "3" }, ROOT, "1").status,
-      ).toBe(412);
+    it("content identity has no history revision so returning to A restores the same CAS token", async () => {
+      const a = await valueCid({ root: "A" }),
+        b = await valueCid({ root: "B" });
+      expect(a).not.toBe(b);
+      expect(await valueCid({ root: "A" })).toBe(a);
     });
   },
 );

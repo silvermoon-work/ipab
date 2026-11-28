@@ -24,6 +24,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./pointer/scope": {
+      "types": "./dist/pointer/scope.d.ts",
+      "import": "./dist/pointer/scope.js"
+    },
     "./pointer/protocol": {
       "types": "./dist/pointer/protocol.d.ts",
       "import": "./dist/pointer/protocol.js"
@@ -31,14 +35,6 @@
     "./pointer/crypto": {
       "types": "./dist/pointer/crypto.d.ts",
       "import": "./dist/pointer/crypto.js"
-    },
-    "./pointer/certificates": {
-      "types": "./dist/pointer/certificates.d.ts",
-      "import": "./dist/pointer/certificates.js"
-    },
-    "./pointer/client": {
-      "types": "./dist/pointer/client.d.ts",
-      "import": "./dist/pointer/client.js"
     },
     "./pointer/protected-files": {
       "types": "./dist/pointer/protected-files.d.ts",

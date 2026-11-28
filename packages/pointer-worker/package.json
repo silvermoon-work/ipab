@@ -2,7 +2,7 @@
   "name": "@ipab/pointer-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Signed publication pointers with owner-issued member certificates and atomic revision CAS.",
+  "description": "Public Scope Variables with exact-ID subject certificates, content CID CAS and irreversible lifecycle.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -23,6 +23,7 @@
     "multiformats": "catalog:"
   },
   "devDependencies": {
+    "@ipab/ipfs-store": "workspace:*",
     "@ipab/cli": "workspace:*",
     "@ipld/car": "catalog:",
     "@ipab/bundle-builder": "workspace:*",

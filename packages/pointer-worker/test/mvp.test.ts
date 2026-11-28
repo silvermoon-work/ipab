@@ -1,484 +1,834 @@
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import {
+  copyFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  lstat,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { protectAccountOnly } from "@ipab/bundle/pointer/protected-files";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { CarBlockIterator } from "@ipld/car/iterator";
-import { CID } from "multiformats/cid";
-import { sha256 } from "multiformats/hashes/sha2";
-import { randomBytes, toBase64Url, sha256Hex } from "../src/crypto.ts";
 import { runCli } from "@ipab/cli";
-import { createService } from "./helpers.ts";
+import { appSchema } from "@ipab/cli/devtools";
+import { encodeBundleCar, memoryTree } from "@ipab/bundle-builder";
+import { CID } from "multiformats/cid";
+import { ContentError, IpfsStore } from "@ipab/ipfs-store";
+import {
+  ownedNodes,
+  shutdownOwned,
+  nodeRuntime,
+  type OwnedNode,
+} from "./owned-nodes.ts";
+import { createScopeService, API_KEY } from "./helpers.ts";
 
 interface Result {
   code: number;
   out: string;
   err: string;
 }
-// Workers types shadow Node's process/Buffer globals; keep this Node fixture narrowly typed.
-const runtime = globalThis as unknown as {
-  process: { env: NodeJS.ProcessEnv; execPath: string; platform: string };
-};
-function concatenate(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
-  const result = new Uint8Array(
-    chunks.reduce((sum, chunk) => sum + chunk.length, 0),
-  );
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
+const runtime = { process: nodeRuntime() };
 test(
-  "two accounts iterate a Name through the canonical Worker router",
-  { tags: ["release-e2e"], timeout: 240_000 },
-  async () => {
+  "real isolated Kubo onboarding, uncached two-way content, multi-private-net isolation and resumable removal",
+  { tags: ["release-e2e"], timeout: 360_000 },
+  async ({ signal, onTestFinished }) => {
     const base = resolve(".test-work");
     await mkdir(base, { recursive: true });
-    const work = await mkdtemp(join(base, "mvp-"));
-    const apiKey = toBase64Url(randomBytes(32));
-    const blocks = new Map<string, Uint8Array>();
-    const pins = new Set<string>();
-    let failProvider = false;
-    let casConflicts = 0;
-    let barrierReads = 0;
-    let releaseReads: (() => void)[] = [];
+    const work = await mkdtemp(join(base, "onboarding-"));
+    const states: string[] = [];
+    let rejectHeadAllocation = false;
     const server = createServer((incoming, outgoing) => {
       void (async () => {
-        const body: Uint8Array[] = [];
-        for await (const chunk of incoming)
-          body.push(Uint8Array.from(chunk as Uint8Array));
-        const url = `http://127.0.0.1:${(server.address() as { port: number }).port}${incoming.url!}`;
-        const request = new Request(url, {
-          method: incoming.method!,
-          headers: incoming.headers as Record<string, string>,
-          ...(body.length ? { body: concatenate(body) } : {}),
-        });
-        let response: Response;
-        if (incoming.url?.startsWith("/api/v0/dag/import")) {
-          if (failProvider)
-            response = new Response("unavailable", { status: 503 });
-          else {
-            const form = await request.formData();
-            const file = form.get("file");
-            if (!(file instanceof Blob))
-              throw new Error("Expected Kubo CAR form");
-            const iterator = await CarBlockIterator.fromBytes(
-              new Uint8Array(await file.arrayBuffer()),
-            );
-            const roots = await iterator.getRoots();
-            for await (const block of iterator) {
-              expect(block.cid.multihash.digest).toEqual(
-                (await sha256.digest(block.bytes)).digest,
-              );
-              blocks.set(block.cid.toV1().toString(), block.bytes);
-            }
-            for (const root of roots) {
-              expect(blocks.has(root.toV1().toString())).toBe(true);
-              pins.add(root.toV1().toString());
-            }
-            response = new Response(
-              roots
-                .map((cid) =>
-                  JSON.stringify({
-                    Root: { Cid: { "/": cid.toString() }, PinErrorMsg: "" },
-                  }),
-                )
-                .join("\n"),
-            );
-          }
-        } else if (incoming.url?.startsWith("/gateway/ipfs/")) {
-          const cid = CID.parse(new URL(url).pathname.split("/")[3]!)
-            .toV1()
-            .toString();
-          response = blocks.has(cid)
-            ? new Response(Uint8Array.from(blocks.get(cid)!), {
-                headers: { "content-type": "application/vnd.ipld.raw" },
-              })
-            : new Response("not found", { status: 404 });
-        } else {
-          response = await service.fetch(request);
-          if (response.status === 412) casConflicts++;
-          if (
-            incoming.method === "GET" &&
-            /^\/v1\/pointers\/[A-Za-z0-9_-]+$/.test(new URL(url).pathname) &&
-            barrierReads > 0
-          ) {
-            barrierReads--;
-            await new Promise<void>((accept) => {
-              releaseReads.push(accept);
-              if (barrierReads === 0) {
-                for (const release of releaseReads) release();
-                releaseReads = [];
-              }
-            });
-          }
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        for await (const chunk of incoming) {
+          const bytes = Uint8Array.from(chunk as Uint8Array);
+          size += bytes.length;
+          if (size > 131072) throw new Error("oversized test request");
+          chunks.push(bytes);
         }
+        const body = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const headers = new Headers();
+        for (const [k, value] of Object.entries(incoming.headers))
+          if (typeof value === "string") headers.set(k, value);
+        const url = `${origin}${incoming.url}`;
+        const reject =
+          rejectHeadAllocation &&
+          incoming.method === "POST" &&
+          /^\/v1\/[A-Za-z0-9_-]{43}$/.test(incoming.url ?? "") &&
+          new TextDecoder().decode(body).includes('"root"');
+        const response = reject
+          ? Response.json(
+              {
+                error: {
+                  code: "injected",
+                  message: "interrupted after freeze",
+                },
+              },
+              { status: 503 },
+            )
+          : await service.fetch(url, {
+              method: incoming.method ?? "GET",
+              headers,
+              ...(size ? { body } : {}),
+            });
         outgoing.writeHead(
           response.status,
           Object.fromEntries(response.headers),
         );
         outgoing.end(new Uint8Array(await response.arrayBuffer()));
-      })().catch((error: unknown) => {
+      })().catch((cause: unknown) => {
         outgoing.writeHead(500);
-        outgoing.end(error instanceof Error ? error.message : "fixture failed");
+        outgoing.end(String(cause));
       });
     });
-    await new Promise<void>((accept) => server.listen(0, "127.0.0.1", accept));
-    const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    const service = await createService({
-      service: endpoint,
-      digest: await sha256Hex(apiKey),
-    });
-    const cli = fileURLToPath(
-      new URL("../../../apps/cli/dist/main.js", import.meta.url),
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
     );
-    const homeA = join(work, "a"),
-      homeB = join(work, "b"),
-      homeC = join(work, "c");
-    const environments = new Map<string, NodeJS.ProcessEnv>();
-    const inherited = { ...runtime.process.env };
-    delete inherited.IPAB_POINTERS_SERVICE;
-    delete inherited.IPAB_POINTERS_API_KEY;
-    for (const home of [homeA, homeB, homeC]) {
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("no test port");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const service = await createScopeService({ service: origin });
+    const homes = {
+      a: join(work, "a"),
+      b: join(work, "b"),
+      c: join(work, "c"),
+    };
+    for (const home of Object.values(homes)) {
       await mkdir(home);
-      const config = join(home, "content.json");
+      const state = join(home, "state");
+      await mkdir(state);
+      states.push(state);
       await writeFile(
-        config,
-        JSON.stringify({
-          backend: "local",
-          dataDir: join(home, "blocks"),
-          gateway: `${endpoint}/gateway`,
-        }),
+        join(home, "content.json"),
+        JSON.stringify({ backend: "local", dataDir: join(home, "content") }),
       );
-      environments.set(home, {
-        ...inherited,
-        HOME: home,
-        USERPROFILE: home,
-        TASK_CONTENT_CONFIG: config,
-        IPAB_STATE_DIR: join(home, "state"),
-        IPAB_SWARM_PROVIDER: endpoint,
-        IPAB_STORE_GATEWAY: `${endpoint}/gateway`,
-        IPAB_HISTORY_ENABLED: "false",
-      });
     }
-    const invoke = async (
-      home: string,
+    let activeOperation: Promise<number> | undefined;
+    const cli = async (
+      who: "a" | "b" | "c",
       args: string[],
-      cwd = work,
+      expected = 0,
+    ): Promise<Result> => {
+      signal.throwIfAborted();
+      vi.stubEnv("TASK_CONTENT_CONFIG", join(homes[who], "content.json"));
+      let out = "",
+        err = "";
+      activeOperation = runCli(
+        ["--json", ...args],
+        {
+          tty: false,
+          out: (text) => {
+            out += text + "\n";
+          },
+          err: (text) => {
+            err += text + "\n";
+          },
+          confirm: () => Promise.resolve(true),
+          readSecret: () => Promise.resolve(API_KEY),
+        },
+        {
+          ...runtime.process.env,
+          HOME: homes[who],
+          USERPROFILE: homes[who],
+          IPAB_STATE_DIR: join(homes[who], "state"),
+        },
+      );
+      const code = await activeOperation;
+      activeOperation = undefined;
+      signal.throwIfAborted();
+      expect(code, `${who}: ${args.join(" ")}\n${out}\n${err}`).toBe(expected);
+      return { code, out, err };
+    };
+    const json = <T>(result: Result): T =>
+      JSON.parse(result.out.trim().split("\n").at(-1)!) as T;
+    const apiSecrets = new Map<number, string>();
+    const discoveredStates = new Set<string>(),
+      trackedNodes = new Map<string, OwnedNode>();
+    const childCli = (
+      who: "a" | "b" | "c",
+      args: string[],
+      jsonMode = true,
     ): Promise<Result> =>
-      new Promise((accept, reject) => {
-        const child = spawn(runtime.process.execPath, [cli, ...args], {
-          cwd,
-          env: environments.get(home),
-          shell: false,
-        });
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          runtime.process.execPath,
+          [
+            resolvePath("apps", "cli", "dist", "main.js"),
+            ...(jsonMode ? ["--json"] : []),
+            ...args,
+          ],
+          {
+            env: {
+              ...runtime.process.env,
+              HOME: homes[who],
+              USERPROFILE: homes[who],
+              IPAB_STATE_DIR: join(homes[who], "state"),
+              TASK_CONTENT_CONFIG: join(homes[who], "content.json"),
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+            signal: AbortSignal.any([signal, AbortSignal.timeout(240_000)]),
+          },
+        );
         let out = "",
           err = "";
-        let timedOut = false;
-        const timeout = setTimeout(() => {
-          timedOut = true;
-          child.kill();
-        }, 30_000);
-        child.stdout.setEncoding("utf8").on("data", (value: string) => {
-          out += value;
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (text: string) => {
+          out += text;
         });
-        child.stderr.setEncoding("utf8").on("data", (value: string) => {
-          err += value;
+        child.stderr.on("data", (text: string) => {
+          err += text;
         });
         child.once("error", reject);
         child.once("close", (code) => {
-          clearTimeout(timeout);
-          if (timedOut)
-            reject(
-              new Error(`CLI timeout at ${args.join(" ")}; stderr: ${err}`),
-            );
-          else accept({ code: code ?? 1, out, err });
+          resolve({ code: code ?? 1, out, err });
         });
       });
-    const cidResult = async (home: string, args: string[], cwd?: string) => {
-      const result = await invoke(home, args, cwd);
-      expect(result, result.err).toMatchObject({ code: 0 });
-      expect(result.out.trim().split(/\r?\n/)).toHaveLength(1);
-      return CID.parse(result.out.trim()).toV1().toString();
+    const nodeRecords = async (state: string) => {
+      const records = await ownedNodes(state, !discoveredStates.has(state));
+      if (records.length) discoveredStates.add(state);
+      for (const record of records) {
+        apiSecrets.set(record.api, record.auth);
+        trackedNodes.set(record.repo, record);
+      }
+      return records;
     };
-    try {
-      const cfgMessages: string[] = [];
-      const envA = environments.get(homeA);
-      if (!envA) throw new Error("Missing isolated owner environment.");
-      const cfgIO = {
-        out: (value: string) => {
-          cfgMessages.push(value);
-        },
-        err: (value: string) => {
-          cfgMessages.push(value);
-        },
-        tty: false,
-        confirm: () => Promise.resolve(false),
-        readSecret: () => Promise.resolve(apiKey),
-      };
-      expect(
-        await runCli(
-          ["config", "set", "pointers.service", endpoint],
-          cfgIO,
-          envA,
+    const rpc = (port: number, command: string) =>
+      fetch(`http://127.0.0.1:${port}/api/v0/${command}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiSecrets.get(port) ?? ""}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+    const hasLocalBlock = async (
+      port: number,
+      cid: string,
+    ): Promise<boolean> => {
+      const response = await rpc(port, "refs/local");
+      if (!response.ok)
+        throw new Error(
+          "Could not inspect this test node's local block inventory.",
+        );
+      // Blockstore inventory may reconstruct raw CIDs; codec is not part of its storage key.
+      const expected = CID.parse(cid).multihash.bytes;
+      return (await response.text())
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .some((line) => {
+          const value = JSON.parse(line) as { Ref: string };
+          const actual = CID.parse(value.Ref).multihash.bytes;
+          return (
+            actual.length === expected.length &&
+            actual.every((byte, index) => byte === expected[index])
+          );
+        });
+    };
+    const makeContent = async (who: "a" | "b" | "c", label: string) => {
+      const data = `${label}-${crypto.randomUUID()}`;
+      const car = await encodeBundleCar(
+        memoryTree(
+          new Map([
+            [
+              ".bundle.yaml",
+              new TextEncoder().encode(
+                "title: Test\nentry: data.txt\ntype: .bundle-type.yaml\n",
+              ),
+            ],
+            [
+              ".bundle-type.yaml",
+              new TextEncoder().encode("contentType: text/plain\n"),
+            ],
+            ["data.txt", new TextEncoder().encode(data)],
+          ]),
         ),
-      ).toBe(0);
-      expect(
-        await runCli(["config", "set", "pointers.apiKey", "-"], cfgIO, envA),
-      ).toBe(0);
-      expect(cfgMessages.some((value) => value.includes(apiKey))).toBe(false);
-      const swarm = await cidResult(homeA, [
+      );
+      const path = join(homes[who], `${label}.car`);
+      try {
+        await writeFile(path, car.stream);
+      } finally {
+        await car.close();
+      }
+      const result = await cli(who, ["bundle", "import", path]);
+      return { cid: json<{ cid: string }>(result).cid, data };
+    };
+    const storeHasBlock = async (
+      who: "a" | "b" | "c",
+      cid: string,
+    ): Promise<boolean> => {
+      try {
+        const file = await lstat(
+          join(
+            homes[who],
+            "content",
+            "blocks",
+            CID.parse(cid).toV1().toString(),
+          ),
+        );
+        if (!file.isFile() || file.isSymbolicLink())
+          throw new Error("Invalid local Store block file.");
+      } catch (cause) {
+        if (
+          cause instanceof Error &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        )
+          return false;
+        throw cause;
+      }
+      const store = new IpfsStore({
+        backend: "local",
+        dataDir: join(homes[who], "content"),
+      });
+      try {
+        await store.block.get(cid);
+        return true;
+      } catch (cause) {
+        if (cause instanceof ContentError && cause.code === "missing_block")
+          return false;
+        throw cause;
+      } finally {
+        await store.close();
+      }
+    };
+    const makeApp = async (label: string) => {
+      const source = await makeContent("b", `${label}-source`);
+      const marker = `${label}-${crypto.randomUUID()}`;
+      const car = await encodeBundleCar(
+        memoryTree(
+          new Map([
+            [
+              ".bundle.yaml",
+              new TextEncoder().encode(
+                "title: Rotation App\nentry: app.json\ntype: .bundle-type.yaml\n",
+              ),
+            ],
+            [
+              ".bundle-type.yaml",
+              new TextEncoder().encode(JSON.stringify(appSchema)),
+            ],
+            [
+              "app.json",
+              new TextEncoder().encode(
+                JSON.stringify({
+                  name: label,
+                  version: "1.0.0",
+                  entry: "resources/app.cjs",
+                  source: { cid: source.cid },
+                }),
+              ),
+            ],
+            [
+              "resources/app.cjs",
+              new TextEncoder().encode(
+                `process.stdout.write(${JSON.stringify(marker + "\n")});\n`,
+              ),
+            ],
+          ]),
+        ),
+      );
+      const path = join(homes.b, `${label}.car`);
+      try {
+        await writeFile(path, car.stream);
+      } finally {
+        await car.close();
+      }
+      const result = await cli("b", ["bundle", "import", path]);
+      return { cid: json<{ cid: string }>(result).cid, source, marker };
+    };
+    let primaryFailure: Error | undefined;
+    const cleanupErrors: unknown[] = [];
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = () =>
+      (cleanupPromise ??= (async () => {
+        rejectHeadAllocation = false;
+        vi.unstubAllEnvs();
+        for (const state of states) {
+          try {
+            await nodeRecords(state);
+          } catch (cause) {
+            cleanupErrors.push(cause);
+          }
+        }
+        for (const node of trackedNodes.values()) {
+          try {
+            await shutdownOwned(node);
+            console.log(
+              `Owned PID ${node.pid ?? "(not started)"} stopped: ${node.peerId}`,
+            );
+          } catch (cause) {
+            cleanupErrors.push(cause);
+          }
+        }
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => {
+          server.close(() => {
+            resolve();
+          });
+        });
+        if (!cleanupErrors.length) {
+          try {
+            await rm(work, { recursive: true, force: true });
+          } catch (cause) {
+            cleanupErrors.push(cause);
+          }
+        }
+      })());
+    onTestFinished(async () => {
+      if (activeOperation) await activeOperation;
+      await cleanup();
+      if (cleanupErrors.length)
+        throw new AggregateError(
+          cleanupErrors,
+          `Owned-node cleanup failed: ${work}`,
+        );
+    }, 60_000);
+    try {
+      const programCache = runtime.process.env.IPAB_TEST_KUBO_PROGRAM_CACHE;
+      if (programCache) {
+        const directory = join(states[0]!, "kubo-bin");
+        await mkdir(directory);
+        await protectAccountOnly(directory);
+        const executable =
+          runtime.process.platform === "win32" ? "ipfs.exe" : "ipfs";
+        for (const file of [executable, "installation.json"]) {
+          await copyFile(join(programCache, file), join(directory, file));
+          await protectAccountOnly(join(directory, file));
+        }
+        if (runtime.process.platform !== "win32")
+          await chmod(join(directory, executable), 0o700);
+        console.log(
+          "Reusing only the prior checksum-installed program; setup verifies its executable hash. New identities, stores and repos remain isolated.",
+        );
+      }
+      const setup = json<{ publicKey: string; fingerprint: string }>(
+        await cli("a", ["setup", "--yes"]),
+      );
+      await cli("a", ["config", "set", "pointers.service", origin]);
+      await cli("a", ["config", "set", "pointers.apiKey", "-"]);
+      const creation = await childCli("a", [
         "swarm",
         "create",
-        "--service",
-        endpoint,
+        "--alias",
+        "work",
+        "--name",
+        "Team",
       ]);
-      const keyA = await readFile(
-        join(homeA, ".ipab", "identity", "key.json"),
-        "utf8",
+      expect(creation.code, creation.err).toBe(0);
+      const url = json<{ configUrl: string }>(creation).configUrl;
+      const ownerStatus = json<{
+        ownerFingerprint: string;
+        owner: string;
+        peerId: string;
+      }>(await cli("a", ["swarm", "status", "work"]));
+      expect(ownerStatus.ownerFingerprint).toBe(setup.fingerprint);
+      console.log("Device setup and CLI-owned detached node ready.");
+      // Reuse only the installed executable on this physical test device, not
+      // identity, repo, PSK, Store blocks, ports or daemon state.
+      const executable =
+        runtime.process.platform === "win32" ? "ipfs.exe" : "ipfs";
+      for (const state of states.slice(1)) {
+        const binary = join(state, "kubo-bin");
+        await mkdir(binary);
+        await protectAccountOnly(binary);
+        for (const filename of [executable, "installation.json"]) {
+          await copyFile(
+            join(states[0]!, "kubo-bin", filename),
+            join(binary, filename),
+          );
+          await protectAccountOnly(join(binary, filename));
+        }
+        if (runtime.process.platform !== "win32")
+          await chmod(join(binary, executable), 0o700);
+      }
+      const requestFile = join(work, "request.json");
+      await cli("b", [
+        "swarm",
+        "request",
+        url,
+        "--owner-fingerprint",
+        ownerStatus.ownerFingerprint,
+        "--alias",
+        "work",
+        "--name",
+        "B",
+        "--output",
+        requestFile,
+      ]);
+      const exactRequest = await readFile(requestFile, "utf8");
+      await cli("b", [
+        "swarm",
+        "export",
+        "work",
+        "--output",
+        join(work, "request-again.json"),
+      ]);
+      expect(await readFile(join(work, "request-again.json"), "utf8")).toBe(
+        exactRequest,
       );
-      const request = await cidResult(homeB, ["swarm", "request", swarm]);
-      expect((await invoke(homeB, ["swarm", "status"])).code).not.toBe(0);
-      const response = await cidResult(homeA, [
+      await cli("b", ["swarm", "status", "work"], 1);
+      const approval = await cli("a", [
         "swarm",
         "approve",
-        request,
+        requestFile,
         "--yes",
       ]);
-      expect((await invoke(homeC, ["swarm", "join", response])).code).not.toBe(
-        0,
-      );
-      expect(await cidResult(homeB, ["swarm", "join", response])).toBe(swarm);
-      expect((await invoke(homeB, ["swarm", "status"])).code).toBe(0);
-      const source = join(work, "source-v1");
-      await mkdir(source);
-      await writeFile(
-        join(source, ".bundle.yaml"),
-        "title: Source\nentry: main.cjs\ntype: .bundle-type.yaml\n",
-      );
-      await writeFile(
-        join(source, ".bundle-type.yaml"),
-        "contentType: text/plain\n",
-      );
-      await writeFile(
-        join(source, "main.cjs"),
-        'console.log("Hello " + process.argv[2]);\n',
-      );
-      const srcBuild = await invoke(homeA, [
-        "--json",
-        "bundle",
-        "build",
-        source,
+      const summaryRequest = JSON.parse(exactRequest) as {
+        name: string;
+        member: string;
+        peerId: string;
+        requestedAt: string;
+      };
+      for (const value of [
+        summaryRequest.name,
+        summaryRequest.member,
+        summaryRequest.peerId,
+        summaryRequest.requestedAt,
+      ])
+        expect(approval.err).toContain(value);
+      const repeated = await cli("a", [
+        "swarm",
+        "approve",
+        requestFile,
+        "--yes",
       ]);
-      expect(srcBuild, srcBuild.err).toMatchObject({ code: 0 });
-      const sourceCid = (JSON.parse(srcBuild.out) as { cid: string }).cid;
-      const project = join(work, "app");
-      await mkdir(project);
-      const { appSchema } = await import("@ipab/cli/devtools");
-      await writeFile(
-        join(project, ".bundle.yaml"),
-        JSON.stringify({
-          title: "App",
-          entry: "app.json",
-          type: ".bundle-type.yaml",
-        }),
-      );
-      await writeFile(
-        join(project, ".bundle-type.yaml"),
-        JSON.stringify(appSchema),
-      );
-      await writeFile(
-        join(project, "app.json"),
-        JSON.stringify({
-          name: "hello",
-          version: "1.0.0",
-          description: "",
-          entry: "resources/app.cjs",
-          source: { cid: sourceCid },
-        }),
-      );
-      await writeFile(
-        join(project, "main.cjs"),
-        await readFile(join(source, "main.cjs")),
-      );
-      await writeFile(
-        join(project, "ipab.build.yaml"),
-        "version: 1\nfiles:\n  - source: .bundle-type.yaml\n    target: .bundle-type.yaml\n  - source: app.json\n    target: app.json\n  - source: main.cjs\n    target: resources/app.cjs\nimports: []\n",
-      );
-      const built = await invoke(homeA, ["--json", "build", project]);
-      expect(built, built.err).toMatchObject({ code: 0 });
-      const appV1 = (JSON.parse(built.out) as { cid: string }).cid;
-      const releaseV1 = await cidResult(homeA, [
+      expect(repeated.err).toContain("Previously approved Request");
+      const first = await makeContent("a", "a-fresh");
+      await cli("a", [
+        "--swarm",
+        "work",
         "publish",
-        appV1,
+        first.cid,
         "--name",
-        "apps/hello",
+        "notes/a",
+        "--snapshot",
       ]);
+      const memberStatus = json<{ peerId: string }>(
+        await cli("b", ["swarm", "status", "work"]),
+      );
+      await cli("b", ["swarm", "update", "work", "--name", "NotOwner"], 1);
+      await cli("a", ["swarm", "update", "work", "--name", "Renamed"]);
+      await cli("b", ["swarm", "profile", "work", "--name", "Team"]);
+      expect(memberStatus.peerId).not.toBe(ownerStatus.peerId);
+      const nodesA = await nodeRecords(states[0]!),
+        nodesB = await nodeRecords(states[1]!);
+      const a = nodesA[0]!,
+        b = nodesB[0]!;
       expect(
-        (await invoke(homeB, ["exec", `ipab://${swarm}/apps/hello`, "Alice"]))
-          .out,
-      ).toBe("Hello Alice\n");
-      const downloaded = await invoke(homeB, [
-        "--json",
+        (await fetch(`http://127.0.0.1:${a.api}/api/v0/id`, { method: "POST" }))
+          .ok,
+      ).toBe(false);
+      expect(await hasLocalBlock(b.api, first.cid)).toBe(false);
+      expect(await storeHasBlock("b", first.cid)).toBe(false);
+      const outputA = join(homes.b, "from-a");
+      await cli("b", [
         "get",
-        "ipab:///apps/hello",
-        "-o",
-        join(work, "downloaded-app"),
+        "--force",
+        "ipab://work/notes/a",
+        "--output",
+        outputA,
       ]);
-      expect(downloaded, downloaded.err).toMatchObject({ code: 0 });
-      expect(JSON.parse(downloaded.out)).toMatchObject({
-        targetCid: releaseV1,
-        cid: appV1,
-      });
-      const sourceDir = join(work, "downloaded-source");
-      expect(
-        (await invoke(homeB, ["get", sourceCid, "-o", sourceDir])).code,
-      ).toBe(0);
-      await writeFile(
-        join(sourceDir, "main.cjs"),
-        'console.log("Welcome " + process.argv[2]);\n',
+      expect(await readFile(join(outputA, "data.txt"), "utf8")).toBe(
+        first.data,
       );
-      const sourceV2Build = await invoke(homeB, [
-        "--json",
-        "bundle",
-        "build",
-        sourceDir,
-      ]);
-      expect(sourceV2Build, sourceV2Build.err).toMatchObject({ code: 0 });
-      const sourceV2 = (JSON.parse(sourceV2Build.out) as { cid: string }).cid;
-      await writeFile(
-        join(project, "main.cjs"),
-        await readFile(join(sourceDir, "main.cjs")),
-      );
-      await writeFile(
-        join(project, "app.json"),
-        JSON.stringify({
-          name: "hello",
-          version: "2.0.0",
-          description: "",
-          entry: "resources/app.cjs",
-          source: { cid: sourceV2 },
-        }),
-      );
-      const builtV2 = await invoke(homeB, [
-        "--json",
-        "build",
-        project,
-        "--replace",
-      ]);
-      expect(builtV2, builtV2.err).toMatchObject({ code: 0 });
-      const appV2 = (JSON.parse(builtV2.out) as { cid: string }).cid;
-      const releaseV2 = await cidResult(homeB, [
+      expect(await hasLocalBlock(b.api, first.cid)).toBe(true);
+      expect(await storeHasBlock("b", first.cid)).toBe(true);
+      console.log(`A->B uncached Store/Kubo transfer PASS: ${first.cid}`);
+      const second = await makeContent("b", "b-fresh");
+      await cli("b", [
+        "--swarm",
+        "work",
         "publish",
-        appV2,
+        second.cid,
         "--name",
-        "apps/hello",
+        "notes/b",
+        "--snapshot",
+      ]);
+      expect(await hasLocalBlock(a.api, second.cid)).toBe(false);
+      expect(await storeHasBlock("a", second.cid)).toBe(false);
+      const outputB = join(homes.a, "from-b");
+      await cli("a", [
+        "get",
+        "--force",
+        "ipab://work/notes/b",
+        "--output",
+        outputB,
+      ]);
+      expect(await readFile(join(outputB, "data.txt"), "utf8")).toBe(
+        second.data,
+      );
+      expect(await hasLocalBlock(a.api, second.cid)).toBe(true);
+      expect(await storeHasBlock("a", second.cid)).toBe(true);
+      console.log(`B->A uncached Store/Kubo transfer PASS: ${second.cid}`);
+      // A real CLI child exits while its already-owned daemon remains responsive.
+      const childResult = await new Promise<number | null>(
+        (resolve, reject) => {
+          const child = spawn(
+            runtime.process.execPath,
+            [
+              resolvePath("apps", "cli", "dist", "main.js"),
+              "--json",
+              "swarm",
+              "status",
+              "work",
+            ],
+            {
+              env: {
+                ...runtime.process.env,
+                HOME: homes.a,
+                USERPROFILE: homes.a,
+                IPAB_STATE_DIR: states[0]!,
+                TASK_CONTENT_CONFIG: join(homes.a, "content.json"),
+              },
+              stdio: "ignore",
+              windowsHide: true,
+            },
+          );
+          child.once("error", reject);
+          child.once("close", resolve);
+        },
+      );
+      expect(childResult).toBe(0);
+      expect((await rpc(a.api, "id")).ok).toBe(true);
+      const requestC = join(work, "request-c.json");
+      await cli("c", [
+        "swarm",
+        "request",
+        url,
+        "--owner-fingerprint",
+        ownerStatus.ownerFingerprint,
+        "--alias",
+        "work",
+        "--name",
+        "C",
+        "--output",
+        requestC,
+      ]);
+      await cli("a", ["swarm", "approve", requestC, "--yes"]);
+      await cli("c", ["swarm", "status", "work"]);
+      const c = (await nodeRecords(states[2]!))[0]!;
+      await shutdownOwned(c);
+      const secondUrl = json<{ configUrl: string }>(
+        await cli("a", ["swarm", "create", "--alias", "other"]),
+      ).configUrl;
+      expect(secondUrl).not.toBe(url);
+      const all = await nodeRecords(states[0]!);
+      expect(all).toHaveLength(2);
+      expect(new Set(all.map((n) => n.api)).size).toBe(2);
+      expect(new Set(all.map((n) => n.peerId)).size).toBe(2);
+      const other = all.find((n) => n.peerId !== a.peerId)!;
+      const keyA = await readFile(join(a.repo, "swarm.key"), "utf8"),
+        keyOther = await readFile(join(other.repo, "swarm.key"), "utf8");
+      expect(keyA).not.toBe(keyOther);
+      expect(
+        await readFile(
+          join(states[0]!, "kubo-bin", "installation.json"),
+          "utf8",
+        ),
+      ).toContain("0.43.2");
+      const connect = await rpc(
+        other.api,
+        `swarm/connect?arg=${encodeURIComponent(`/ip4/127.0.0.1/tcp/${a.swarm}/p2p/${a.peerId}`)}`,
+      ).then(
+        (response) => response.ok,
+        () => false,
+      );
+      expect(connect).toBe(false);
+      const last = await makeContent("b", "last-before-freeze");
+      await cli("b", [
+        "--swarm",
+        "work",
+        "publish",
+        last.cid,
+        "--name",
+        "notes/final",
+        "--snapshot",
+      ]);
+      expect(await hasLocalBlock(a.api, last.cid)).toBe(false);
+      const appOld = await makeApp("app-old");
+      const oldArtifact = json<{ cid: string }>(
+        await cli("b", [
+          "--swarm",
+          "work",
+          "publish",
+          appOld.cid,
+          "--name",
+          "apps/final",
+        ]),
+      ).cid;
+      const appLast = await makeApp("app-final");
+      await cli("b", [
+        "--swarm",
+        "work",
+        "publish",
+        appLast.cid,
+        "--name",
+        "apps/final",
         "--expect",
-        releaseV1,
+        oldArtifact,
       ]);
-      expect(releaseV2).not.toBe(releaseV1);
-      expect(
-        (await invoke(homeA, ["exec", "ipab:///apps/hello", "Alice"])).out,
-      ).toBe("Welcome Alice\n");
-      expect((await invoke(homeB, ["exec", releaseV1, "Alice"])).out).toBe(
-        "Hello Alice\n",
+      for (const cid of [
+        appOld.cid,
+        appOld.source.cid,
+        appLast.cid,
+        appLast.source.cid,
+      ]) {
+        expect(await hasLocalBlock(a.api, cid)).toBe(false);
+        expect(await storeHasBlock("a", cid)).toBe(false);
+      }
+      const before = JSON.parse(await (await fetch(url)).text()) as {
+        value: {
+          headId: string;
+          scopeId: string;
+          members: { publicKey: string; profileId: string }[];
+        };
+      };
+      rejectHeadAllocation = true;
+      const request = JSON.parse(exactRequest) as { member: string };
+      await cli(
+        "a",
+        ["--swarm", "work", "swarm", "exclude", request.member, "--yes"],
+        1,
       );
-      const rawDir = join(work, "raw-release");
+      const oldHeadUrl = `${origin}/v1/${before.value.scopeId}/${before.value.headId}`;
+      const frozen = JSON.parse(await (await fetch(oldHeadUrl)).text()) as {
+        status: string;
+        value: { root: string };
+      };
+      expect(frozen.status).toBe("frozen");
+      console.log("Old HEAD frozen; allocation interruption persisted.");
+      rejectHeadAllocation = false;
+      await cli("a", ["swarm", "resume", "work"]);
+      expect((await fetch(oldHeadUrl)).status).toBe(410);
+      const final = json<{ epoch: number; root: string }>(
+        await cli("a", ["swarm", "status", "work"]),
+      );
+      expect(final.epoch).toBe(2);
+      expect(final.root).toBe(frozen.value.root);
+      console.log(
+        "Owner resume reached epoch 2 with identical final publication.",
+      );
+      const departedProfile = before.value.members.find(
+        (member) => member.publicKey === request.member,
+      )!.profileId;
       expect(
-        (
-          await invoke(homeA, [
-            "get",
-            "--raw",
-            "ipab:///apps/hello",
-            "-o",
-            rawDir,
-          ])
-        ).code,
-      ).toBe(0);
-      expect(
-        JSON.parse(await readFile(join(rawDir, "entry.json"), "utf8")),
-      ).toMatchObject({ value: appV2, previous: releaseV1 });
-      expect(await runCli(["exec", "--raw", releaseV2], cfgIO, envA)).toBe(2);
-      expect(
-        (
-          await invoke(homeA, [
-            "publish",
-            appV1,
-            "--name",
-            "apps/hello",
-            "--expect",
-            releaseV1,
-          ])
-        ).code,
-      ).toBe(3);
-      barrierReads = 2;
-      const concurrent = await Promise.all([
-        invoke(homeA, [
-          "publish",
-          appV1,
-          "--name",
-          "apps/hello",
-          "--expect",
-          releaseV2,
-        ]),
-        invoke(homeB, [
-          "publish",
-          appV2,
-          "--name",
-          "apps/hello",
-          "--expect",
-          releaseV2,
-        ]),
+        (await fetch(`${origin}/v1/${before.value.scopeId}/${departedProfile}`))
+          .status,
+      ).toBe(410);
+      const finalDirectory = join(homes.a, "final-before-freeze");
+      await cli("a", [
+        "get",
+        "--force",
+        "ipab://work/notes/final",
+        "--output",
+        finalDirectory,
       ]);
-      expect(concurrent.map((result) => result.code).sort()).toEqual([0, 3]);
-      const conflictsBeforeDifferentNames = casConflicts;
-      barrierReads = 2;
-      const different = await Promise.all([
-        invoke(homeA, ["publish", appV1, "--name", "apps/one"]),
-        invoke(homeB, ["publish", appV2, "--name", "apps/two"]),
+      expect(await readFile(join(finalDirectory, "data.txt"), "utf8")).toBe(
+        last.data,
+      );
+      const appDirectory = join(homes.a, "app-after-rotation");
+      await cli("a", [
+        "get",
+        "--force",
+        "ipab://work/apps/final",
+        "--output",
+        appDirectory,
       ]);
-      expect(different.map((result) => result.code)).toEqual([0, 0]);
-      expect(casConflicts).toBeGreaterThan(conflictsBeforeDifferentNames);
-      expect(
-        (await invoke(homeA, ["exec", "ipab:///apps/one", "Alice"])).out,
-      ).toBe("Hello Alice\n");
-      expect(
-        (await invoke(homeB, ["exec", "ipab:///apps/two", "Alice"])).out,
-      ).toBe("Welcome Alice\n");
-      failProvider = true;
-      expect(
-        (await invoke(homeA, ["publish", appV1, "--name", "apps/not-shared"]))
-          .code,
-      ).not.toBe(0);
-      failProvider = false;
-      expect(
-        (await invoke(homeA, ["get", "ipab:///apps/not-shared"])).code,
-      ).not.toBe(0);
-      expect(
-        await readFile(join(homeA, ".ipab", "identity", "key.json"), "utf8"),
-      ).toBe(keyA);
-      expect(
-        pins.has(sourceCid) &&
-          pins.has(sourceV2) &&
-          pins.has(appV1) &&
-          pins.has(appV2),
-      ).toBe(true);
+      const execution = await childCli(
+        "a",
+        ["--swarm", "work", "exec", "--force", "ipab://work/apps/final"],
+        false,
+      );
+      expect(execution.code, execution.err).toBe(0);
+      expect(execution.out).toContain(appLast.marker);
+      console.log(
+        "Non-snapshot Artifact/App executable recovered after old network retirement.",
+      );
+      for (const item of [appOld, appLast]) {
+        const directory = join(homes.a, `${item.marker}-source`);
+        await cli("a", [
+          "--swarm",
+          "work",
+          "get",
+          item.source.cid,
+          "--output",
+          directory,
+        ]);
+        expect(await readFile(join(directory, "data.txt"), "utf8")).toBe(
+          item.source.data,
+        );
+      }
+      const third = await makeContent("a", "after-rotation");
+      await cli("a", [
+        "--swarm",
+        "work",
+        "publish",
+        third.cid,
+        "--name",
+        "notes/new",
+        "--snapshot",
+      ]);
+      await cli("b", ["--swarm", "work", "search", "new", "--force"], 1);
+      const returnedC = json<{ epoch: number; peerId: string }>(
+        await cli("c", ["swarm", "status", "work"]),
+      );
+      expect(returnedC.epoch).toBe(2);
+      expect(returnedC.peerId).toBe(c.peerId);
+      const remainingExecution = await childCli(
+        "c",
+        ["--swarm", "work", "exec", "--force", "ipab://work/apps/final"],
+        false,
+      );
+      expect(remainingExecution.code, remainingExecution.err).toBe(0);
+      expect(remainingExecution.out).toContain(appLast.marker);
+      console.log(
+        "Offline remaining member resumed with new package, key and App execution.",
+      );
+      const fromC = await makeContent("c", "remaining-member");
+      await cli("c", [
+        "--swarm",
+        "work",
+        "publish",
+        fromC.cid,
+        "--name",
+        "notes/c",
+        "--snapshot",
+      ]);
+      // Explicit reapproval of the same old non-expiring Request is allowed.
+      await cli("a", ["swarm", "approve", requestFile, "--yes", "--again"]);
+      await cli("b", ["swarm", "status", "work"]);
+      expect((await nodeRecords(states[1]!))[0]!.epoch).toBe(2);
+      console.log(
+        `Kubo ${"0.43.2"}: A->B ${first.cid}, B->A ${second.cid}; both receiver refs/local inventory misses verified before fetch; separate 2 Scope repos/PeerIDs/keys/ports; CLI child exit retained daemon; uncached last pre-freeze publication preserved; interruption resumed to epoch 2, old HEAD/profile 410, old Request reapproved.`,
+      );
+    } catch (cause) {
+      primaryFailure =
+        cause instanceof Error
+          ? cause
+          : new Error("Onboarding test failed", { cause });
     } finally {
-      await new Promise<void>((accept, reject) =>
-        server.close((error) => {
-          if (error) reject(error);
-          else accept();
-        }),
-      );
-      await rm(work, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
-      });
+      await cleanup();
     }
+    if (cleanupErrors.length)
+      throw new AggregateError(
+        primaryFailure === undefined
+          ? cleanupErrors
+          : [primaryFailure, ...cleanupErrors],
+        `Owned-node cleanup failed; preserving isolated evidence at ${work}`,
+      );
+    if (primaryFailure !== undefined) throw primaryFailure;
   },
 );
+function resolvePath(...parts: string[]): string {
+  return resolve("..", "..", ...parts);
+}

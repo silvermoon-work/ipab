@@ -2,6 +2,24 @@
 
 ## Scope
 
+2026-11-28 onboarding 实施协议优先于下文旧 Pointer/Swarm 记录：
+组织标识是稳定 `/v1/{scope}/{configVariable}` HTTPS URL，不再是 descriptor CID。
+Scope 持唯一 Owner；所有 Variable 公开读，写由 Owner 或无过期准确 ID certificate
+及 subject 请求签名授权。Scope DO 原子协调内容 CID CAS（允许 ABA）与不可逆
+freeze/delete，删除 ID 墓碑不复活。State v2 只含 Names CID links；公开 config
+含组织资料、HEAD/epoch/成员身份/资料 ID/加密批准包，成员本人资料可写。
+Request 是本机持久自包含签名文件，独立 X25519 key 与 Kubo PeerID 持钥绑定；
+Owner 指纹须第二可信渠道确认，无 Invite/Response/Join。`ipab setup --yes`
+校验安装
+程序并准备 HOME 身份，不接触 daemon；正常使用按 Swarm 懒接入独立节点和内容源。
+Kubo
+0.43.2 使用受保护 repo/key/ports、后台常驻；仅 LAN/VPN，不部署、不登录自启，
+绝不管理既有共享 daemon。成员减少先 freeze，收集最终 State 和历史发布中的
+Artifact value/previous、App source 字符串依赖闭包，在旧网下载/保留并持久记录，
+再新 HEAD/key/epoch 与剩余包，同 URL 发布配置、删除旧 profile/HEAD。
+持久 Owner-only resume 在新网提供完全相同的闭包；无内容加密、Owner 恢复或旧协议
+fallback；旧 HOME/Store 不自动清理。完整协议见 [onboarding.md](onboarding.md)。
+
 2026-11-28 Bundle 协议有意拆分，无旧 profile 或迁移 fallback：
 此限制只针对旧 Bundle
 manifest／类型 profile；保留无 manifest 项目的新协议源码默认生成，

@@ -1,5 +1,12 @@
 # MVP implementation decisions
 
+> Historical MVP record: the onboarding/authorization and Swarm-CID sections
+> below have been superseded by [Scope / Variable onboarding](onboarding.md).
+> Current source uses configuration URLs, file Requests, no Join, public reads,
+> nonexpiring exact-ID certificates, content-CID CAS and managed private Kubo.
+> Build/Artifact design decisions remain applicable; old protocol examples are
+> not executable compatibility guidance.
+
 ## Protocol and authorization
 
 The immutable swarm identifier is a typed Descriptor Bundle CID. Its entry has

@@ -1,6 +1,5 @@
-import { mkdir, lstat, open, readFile, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { lstat, open, readFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
 import { stringify } from "yaml";
 import { CarBlockIterator } from "@ipld/car/iterator";
 import * as dagCbor from "@ipld/dag-cbor";
@@ -14,111 +13,105 @@ import {
 } from "@ipab/bundle-builder";
 import type { IpfsStore } from "@ipab/ipfs-store";
 import {
-  PointerClient,
-  PointerApiError,
-  type ReadResult,
-} from "@ipab/bundle/pointer/client";
+  ScopeClient,
+  ScopeApiError,
+  issueScopeCertificate,
+  uniqueId,
+  verifyScopeCertificate,
+  valueCid,
+  type Variable,
+} from "@ipab/bundle/pointer/scope";
 import {
   canonicalService,
+  isCanonicalPublicKey,
   POINTER_ID_PATTERN,
 } from "@ipab/bundle/pointer/protocol";
 import {
-  encodeCertificate,
-  issueCertificate,
-  verifyMemberCertificate,
-} from "@ipab/bundle/pointer/certificates";
-import {
   importPrivateKeyPkcs8,
   importPublicKeyRaw,
+  keyId,
   signEd25519,
   verifyEd25519,
-  randomBytes,
-  toBase64Url,
 } from "@ipab/bundle/pointer/crypto";
-import type { Certificate } from "@ipab/bundle/pointer/protocol";
 import { HostError, object, message } from "./errors.js";
-import {
-  accountIdentity,
-  protectedPath,
-  secureNew,
-  type Identity,
-} from "./identity.js";
-import { nodeError } from "./authoring.js";
+import { accountIdentity, type Identity } from "./identity.js";
 import { bundleJson, provideContent } from "./content-provider.js";
 import { bytes, relativePath } from "./space.js";
-import { publicUrl } from "./config.js";
 import { appSchemaCid } from "./app-definition.js";
 import { State } from "./state.js";
+import {
+  privateDirectory,
+  readPrivate,
+  withPrivateLock,
+  writePrivate,
+} from "./swarm-files.js";
+import {
+  encryptionIdentity,
+  openApproval,
+  sealApproval,
+  type EncryptionIdentity,
+  type Envelope,
+  type EnvelopeBinding,
+  type MembershipSecret,
+  parseEnvelope,
+} from "./swarm-envelope.js";
+import {
+  kuboSource,
+  peerId,
+  peerProof,
+  prepareNode,
+  startNode,
+  validateAddress,
+  type KuboNode,
+} from "./kubo.js";
 
-const cidField = { type: "string", minLength: 1, maxLength: 128 } as const;
-function definition(
-  properties: Record<string, unknown>,
-  required = Object.keys(properties),
-): BundleType {
-  return {
-    contentType: "application/json",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required,
-      properties,
-    },
-  };
-}
-export const swarmType = definition({
-  service: { type: "string" },
-  variable: { type: "string" },
-  owner: { type: "string" },
-});
-export const artifactType = definition(
-  {
-    value: cidField,
-    previous: cidField,
-    timestamp: { type: "string", format: "date-time" },
-  },
-  ["value", "timestamp"],
-);
-export const requestType = definition({
-  swarm: cidField,
-  member: { type: "string" },
-  requestId: { type: "string" },
-  iat: { type: "integer" },
-  exp: { type: "integer" },
-  signature: { type: "string" },
-});
-export const responseType = definition({
-  swarm: cidField,
-  request: cidField,
-  certificate: { type: "object" },
-});
-export interface Descriptor {
-  service: string;
-  variable: string;
-  owner: string;
-}
-interface MembershipRequest {
-  swarm: string;
-  member: string;
+export interface Member {
+  publicKey: string;
+  encryptionKey: string;
+  peerId: string;
+  profileId: string;
   requestId: string;
-  iat: number;
-  exp: number;
-  signature: string;
+  approval: Envelope | null;
 }
-export interface Artifact {
-  value: string;
-  previous?: string;
-  timestamp: string;
+export interface Organization {
+  v: 1;
+  scopeId: string;
+  owner: string;
+  name: string;
+  description: string;
+  headId: string;
+  epoch: number;
+  bootstrap: string[];
+  members: Member[];
+}
+export interface Profile {
+  name: string;
+  addresses: string[];
+  updatedAt: string;
 }
 export interface Snapshot {
-  v: 1;
-  properties: { name: string; description: string };
+  v: 2;
   names: Record<string, CID>;
+}
+export interface MembershipRequest {
+  v: 1;
+  id: string;
+  requestedAt: string;
+  configUrl: string;
+  scopeId: string;
+  owner: string;
+  name: string;
+  member: string;
+  encryptionKey: string;
+  peerId: string;
+  peerPublicKey: string;
+  peerSignature: string;
+  signature: string;
 }
 export interface SwarmContext {
   store: IpfsStore;
   env: NodeJS.ProcessEnv;
   stateDir: string;
-  provider: string;
   fetch?: typeof fetch;
   pointerService?: string;
   pointerApiKey?: string;
@@ -126,6 +119,43 @@ export interface SwarmContext {
   cacheTtl?: number;
   forceRefresh?: boolean;
   diagnostic?: (text: string) => void;
+  node?: KuboNode;
+  identity?: Identity;
+}
+async function contextIdentity(
+  context: SwarmContext,
+  initialize = false,
+): Promise<Identity> {
+  context.identity ??= await accountIdentity(context.env, initialize);
+  return context.identity;
+}
+interface LocalMembership {
+  configUrl: string;
+  owner: string;
+  account: string;
+  encryption: EncryptionIdentity;
+  request?: MembershipRequest;
+  config?: Organization;
+  secret?: MembershipSecret;
+}
+const cidField = { type: "string", minLength: 1, maxLength: 128 } as const;
+export const artifactType: BundleType = {
+  contentType: "application/json",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["value", "timestamp"],
+    properties: {
+      value: cidField,
+      previous: cidField,
+      timestamp: { type: "string", format: "date-time" },
+    },
+  },
+};
+export interface Artifact {
+  value: string;
+  previous?: string;
+  timestamp: string;
 }
 function withState<T>(
   context: SwarmContext,
@@ -139,70 +169,540 @@ function withState<T>(
     state.close();
   }
 }
-async function requestPointer<T>(operation: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await operation();
-    } catch (cause) {
-      if (
-        attempt >= 2 ||
-        !(cause instanceof Error) ||
-        !["TypeError", "AbortError", "TimeoutError"].includes(cause.name)
-      )
-        throw cause;
-    }
-  }
+export function canonicalSwarmUrl(value: string): string {
+  if (!/^https?:\/\//.test(value))
+    throw new HostError(
+      "Swarm requires a configuration URL; old Swarm CID protocol is unsupported.",
+    );
+  const url = new URL(value);
+  canonicalService(url.origin);
+  if (
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password ||
+    url.toString() !== value ||
+    !/^\/v1\/[A-Za-z0-9_-]{43}\/[A-Za-z0-9_-]{43}$/.test(url.pathname)
+  )
+    throw new HostError(
+      "Swarm must be an exact Scope configuration URL; old Swarm CID protocol is unsupported.",
+    );
+  return value;
 }
-const serviceFetch: typeof fetch = (input, options) =>
-  fetch(input, {
-    ...options,
-    redirect: "error",
-    cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
-  });
-interface BoundPointer {
-  read(): Promise<ReadResult>;
-  write(
-    root: string,
-    revision: string,
-    idempotencyKey: string,
-  ): Promise<ReadResult>;
+function coordinates(configUrl: string): {
+  service: string;
+  scopeId: string;
+  configId: string;
+} {
+  const url = new URL(canonicalSwarmUrl(configUrl));
+  const [, , scopeId, configId] = url.pathname.split("/");
+  return { service: url.origin, scopeId: scopeId!, configId: configId! };
 }
-function bindPointer(
+const localName = (url: string) =>
+  `${createHash("sha256").update(url).digest("hex")}.json`;
+const nodeScope = (service: string, scopeId: string) =>
+  createHash("sha256").update(`${service}/v1/${scopeId}`).digest("hex");
+async function directory(context: SwarmContext): Promise<string> {
+  return privateDirectory(context.stateDir, "swarm-credentials");
+}
+async function local(
   context: SwarmContext,
-  data: Descriptor,
-  identity: Identity,
-  certificate?: Certificate,
-): BoundPointer {
-  const client = new PointerClient({
-    service: data.service,
-    signer: {
-      privateKey: identity.privateKey,
-      publicKey: identity.publicKey,
-      ...(certificate ? { certificate } : {}),
-    },
-    fetch: context.fetch ?? serviceFetch,
+  configUrl: string,
+): Promise<LocalMembership> {
+  const value = await readPrivate<LocalMembership>(
+    await directory(context),
+    localName(configUrl),
+  );
+  const identity = await contextIdentity(context);
+  if (
+    !value ||
+    value.configUrl !== configUrl ||
+    value.account !== identity.publicKey
+  )
+    throw new HostError(
+      "No local Request for this configuration and HOME identity. Run swarm request with a trusted Owner fingerprint.",
+    );
+  return value;
+}
+async function saveLocal(
+  context: SwarmContext,
+  membership: LocalMembership,
+): Promise<void> {
+  await writePrivate(
+    await directory(context),
+    localName(membership.configUrl),
+    membership,
+  );
+}
+function client(
+  context: SwarmContext,
+  service: string,
+  identity?: Identity,
+  secret?: MembershipSecret,
+): ScopeClient {
+  return new ScopeClient({
+    service,
+    ...(identity
+      ? {
+          signer: {
+            ...identity,
+            ...(secret ? { certificate: secret.certificate } : {}),
+          },
+        }
+      : {}),
+    ...(context.fetch ? { fetch: context.fetch } : {}),
+    ...(context.pointerApiKey ? { apiKey: context.pointerApiKey } : {}),
   });
+}
+function parseOrganization(value: unknown, configUrl: string): Organization {
+  const data = object(value, "organization configuration");
+  const { scopeId } = coordinates(configUrl);
+  if (
+    Object.keys(data).sort().join() !==
+      "bootstrap,description,epoch,headId,members,name,owner,scopeId,v" ||
+    data.v !== 1 ||
+    data.scopeId !== scopeId ||
+    !isCanonicalPublicKey(data.owner) ||
+    typeof data.name !== "string" ||
+    data.name.length > 256 ||
+    typeof data.description !== "string" ||
+    data.description.length > 2048 ||
+    typeof data.headId !== "string" ||
+    !POINTER_ID_PATTERN.test(data.headId) ||
+    typeof data.epoch !== "number" ||
+    !Number.isSafeInteger(data.epoch) ||
+    data.epoch < 1 ||
+    !Array.isArray(data.bootstrap) ||
+    data.bootstrap.length > 64 ||
+    !Array.isArray(data.members) ||
+    data.members.length < 1 ||
+    data.members.length > 16
+  )
+    throw new HostError("Invalid Scope organization configuration.");
+  const identities = new Set<string>(),
+    peers = new Set<string>(),
+    profiles = new Set<string>();
+  const members: Member[] = [];
+  for (const raw of data.members) {
+    const member = object(raw, "member");
+    if (
+      Object.keys(member).sort().join() !==
+        "approval,encryptionKey,peerId,profileId,publicKey,requestId" ||
+      !isCanonicalPublicKey(member.publicKey) ||
+      typeof member.encryptionKey !== "string" ||
+      member.encryptionKey.length > 256 ||
+      typeof member.peerId !== "string" ||
+      typeof member.profileId !== "string" ||
+      !POINTER_ID_PATTERN.test(member.profileId) ||
+      typeof member.requestId !== "string" ||
+      !POINTER_ID_PATTERN.test(member.requestId) ||
+      identities.has(member.publicKey) ||
+      peers.has(member.peerId) ||
+      profiles.has(member.profileId)
+    )
+      throw new HostError(
+        "Invalid or duplicate member/PeerID/profile binding.",
+      );
+    identities.add(member.publicKey);
+    peers.add(member.peerId);
+    profiles.add(member.profileId);
+    members.push({
+      publicKey: member.publicKey,
+      encryptionKey: member.encryptionKey,
+      peerId: member.peerId,
+      profileId: member.profileId,
+      requestId: member.requestId,
+      approval:
+        member.approval === null ? null : parseEnvelope(member.approval),
+    });
+  }
+  if (!identities.has(data.owner))
+    throw new HostError("Owner must remain an organization member.");
+  const bootstrap: string[] = [];
+  for (const address of data.bootstrap) {
+    if (typeof address !== "string")
+      throw new HostError("Invalid bootstrap address.");
+    validateAddress(address);
+    if (![...peers].some((peer) => address.endsWith(`/p2p/${peer}`)))
+      throw new HostError("Bootstrap address is not a member PeerID.");
+    bootstrap.push(address);
+  }
   return {
-    read: () => requestPointer(() => client.read(data.variable)),
-    write: (root, revision, idempotencyKey) =>
-      requestPointer(() =>
-        client.write(data.variable, root, {
-          ifRevision: revision,
-          idempotencyKey,
-        }),
-      ),
+    v: 1,
+    scopeId,
+    owner: data.owner,
+    name: data.name,
+    description: data.description,
+    headId: data.headId,
+    epoch: data.epoch,
+    bootstrap,
+    members,
   };
 }
-export async function typedJson<T>(
+function parseProfile(value: unknown, expectedPeer: string): Profile {
+  const data = object(value, "member profile");
+  if (
+    Object.keys(data).sort().join() !== "addresses,name,updatedAt" ||
+    typeof data.name !== "string" ||
+    data.name.length > 256 ||
+    typeof data.updatedAt !== "string" ||
+    !Number.isFinite(Date.parse(data.updatedAt)) ||
+    !Array.isArray(data.addresses) ||
+    data.addresses.length > 16
+  )
+    throw new HostError("Invalid public member profile.");
+  const addresses: string[] = [];
+  for (const address of data.addresses) {
+    if (typeof address !== "string")
+      throw new HostError("Invalid member address.");
+    validateAddress(address, expectedPeer);
+    addresses.push(address);
+  }
+  return { name: data.name, addresses, updatedAt: data.updatedAt };
+}
+async function fetchConfig(
+  context: SwarmContext,
+  configUrl: string,
+): Promise<{ config: Organization; variable: Variable }> {
+  const c = coordinates(configUrl),
+    api = client(context, c.service);
+  const [variable, scope] = await Promise.all([
+    api.read(c.scopeId, c.configId),
+    api.send<{ owner: string }>("GET", c.scopeId),
+  ]);
+  const config = parseOrganization(variable.value, configUrl);
+  if (scope.owner !== config.owner)
+    throw new HostError(
+      "Organization Owner does not match the immutable Scope trust root.",
+    );
+  return { config, variable };
+}
+function binding(
+  configUrl: string,
+  config: Organization,
+  member: Member,
+): EnvelopeBinding {
+  return {
+    configUrl,
+    scopeId: config.scopeId,
+    owner: config.owner,
+    member: member.publicKey,
+    requestId: member.requestId,
+    peerId: member.peerId,
+    profileId: member.profileId,
+    headId: config.headId,
+    epoch: config.epoch,
+    encryptionKey: member.encryptionKey,
+  };
+}
+async function validateMembershipSecret(
+  record: LocalMembership,
+  config: Organization,
+  member: Member,
+): Promise<void> {
+  const secret = record.secret;
+  if (
+    !secret ||
+    typeof secret.swarmKey !== "string" ||
+    !/^[a-f0-9]{64}$/.test(secret.swarmKey)
+  )
+    throw new HostError(
+      "Invalid approved Swarm key; preserve the original Request.",
+    );
+  if (record.account !== config.owner) {
+    const c = coordinates(record.configUrl);
+    await verifyScopeCertificate(
+      secret.certificate,
+      config.owner,
+      c.service,
+      c.scopeId,
+      config.headId,
+      record.account,
+    );
+    await verifyScopeCertificate(
+      secret.certificate,
+      config.owner,
+      c.service,
+      c.scopeId,
+      member.profileId,
+      record.account,
+    );
+    if (secret.certificate.body.write.length !== 2)
+      throw new HostError(
+        "Membership package must grant exactly HEAD and this member's profile.",
+      );
+  }
+}
+async function activate(
+  context: SwarmContext,
+  record: LocalMembership,
+): Promise<void> {
+  const config = record.config!,
+    secret = record.secret!;
+  const identity = await contextIdentity(context);
+  const self = config.members.find(
+    (member) => member.publicKey === identity.publicKey,
+  );
+  if (!self)
+    throw new HostError(
+      "This identity was removed. Make a new Request only after Owner confirmation.",
+    );
+  const c = coordinates(record.configUrl);
+  if (identity.publicKey !== config.owner) {
+    await verifyScopeCertificate(
+      secret.certificate,
+      config.owner,
+      c.service,
+      c.scopeId,
+      config.headId,
+      identity.publicKey,
+    );
+    await verifyScopeCertificate(
+      secret.certificate,
+      config.owner,
+      c.service,
+      c.scopeId,
+      self.profileId,
+      identity.publicKey,
+    );
+  }
+  const addresses = [...config.bootstrap];
+  const api = client(context, c.service);
+  let selfProfile: { profile: Profile; cid: string } | undefined;
+  for (const member of config.members) {
+    const profile = await api.read(c.scopeId, member.profileId);
+    const value = parseProfile(profile.value, member.peerId);
+    if (member.publicKey === identity.publicKey)
+      selfProfile = { profile: value, cid: profile.cid };
+    addresses.push(...value.addresses);
+  }
+  const node = await startNode(
+    context.stateDir,
+    nodeScope(c.service, config.scopeId),
+    secret.swarmKey,
+    config.epoch,
+    [...new Set(addresses)],
+    context.diagnostic,
+  );
+  if (node.peerId !== self.peerId)
+    throw new HostError(
+      "Approved PeerID differs from this local Request's Kubo identity.",
+    );
+  if (context.node?.api !== node.api) {
+    const store = context.store.withLocalSource(kuboSource(node));
+    await context.store.close();
+    context.store = store;
+  }
+  context.node = node;
+  if (selfProfile && selfProfile.profile.addresses.length === 0) {
+    const writer = client(
+      context,
+      c.service,
+      identity,
+      identity.publicKey === config.owner ? undefined : secret,
+    );
+    const profile = {
+      ...selfProfile.profile,
+      addresses: node.addresses,
+      updatedAt: new Date().toISOString(),
+    };
+    await writer.write(
+      c.scopeId,
+      self.profileId,
+      profile,
+      selfProfile.cid,
+      uniqueId(),
+    );
+  }
+}
+async function refresh(
+  context: SwarmContext,
+  configUrl: string,
+): Promise<LocalMembership> {
+  const record = await local(context, configUrl);
+  if (record.account === record.owner) {
+    const transition = await readPrivate<Removal>(
+      await directory(context),
+      `transition-${localName(configUrl)}`,
+    );
+    if (transition && !transition.completed)
+      throw new HostError(
+        "Organization switch incomplete; only Owner can continue with swarm resume.",
+      );
+  }
+  const { config } = await fetchConfig(context, configUrl);
+  if (config.owner !== record.owner)
+    throw new HostError("Pinned Owner changed; refusing configuration.");
+  if (record.config && config.epoch < record.config.epoch)
+    throw new HostError("Organization epoch rollback.");
+  const member = config.members.find(
+    (member) => member.publicKey === record.account,
+  );
+  if (!member)
+    throw new HostError(
+      "No approved package yet, or membership removed; ask the Owner.",
+    );
+  if (record.account !== config.owner) {
+    if (
+      !record.request ||
+      member.requestId !== record.request.id ||
+      member.peerId !== record.request.peerId ||
+      !member.approval
+    )
+      throw new HostError(
+        "Published package does not match the locally saved Request.",
+      );
+    record.secret = await openApproval(
+      member.approval,
+      binding(configUrl, config, member),
+      record.encryption,
+    );
+  }
+  if (!record.secret)
+    throw new HostError(
+      "Owner key/Swarm key lost: no system recovery is available.",
+    );
+  record.config = config;
+  await validateMembershipSecret(record, config, member);
+  await saveLocal(context, record);
+  await activate(context, record);
+  return record;
+}
+async function readyMembership(
+  context: SwarmContext,
+  configUrl: string,
+): Promise<LocalMembership> {
+  const record = await local(context, configUrl);
+  if (record.account === record.owner) {
+    const transition = await readPrivate<Removal>(
+      await directory(context),
+      `transition-${localName(configUrl)}`,
+    );
+    if (transition && !transition.completed)
+      throw new HostError(
+        "Organization switch incomplete; run swarm resume before normal Owner operations.",
+      );
+  }
+  if (!record.config || !record.secret) return refresh(context, configUrl);
+  if (
+    !context.node ||
+    context.node.peerId !==
+      record.config.members.find((m) => m.publicKey === record.account)?.peerId
+  ) {
+    try {
+      await activate(context, record);
+    } catch (cause) {
+      if (
+        cause instanceof ScopeApiError &&
+        [403, 404, 410].includes(cause.status)
+      )
+        return refresh(context, configUrl);
+      throw cause;
+    }
+  }
+  return record;
+}
+interface BoundHead {
+  read(): Promise<Variable & { root: string; etag: string }>;
+  write(root: string, cid: string, key: string): Promise<Variable>;
+}
+function headValue(head: Variable): Variable & { root: string; etag: string } {
+  const value = object(head.value, "HEAD");
+  if (Object.keys(value).join() !== "root" || typeof value.root !== "string")
+    throw new HostError("Invalid HEAD value.");
+  return {
+    ...head,
+    root: value.root,
+    etag: `"${head.cid}"`,
+  };
+}
+export async function pointer(
+  context: SwarmContext,
+  configUrl: string,
+): Promise<BoundHead> {
+  let record = await readyMembership(context, configUrl);
+  const identity = await contextIdentity(context),
+    c = coordinates(configUrl);
+  const operation = async (
+    write: boolean,
+    root?: string,
+    cid?: string,
+    key?: string,
+  ) => {
+    for (let attempt = 0; ; attempt++) {
+      const config = record.config!,
+        api = client(
+          context,
+          c.service,
+          identity,
+          identity.publicKey === config.owner ? undefined : record.secret,
+        );
+      try {
+        return write
+          ? await api.write(
+              c.scopeId,
+              config.headId,
+              { root: root! },
+              cid!,
+              key!,
+            )
+          : await api.read(c.scopeId, config.headId);
+      } catch (cause) {
+        if (
+          attempt === 0 &&
+          (!write ||
+            (cause instanceof ScopeApiError &&
+              [401, 403, 404, 410, 423].includes(cause.status)))
+        ) {
+          const oldHead = record.config!.headId;
+          record = await refresh(context, configUrl);
+          if (write && record.config!.headId !== oldHead)
+            throw new ScopeApiError(
+              412,
+              "cas_conflict",
+              "HEAD switched; recompute against the new final snapshot",
+              cause,
+            );
+          continue;
+        }
+        throw cause;
+      }
+    }
+  };
+  return {
+    read: async () => headValue(await operation(false)),
+    write: (root, cid, key) => operation(true, root, cid, key),
+  };
+}
+export async function typedJson(
   store: IpfsStore,
   cid: string,
   type: BundleType,
-): Promise<T> {
+): Promise<unknown> {
   const { bundle, value } = await bundleJson(store, cid);
   if (bundle.schemaKey !== (await encodeSchema(type)).cid.toString())
     throw new HostError("Expected exact Bundle type CID.");
-  return value as T;
+  return value;
+}
+function parseArtifact(value: unknown): Artifact {
+  const data = object(value, "Artifact");
+  if (
+    Object.keys(data).some(
+      (key) => !["value", "previous", "timestamp"].includes(key),
+    ) ||
+    typeof data.value !== "string" ||
+    typeof data.timestamp !== "string" ||
+    !Number.isFinite(Date.parse(data.timestamp)) ||
+    (data.previous !== undefined && typeof data.previous !== "string")
+  )
+    throw new HostError("Invalid Artifact.");
+  CID.parse(data.value);
+  if (data.previous !== undefined) CID.parse(data.previous);
+  return {
+    value: data.value,
+    timestamp: data.timestamp,
+    ...(data.previous !== undefined ? { previous: data.previous } : {}),
+  };
 }
 export async function jsonBundle(
   store: IpfsStore,
@@ -237,471 +737,167 @@ export async function jsonBundle(
     await encoded.close();
   }
 }
-export async function descriptor(
-  store: IpfsStore,
-  cid: string,
-): Promise<Descriptor> {
-  const data = await typedJson<Descriptor>(store, cid, swarmType);
-  return validateDescriptor(data);
-}
-async function validateDescriptor(data: Descriptor): Promise<Descriptor> {
-  data.service = publicUrl(data.service).replace(/\/$/, "");
-  const url = new URL(data.service);
-  if (
-    url.pathname !== "/" ||
-    (url.protocol !== "https:" &&
-      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
-  )
-    throw new HostError(
-      "Swarm service must be an HTTPS origin or isolated loopback HTTP origin.",
-    );
-  if (!POINTER_ID_PATTERN.test(data.variable))
-    throw new HostError("Invalid service pointer ID.");
-  await importPublicKeyRaw(data.owner);
-  return data;
-}
-const target = (data: Descriptor) =>
-  `${data.service}/v1/pointers/${data.variable}`;
-const now = () => Math.floor(Date.now() / 1000);
-function requestMessage(
-  data: Descriptor,
-  request: Omit<MembershipRequest, "signature">,
-): string {
-  return `IPAB-MEMBERSHIP/1\n${target(data)}\n${JSON.stringify({ swarm: request.swarm, member: request.member, requestId: request.requestId, iat: request.iat, exp: request.exp })}`;
-}
-async function verifiedRequest(
-  store: IpfsStore,
-  cid: string,
-): Promise<{ request: MembershipRequest; data: Descriptor }> {
-  const request = await typedJson<MembershipRequest>(store, cid, requestType);
-  const data = await descriptor(store, request.swarm);
-  if (
-    request.iat > now() + 60 ||
-    request.exp <= now() ||
-    request.exp <= request.iat ||
-    request.exp - request.iat > 7 * 86400 ||
-    !/^[A-Za-z0-9_-]{16,128}$/.test(request.requestId)
-  )
-    throw new HostError("Membership request is expired or invalid.");
-  if (
-    !(await verifyEd25519(
-      await importPublicKeyRaw(request.member),
-      request.signature,
-      requestMessage(data, request),
-    ))
-  )
-    throw new HostError("Membership request possession proof is invalid.");
-  return { request, data };
-}
-async function credentialDirectory(context: SwarmContext): Promise<string> {
-  const path = join(context.stateDir, "swarm-credentials");
-  try {
-    await lstat(path);
-  } catch (cause) {
-    if (!nodeError(cause, "ENOENT")) throw cause;
-    await mkdir(path, { mode: 0o700 });
-    await secureNew(path, true);
-  }
-  await protectedPath(path, true);
-  return path;
-}
-async function save(
-  context: SwarmContext,
-  name: string,
-  value: unknown,
-): Promise<void> {
-  const path = join(await credentialDirectory(context), name);
-  const handle = await open(path, "wx", 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(value));
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await secureNew(path);
-}
-async function saved(context: SwarmContext, name: string): Promise<unknown> {
-  const path = join(await credentialDirectory(context), name);
-  await protectedPath(path);
-  return JSON.parse(await readFile(path, "utf8")) as unknown;
-}
-export async function pointer(
-  context: SwarmContext,
-  swarm: string,
-  certificate?: Certificate,
-): Promise<BoundPointer> {
-  const data = await descriptor(context.store, swarm);
-  const identity = await accountIdentity(context.env);
-  return authenticatedPointer(context, swarm, data, identity, certificate);
-}
-async function authenticatedPointer(
-  context: SwarmContext,
-  swarm: string,
-  data: Descriptor,
-  identity: Identity,
-  certificate?: Certificate,
-): Promise<BoundPointer> {
-  if (identity.publicKey === data.owner && certificate === undefined)
-    return bindPointer(context, data, identity);
-  const cert =
-    certificate ??
-    ((await saved(context, `${swarm}.json`)) as { certificate: Certificate })
-      .certificate;
-  const verified = await verifyMemberCertificate(
-    encodeCertificate(cert),
-    await importPublicKeyRaw(data.owner),
-    data.owner,
-    data.service,
-    data.variable,
-    now(),
-  );
-  if (verified.member !== identity.publicKey)
-    throw new HostError(
-      "Membership certificate does not match this account, swarm, owner or validity window.",
-    );
-  if (identity.publicKey === data.owner)
-    return bindPointer(context, data, identity);
-  return bindPointer(context, data, identity, cert);
-}
 export async function writeSnapshot(
   store: IpfsStore,
   snapshot: Snapshot,
 ): Promise<string> {
-  const encoded = dagCbor.encode(snapshot);
-  const cid = CID.createV1(dagCbor.code, await sha256.digest(encoded));
+  const encoded = dagCbor.encode(snapshot),
+    cid = CID.createV1(dagCbor.code, await sha256.digest(encoded));
   await store.put(cid, encoded);
   return cid.toString();
+}
+function decodeSnapshot(data: Uint8Array): Snapshot {
+  const value = object(dagCbor.decode(data), "State"),
+    names = object(value.names, "Names");
+  if (value.v !== 2 || Object.keys(value).sort().join() !== "names,v")
+    throw new HostError("Unsupported old State; rebuild the Swarm.");
+  const links: [string, CID][] = [];
+  for (const [name, link] of Object.entries(names)) {
+    formalName(name);
+    const cid = CID.asCID(link);
+    if (!cid) throw new HostError("Names must link CIDs.");
+    links.push([name, cid]);
+  }
+  return { v: 2, names: Object.fromEntries(links) };
 }
 export async function readSnapshot(
   store: IpfsStore,
   root: string,
 ): Promise<Snapshot> {
-  const cid = CID.parse(root);
-  if (cid.code !== dagCbor.code)
-    throw new HostError("HEAD must reference a DAG-CBOR snapshot.");
+  const publication = await readPublication(store, root);
+  return decodeSnapshot(await store.block.get(publication.state.toString()));
+}
+async function readPublication(
+  store: IpfsStore,
+  root: string,
+): Promise<{ state: CID; previous?: CID }> {
+  if (CID.parse(root).code !== dagCbor.code)
+    throw new HostError("Publication must be DAG-CBOR.");
   const publication = object(
     dagCbor.decode(await store.block.get(root)),
-    "publication record",
-  );
-  const stateCid = CID.asCID(publication.state);
-  if (
-    publication.v !== 1 ||
-    !stateCid ||
-    Object.keys(publication).some(
-      (key) => !["v", "state", "previous"].includes(key),
-    ) ||
-    (publication.previous !== undefined && !CID.asCID(publication.previous))
-  )
-    throw new HostError(
-      "HEAD must reference a verified publication linking State and optional previous publication.",
-    );
-  return decodeSnapshot(await store.block.get(stateCid.toString()));
-}
-function decodeSnapshot(bytes: Uint8Array): Snapshot {
-  const value = object(dagCbor.decode(bytes), "swarm snapshot");
-  const properties = object(value.properties, "swarm properties");
-  const names = object(value.names, "swarm Names");
-  if (
-    value.v !== 1 ||
-    typeof properties.name !== "string" ||
-    typeof properties.description !== "string" ||
-    Object.keys(value).some(
-      (key) => !["v", "names", "properties"].includes(key),
-    )
-  )
-    throw new HostError("Invalid swarm snapshot.");
-  for (const [name, link] of Object.entries(names)) {
-    formalName(name);
-    if (!CID.asCID(link))
-      throw new HostError("Snapshot Name targets must be CID links.");
-  }
-  return value as unknown as Snapshot;
-}
-export interface SwarmHeader {
-  head: ReadResult;
-  snapshot: Snapshot;
-  source: "cache" | "network";
-  verifiedAt: string;
-}
-export async function swarmHeader(
-  context: SwarmContext,
-  swarm: string,
-  force = context.forceRefresh ?? false,
-): Promise<SwarmHeader> {
-  swarm = CID.parse(swarm).toV1().toString();
-  const identity = await accountIdentity(context.env);
-  const ttl = context.cacheTtl ?? 300;
-  if (!Number.isSafeInteger(ttl) || ttl < 0 || ttl > 86400)
-    throw new HostError(
-      "swarm.cacheTtl requires an integer number of seconds from 0 to 86400.",
-    );
-  const cached = force
-    ? undefined
-    : withState(context, (state) =>
-        state.swarmHeader(identity.publicKey, swarm),
-      );
-  if (cached !== undefined) {
-    const value = object(cached, "swarm header cache");
-    if (
-      typeof value.root !== "string" ||
-      CID.parse(value.root).code !== dagCbor.code ||
-      typeof value.revision !== "string" ||
-      !value.revision ||
-      typeof value.etag !== "string" ||
-      typeof value.verifiedAt !== "number" ||
-      !Number.isSafeInteger(value.verifiedAt) ||
-      value.verifiedAt < 0 ||
-      typeof value.snapshot !== "string" ||
-      Buffer.from(value.snapshot, "base64").toString("base64") !==
-        value.snapshot
-    )
-      throw new HostError(
-        "Invalid persisted swarm header cache; retry with --force to replace it.",
-      );
-    const snapshot = decodeSnapshot(Buffer.from(value.snapshot, "base64"));
-    const cachedDescriptor = object(
-      value.descriptor,
-      "cached swarm descriptor",
-    );
-    if (
-      typeof cachedDescriptor.service !== "string" ||
-      typeof cachedDescriptor.variable !== "string" ||
-      typeof cachedDescriptor.owner !== "string"
-    )
-      throw new HostError(
-        "Invalid cached swarm descriptor; retry with --force to replace it.",
-      );
-    const data = await validateDescriptor({
-      service: cachedDescriptor.service,
-      variable: cachedDescriptor.variable,
-      owner: cachedDescriptor.owner,
-    });
-    const age = Date.now() - value.verifiedAt;
-    if (age >= 0 && age < ttl * 1000) {
-      await authenticatedPointer(context, swarm, data, identity);
-      return {
-        head: { root: value.root, revision: value.revision, etag: value.etag },
-        snapshot,
-        source: "cache",
-        verifiedAt: new Date(value.verifiedAt).toISOString(),
-      };
-    }
-  }
-  const data = await descriptor(context.store, swarm);
-  const client = await authenticatedPointer(context, swarm, data, identity);
-  context.diagnostic?.(`Refreshing swarm HEAD ${swarm}...`);
-  const head = await client.read();
-  const snapshot = await readSnapshot(context.store, head.root);
-  const verifiedAt = Date.now();
-  withState(context, (state) => {
-    state.saveSwarmHeader(identity.publicKey, swarm, {
-      ...head,
-      descriptor: data,
-      snapshot: Buffer.from(dagCbor.encode(snapshot)).toString("base64"),
-      verifiedAt,
-    });
-  });
-  return {
-    head,
-    snapshot,
-    source: "network",
-    verifiedAt: new Date(verifiedAt).toISOString(),
-  };
-}
-export async function addSwarm(
-  context: SwarmContext,
-  swarm: string,
-  alias?: string,
-): Promise<void> {
-  swarm = CID.parse(swarm).toV1().toString();
-  if (alias !== undefined)
-    withState(context, (state) => {
-      state.checkSwarmAlias(alias, swarm);
-    });
-  await swarmHeader(context, swarm, true);
-  withState(context, (state) => state.registerSwarm(swarm, alias));
-}
-export async function updateSwarm(
-  context: SwarmContext,
-  swarm: string,
-  changes: Partial<Snapshot["properties"]>,
-): Promise<{
-  cid: string;
-  root: string;
-  revision: string;
-  properties: Snapshot["properties"];
-}> {
-  if (changes.name === undefined && changes.description === undefined)
-    throw new HostError("swarm update requires --name or --description.", 2);
-  swarm = CID.parse(swarm).toV1().toString();
-  const client = await pointer(context, swarm);
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const head = await client.read();
-    const current = await readSnapshot(context.store, head.root);
-    const properties = {
-      ...current.properties,
-      ...(changes.name !== undefined ? { name: changes.name } : {}),
-      ...(changes.description !== undefined
-        ? { description: changes.description }
-        : {}),
-    };
-    const state = await writeSnapshot(context.store, {
-      ...current,
-      properties,
-    });
-    const next = await publication(context.store, state, head.root);
-    await provideContent(
-      context.store,
-      [next],
-      context.provider,
-      context.fetch,
-    );
-    withState(context, (state) => {
-      state.invalidateSwarmHeader(swarm);
-    });
-    try {
-      const written = await client.write(
-        next,
-        head.revision,
-        toBase64Url(randomBytes(18)),
-      );
-      return {
-        cid: swarm,
-        root: written.root,
-        revision: written.revision,
-        properties,
-      };
-    } catch (cause) {
-      if (!(cause instanceof PointerApiError) || cause.status !== 412)
-        throw new HostError(
-          `Swarm information update failed or its result is unknown: ${message(cause)}. Publication ${next} remains retained; authenticate swarm status before retrying.`,
-          1,
-          "HEAD_UNCONFIRMED",
-          "publication",
-        );
-      context.diagnostic?.(
-        "Swarm HEAD changed; retrying information update with the latest Names and properties.",
-      );
-    }
-  }
-  throw new HostError(
-    "Swarm HEAD is busy; information update could not complete. Retry later.",
-    1,
-    "HEAD_BUSY",
     "publication",
   );
-}
-export async function searchNames(
-  context: SwarmContext,
-  query: string,
-  swarms: readonly { cid: string; alias: string | null }[],
-) {
+  const state = CID.asCID(publication.state);
+  const previous =
+    publication.previous === undefined
+      ? undefined
+      : CID.asCID(publication.previous);
   if (
-    !query ||
-    query.length > 256 ||
-    [...query].some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 32 || code === 127;
-    })
+    publication.v !== 1 ||
+    !state ||
+    Object.keys(publication).some(
+      (k) => !["v", "state", "previous"].includes(k),
+    ) ||
+    (publication.previous !== undefined && !previous)
   )
-    throw new HostError(
-      "Search query must be 1..256 characters without control characters.",
-      2,
-    );
-  const matches: {
-    swarm: string;
-    alias: string | null;
-    name: string;
-    reference: string;
-    targetCid: string;
-  }[] = [];
-  const searched: {
-    cid: string;
-    source: "cache" | "network";
-    root: string;
-    revision: string;
-    verifiedAt: string;
-  }[] = [];
-  for (const swarm of [...swarms].sort((a, b) =>
-    a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0,
-  )) {
-    let header: SwarmHeader;
-    try {
-      header = await swarmHeader(context, swarm.cid);
-    } catch (cause) {
-      throw new HostError(
-        `Could not search swarm "${swarm.alias ?? swarm.cid}": ${message(cause)}. Search was not completed.`,
-      );
-    }
-    searched.push({
-      cid: swarm.cid,
-      source: header.source,
-      root: header.head.root,
-      revision: header.head.revision,
-      verifiedAt: header.verifiedAt,
-    });
-    for (const name of Object.keys(header.snapshot.names).sort())
-      if (name.toLowerCase().includes(query.toLowerCase()))
-        matches.push({
-          swarm: swarm.cid,
-          alias: swarm.alias,
-          name,
-          reference: `ipab://${CID.parse(swarm.cid).toV1().toString()}/${name
-            .split("/")
-            .map((segment) =>
-              encodeURIComponent(segment).replace(
-                /[!'()*]/g,
-                (character) =>
-                  `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-              ),
-            )
-            .join("/")}`,
-          targetCid: header.snapshot.names[name]!.toString(),
-        });
-  }
-  return { matches, swarms: searched };
+    throw new HostError("Invalid publication record.");
+  return { state, ...(previous ? { previous } : {}) };
 }
 async function publication(
   store: IpfsStore,
   state: string,
   previous?: string,
 ): Promise<string> {
-  const bytes = dagCbor.encode({
+  const data = dagCbor.encode({
     v: 1,
     state: CID.parse(state),
     ...(previous ? { previous: CID.parse(previous) } : {}),
   });
-  const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
-  await store.put(cid, bytes);
+  const cid = CID.createV1(dagCbor.code, await sha256.digest(data));
+  await store.put(cid, data);
   return cid.toString();
 }
-async function saveCreation(
+export interface SwarmHeader {
+  head: Variable & { root: string; etag: string };
+  snapshot: Snapshot;
+  config: Organization;
+  source: "cache" | "network";
+  verifiedAt: string;
+}
+export async function swarmHeader(
   context: SwarmContext,
-  operation: string,
-  record: unknown,
-): Promise<void> {
-  const directory = await credentialDirectory(context);
-  const target = join(directory, `creation-${operation}.json`);
-  const temporary = join(directory, `.creation-${randomUUID()}.tmp`);
-  const handle = await open(temporary, "wx", 0o600);
+  configUrl: string,
+  force = context.forceRefresh ?? false,
+): Promise<SwarmHeader> {
+  canonicalSwarmUrl(configUrl);
+  let record = force
+    ? await refresh(context, configUrl)
+    : await readyMembership(context, configUrl);
+  const ttl = context.cacheTtl ?? 300;
+  const cached = force
+    ? undefined
+    : (withState(context, (state) =>
+        state.swarmHeader(record.account, configUrl),
+      ) as
+        | {
+            head: Variable;
+            snapshot: string;
+            verifiedAt: number;
+            headId: string;
+          }
+        | undefined);
+  if (
+    cached &&
+    cached.headId === record.config!.headId &&
+    Date.now() >= cached.verifiedAt &&
+    Date.now() - cached.verifiedAt < ttl * 1000
+  )
+    return {
+      head: headValue(cached.head),
+      snapshot: decodeSnapshot(Buffer.from(cached.snapshot, "base64")),
+      config: record.config!,
+      source: "cache",
+      verifiedAt: new Date(cached.verifiedAt).toISOString(),
+    };
+  let head = await (await pointer(context, configUrl)).read();
+  let snapshot: Snapshot;
   try {
-    await secureNew(temporary);
-    await handle.writeFile(JSON.stringify(record));
-    await handle.sync();
-    await handle.close();
-    await rename(temporary, target);
-  } finally {
-    await handle.close();
-    await unlink(temporary).catch((cause: unknown) => {
-      if (!nodeError(cause, "ENOENT"))
-        return Promise.reject(
-          cause instanceof Error
-            ? cause
-            : new HostError("Owned creation temporary-file cleanup failed."),
-        );
-      return undefined;
-    });
+    snapshot = await readSnapshot(context.store, head.root);
+  } catch {
+    record = await refresh(context, configUrl);
+    head = await (await pointer(context, configUrl)).read();
+    snapshot = await readSnapshot(context.store, head.root);
   }
+  const current = await local(context, configUrl),
+    verifiedAt = Date.now();
+  withState(context, (state) => {
+    state.saveSwarmHeader(record.account, configUrl, {
+      head,
+      snapshot: Buffer.from(dagCbor.encode(snapshot)).toString("base64"),
+      verifiedAt,
+      headId: current.config!.headId,
+    });
+  });
+  return {
+    head,
+    snapshot,
+    config: current.config!,
+    source: "network",
+    verifiedAt: new Date(verifiedAt).toISOString(),
+  };
+}
+export async function addSwarm(
+  context: SwarmContext,
+  url: string,
+  alias?: string,
+): Promise<void> {
+  canonicalSwarmUrl(url);
+  await readyMembership(context, url);
+  withState(context, (state) => state.registerSwarm(url, alias));
+}
+interface Creation {
+  owner: string;
+  service: string;
+  encryption: EncryptionIdentity;
+  key: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  scopeId?: string;
+  headId?: string;
+  profileId?: string;
+  configId?: string;
+  config?: Organization;
 }
 export async function createSwarm(
   context: SwarmContext,
@@ -710,249 +906,819 @@ export async function createSwarm(
     resume?: string;
     properties?: { name: string; description: string };
     alias?: string;
+    addresses?: string[];
   } = {},
 ): Promise<string> {
-  if (options.alias !== undefined && options.resume === undefined)
-    withState(context, (state) => {
-      state.checkSwarmAlias(options.alias!);
-    });
-  const cfg = {
-    service: context.pointerService,
-    apiKey: context.pointerApiKey,
-  };
-  if (!cfg.service || !cfg.apiKey)
+  if (
+    (options.properties?.name.length ?? 0) > 256 ||
+    (options.properties?.description.length ?? 0) > 2048 ||
+    (options.addresses?.length ?? 0) > 16
+  )
     throw new HostError(
-      "Configure protected pointers.service and pointers.apiKey via safe stdin before creating a swarm.",
+      "Organization name/description or address limit exceeded.",
     );
-  if (options.service && canonicalService(options.service) !== cfg.service)
+  const service = canonicalService(context.pointerService ?? "");
+  if (
+    !context.pointerApiKey ||
+    (options.service && options.service !== service)
+  )
     throw new HostError(
-      "Creation API key cannot be sent outside its explicitly configured origin.",
+      "Configure origin-bound pointers.service/apiKey before creating a Scope.",
     );
-  const identity = await accountIdentity(context.env, true);
-  const operation = options.resume ?? toBase64Url(randomBytes(18));
-  if (!/^[A-Za-z0-9_-]{16,128}$/.test(operation))
-    throw new HostError("Invalid saved creation operation.");
-  let record: {
-    origin: string;
-    owner: string;
-    root: string;
-    createdAt: number;
-    id?: string;
-    cid?: string;
-  };
-  if (options.resume) {
-    const value = object(
-      await saved(context, `creation-${operation}.json`),
-      "saved creation",
-    );
-    if (
-      value.origin !== cfg.service ||
-      value.owner !== identity.publicKey ||
-      typeof value.root !== "string" ||
-      !Number.isSafeInteger(value.createdAt) ||
-      (value.id !== undefined && typeof value.id !== "string") ||
-      (value.cid !== undefined && typeof value.cid !== "string")
-    )
-      throw new HostError(
-        "Saved creation does not match this account and configured service.",
-      );
-    record = value as typeof record;
-    if (options.alias !== undefined)
+  const identity = await contextIdentity(context, true),
+    op = options.resume ?? uniqueId(),
+    dir = await directory(context);
+  if (!POINTER_ID_PATTERN.test(op))
+    throw new HostError("Invalid creation resume ID.");
+  return withPrivateLock(dir, async () => {
+    let record = await readPrivate<Creation>(dir, `creation-${op}.json`);
+    if (options.alias !== undefined) {
+      const existingUrl =
+        record?.scopeId && record.configId
+          ? `${service}/v1/${record.scopeId}/${record.configId}`
+          : undefined;
       withState(context, (state) => {
-        state.checkSwarmAlias(options.alias!, record.cid);
+        state.checkSwarmAlias(options.alias!, existingUrl);
       });
-    if (!record.id && Date.now() - record.createdAt >= 10 * 60 * 1000)
-      throw new HostError(
-        "Unconfirmed creation is beyond the service's minimum idempotency window. Ask the operator to recover it; do not allocate another pointer.",
-      );
-  } else {
-    const state = await writeSnapshot(context.store, {
-      v: 1,
-      properties: options.properties ?? { name: "", description: "" },
-      names: {},
-    });
-    record = {
-      origin: cfg.service,
-      owner: identity.publicKey,
-      root: await publication(context.store, state),
-      createdAt: Date.now(),
-    };
-    await saveCreation(context, operation, record);
-  }
-  try {
-    await provideContent(
-      context.store,
-      [record.root],
-      context.provider,
-      context.fetch,
-    );
-    if (!record.id) {
-      const client = new PointerClient({
-        service: cfg.service,
-        apiKey: cfg.apiKey,
-        signer: {
-          privateKey: identity.privateKey,
-          publicKey: identity.publicKey,
-        },
-        fetch: context.fetch ?? serviceFetch,
-      });
-      record.id = (
-        await requestPointer(() =>
-          client.create(record.root, { idempotencyKey: operation }),
-        )
-      ).id;
-      await saveCreation(context, operation, record);
     }
-    const data: Descriptor = {
-      service: cfg.service,
-      variable: record.id,
-      owner: identity.publicKey,
-    };
-    const cid = await jsonBundle(context.store, swarmType, data);
-    await provideContent(
-      context.store,
-      [cid, record.root],
-      context.provider,
-      context.fetch,
-    );
-    record.cid = cid;
-    await saveCreation(context, operation, record);
-    await addSwarm(context, cid, options.alias);
-    return cid;
-  } catch (cause) {
-    throw new HostError(
-      `Swarm creation was not confirmed: ${message(cause)}. ${record.id ? `Pointer ${record.id} is saved.` : "The same creation idempotency key is saved."} Recover with ipab swarm create --resume ${operation}; do not allocate a replacement pointer.`,
-      1,
-      "CREATE_UNCONFIRMED",
-      "authorization",
-    );
+    if (!record) {
+      if (options.resume) throw new HostError("Unknown creation operation.");
+      record = {
+        owner: identity.publicKey,
+        service,
+        encryption: encryptionIdentity(),
+        key: randomBytes(32).toString("hex"),
+        name: options.properties?.name ?? "",
+        description: options.properties?.description ?? "",
+        createdAt: new Date().toISOString(),
+      };
+      await writePrivate(dir, `creation-${op}.json`, record);
+    }
+    if (record.owner !== identity.publicKey || record.service !== service)
+      throw new HostError("Creation belongs to another Owner or service.");
+    const save = () => writePrivate(dir, `creation-${op}.json`, record);
+    const api = client(context, service, identity);
+    try {
+      if (!record.scopeId) {
+        record.scopeId = (await api.createScope(`${op}.scope`)).id;
+        await save();
+      }
+      const node = await prepareNode(
+        context.stateDir,
+        nodeScope(service, record.scopeId),
+      );
+      if (!record.headId) {
+        const root = await publication(
+          context.store,
+          await writeSnapshot(context.store, { v: 2, names: {} }),
+        );
+        record.headId = (
+          await api.create(record.scopeId, { root }, `${op}.head`)
+        ).id;
+        await save();
+      }
+      if (!record.profileId) {
+        const addresses = options.addresses ?? node.addresses;
+        for (const address of addresses) validateAddress(address, node.peerId);
+        record.profileId = (
+          await api.create(
+            record.scopeId,
+            { name: record.name, addresses, updatedAt: record.createdAt },
+            `${op}.profile`,
+          )
+        ).id;
+        await save();
+      }
+      if (!record.config) {
+        record.config = {
+          v: 1,
+          scopeId: record.scopeId,
+          owner: identity.publicKey,
+          name: record.name,
+          description: record.description,
+          headId: record.headId,
+          epoch: 1,
+          bootstrap: options.addresses ?? node.addresses,
+          members: [
+            {
+              publicKey: identity.publicKey,
+              encryptionKey: record.encryption.publicKey,
+              peerId: node.peerId,
+              profileId: record.profileId,
+              requestId: op,
+              approval: null,
+            },
+          ],
+        };
+        await save();
+      }
+      if (!record.configId) {
+        record.configId = (
+          await api.create(record.scopeId, record.config, `${op}.config`)
+        ).id;
+        await save();
+      }
+      const configUrl = `${service}/v1/${record.scopeId}/${record.configId}`;
+      const cert = await issueScopeCertificate(
+        {
+          v: 1,
+          service,
+          scopeId: record.scopeId,
+          subject: identity.publicKey,
+          write: [record.headId, record.profileId],
+        },
+        await importPrivateKeyPkcs8(identity.privateKey),
+      );
+      const membership: LocalMembership = {
+        configUrl,
+        owner: identity.publicKey,
+        account: identity.publicKey,
+        encryption: record.encryption,
+        config: record.config,
+        secret: { certificate: cert, swarmKey: record.key },
+      };
+      await saveLocal(context, membership);
+      await activate(context, membership);
+      const head = await api.read(record.scopeId, record.headId);
+      await provideContent(
+        context.store,
+        [headValue(head).root],
+        context.node!.api,
+        context.fetch,
+        context.node!.auth,
+      );
+      withState(context, (state) =>
+        state.registerSwarm(configUrl, options.alias),
+      );
+      return configUrl;
+    } catch (cause) {
+      throw new HostError(
+        `Swarm creation incomplete: ${message(cause)}. Resume only with swarm create --resume ${op}.`,
+      );
+    }
+  });
+}
+const requestMessage = (
+  request: Omit<MembershipRequest, "signature" | "peerSignature">,
+) => JSON.stringify(["IPAB-REQUEST/1", request]);
+export async function exportRequest(
+  context: SwarmContext,
+  url: string,
+  output: string,
+): Promise<string> {
+  const record = await local(context, canonicalSwarmUrl(url));
+  if (!record.request) throw new HostError("Owner membership has no Request.");
+  const handle = await open(output, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(record.request, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
+  return record.request.id;
 }
 export async function requestMembership(
   context: SwarmContext,
-  swarm: string,
+  url: string,
+  options: {
+    ownerFingerprint: string;
+    name?: string;
+    alias?: string;
+    output?: string;
+  },
 ): Promise<string> {
-  const identity = await accountIdentity(context.env, true);
-  const data = await descriptor(context.store, swarm);
-  const body = {
-    swarm: CID.parse(swarm).toV1().toString(),
-    member: identity.publicKey,
-    requestId: toBase64Url(randomBytes(18)),
-    iat: now(),
-    exp: now() + 7 * 86400,
-  };
-  const request: MembershipRequest = {
-    ...body,
-    signature: await signEd25519(
-      await importPrivateKeyPkcs8(identity.privateKey),
-      requestMessage(data, body),
-    ),
-  };
-  const cid = await jsonBundle(context.store, requestType, request);
-  await provideContent(
-    context.store,
-    [cid, swarm],
-    context.provider,
-    context.fetch,
-  );
-  await save(context, `${cid}.pending.json`, {
-    swarm,
-    member: identity.publicKey,
+  if ((options.name?.length ?? 0) > 256)
+    throw new HostError("Request name exceeds 256 characters.");
+  canonicalSwarmUrl(url);
+  const identity = await contextIdentity(context, true);
+  const { config } = await fetchConfig(context, url);
+  if (options.ownerFingerprint !== (await keyId(config.owner)))
+    throw new HostError(
+      `Trusted Owner fingerprint required; observed ${await keyId(config.owner)}. Verify through an independent trusted channel.`,
+    );
+  const dir = await directory(context);
+  await withPrivateLock(dir, async () => {
+    if (options.alias !== undefined)
+      withState(context, (state) => {
+        state.checkSwarmAlias(options.alias!, url);
+      });
+    const existing = await readPrivate<LocalMembership>(dir, localName(url));
+    if (existing) {
+      if (
+        existing.account !== identity.publicKey ||
+        existing.owner !== config.owner
+      )
+        throw new HostError(
+          "Existing Request belongs to a different identity or pinned Owner.",
+        );
+      if (!existing.request)
+        throw new HostError("This identity is already the Owner.");
+      withState(context, (state) => state.registerSwarm(url, options.alias));
+      return;
+    }
+    const node = await prepareNode(
+        context.stateDir,
+        nodeScope(coordinates(url).service, config.scopeId),
+      ),
+      encryption = encryptionIdentity();
+    const body = {
+      v: 1 as const,
+      id: uniqueId(),
+      requestedAt: new Date().toISOString(),
+      configUrl: url,
+      scopeId: config.scopeId,
+      owner: config.owner,
+      name: options.name ?? "",
+      member: identity.publicKey,
+      encryptionKey: encryption.publicKey,
+      peerId: node.peerId,
+      peerPublicKey: "",
+    };
+    body.peerPublicKey = (await peerProof(node, "identity")).publicKey;
+    const proof = await peerProof(node, requestMessage(body));
+    const peerSignature = proof.signature;
+    const request = {
+      ...body,
+      peerSignature,
+      signature: await signEd25519(
+        await importPrivateKeyPkcs8(identity.privateKey),
+        JSON.stringify(["IPAB-REQUEST-MEMBER/1", body, peerSignature]),
+      ),
+    };
+    await saveLocal(context, {
+      configUrl: url,
+      owner: config.owner,
+      account: identity.publicKey,
+      encryption,
+      request,
+    });
+    withState(context, (state) => state.registerSwarm(url, options.alias));
   });
-  return cid;
+  if (options.output) await exportRequest(context, url, options.output);
+  return (await local(context, url)).request!.id;
+}
+export async function verifiedRequest(
+  path: string,
+): Promise<MembershipRequest> {
+  if ((await lstat(path)).size > 16 * 1024)
+    throw new HostError("Request file exceeds 16 KiB.");
+  return verifyRequest(JSON.parse(await readFile(path, "utf8")) as unknown);
+}
+async function verifyRequest(input: unknown): Promise<MembershipRequest> {
+  const fields = object(input, "Request");
+  if (
+    Object.keys(fields).sort().join() !==
+      "configUrl,encryptionKey,id,member,name,owner,peerId,peerPublicKey,peerSignature,requestedAt,scopeId,signature,v" ||
+    fields.v !== 1
+  )
+    throw new HostError("Invalid self-contained Request format.");
+  const {
+    id,
+    member,
+    owner,
+    name,
+    encryptionKey,
+    requestedAt,
+    configUrl,
+    scopeId,
+    peerId: requestPeer,
+    peerPublicKey,
+    peerSignature,
+    signature,
+  } = fields;
+  if (
+    typeof id !== "string" ||
+    !POINTER_ID_PATTERN.test(id) ||
+    !isCanonicalPublicKey(member) ||
+    !isCanonicalPublicKey(owner) ||
+    typeof name !== "string" ||
+    name.length > 256 ||
+    typeof encryptionKey !== "string" ||
+    encryptionKey.length > 256 ||
+    typeof requestedAt !== "string" ||
+    !Number.isFinite(Date.parse(requestedAt)) ||
+    typeof configUrl !== "string" ||
+    typeof scopeId !== "string" ||
+    coordinates(configUrl).scopeId !== scopeId ||
+    !isCanonicalPublicKey(peerPublicKey) ||
+    typeof requestPeer !== "string" ||
+    peerId(peerPublicKey) !== requestPeer ||
+    typeof peerSignature !== "string" ||
+    typeof signature !== "string"
+  )
+    throw new HostError("Invalid self-contained Request.");
+  const body: Omit<MembershipRequest, "signature" | "peerSignature"> = {
+    v: 1,
+    id,
+    requestedAt,
+    configUrl,
+    scopeId,
+    owner,
+    name,
+    member,
+    encryptionKey,
+    peerId: requestPeer,
+    peerPublicKey,
+  };
+  if (
+    !(await verifyEd25519(
+      await importPublicKeyRaw(peerPublicKey),
+      peerSignature,
+      requestMessage(body),
+    )) ||
+    !(await verifyEd25519(
+      await importPublicKeyRaw(member),
+      signature,
+      JSON.stringify(["IPAB-REQUEST-MEMBER/1", body, peerSignature]),
+    ))
+  )
+    throw new HostError(
+      "Request member or PeerID possession proof is invalid.",
+    );
+  return { ...body, peerSignature, signature };
+}
+export async function membershipRequestSummary(
+  request: MembershipRequest,
+): Promise<string> {
+  return [
+    `Request: ${request.id}`,
+    `Target: ${request.configUrl}`,
+    `Name: ${JSON.stringify(request.name)}`,
+    `Member public key: ${request.member}`,
+    `Member fingerprint: ${await keyId(request.member)}`,
+    `PeerID: ${request.peerId}`,
+    `Requested at: ${JSON.stringify(request.requestedAt)}`,
+    "Verify the applicant through an independent trusted channel before approving.",
+  ].join("\n");
+}
+interface ApprovalOperation {
+  owner: string;
+  request: MembershipRequest;
+  operation: string;
+  createdAt: string;
+  profileId?: string;
+  completed?: boolean;
+  value?: Organization;
+  baseline?: string;
+}
+async function ownerCheck(
+  context: SwarmContext,
+  url: string,
+): Promise<{ identity: Identity; record: LocalMembership }> {
+  const identity = await contextIdentity(context),
+    record = await readyMembership(context, url);
+  if (identity.publicKey !== record.owner)
+    throw new HostError(
+      "Only the pinned Owner can manage membership or organization configuration.",
+    );
+  const transition = await readPrivate<Removal>(
+    await directory(context),
+    `transition-${localName(url)}`,
+  );
+  if (transition && !transition.completed)
+    throw new HostError(
+      "Organization switch incomplete: run swarm resume for this URL before other Owner changes.",
+    );
+  return { identity, record };
 }
 export async function approveMembership(
   context: SwarmContext,
-  requestCid: string,
-  seconds = 7 * 86400,
+  input: string | MembershipRequest,
+  options: { again?: boolean } = {},
 ): Promise<string> {
-  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 30 * 86400)
-    throw new HostError("Certificate duration must be 60 seconds to 30 days.");
-  const { request, data } = await verifiedRequest(context.store, requestCid);
-  const identity = await accountIdentity(context.env);
-  if (identity.publicKey !== data.owner)
-    throw new HostError("Only this swarm's owner can approve members.");
-  const certificate = await issueCertificate(
-    {
-      v: 2,
-      service: data.service,
-      pointerId: data.variable,
-      owner: data.owner,
-      member: request.member,
-      cid: toBase64Url(randomBytes(16)),
-      iat: now(),
-      exp: now() + seconds,
-    },
-    await importPrivateKeyPkcs8(identity.privateKey),
-  );
-  const cid = await jsonBundle(context.store, responseType, {
-    swarm: request.swarm,
-    request: CID.parse(requestCid).toV1().toString(),
-    certificate,
-  });
-  await provideContent(
-    context.store,
-    [cid, requestCid, request.swarm],
-    context.provider,
-    context.fetch,
-  );
-  return cid;
-}
-export async function joinSwarm(
-  context: SwarmContext,
-  responseCid: string,
-  alias?: string,
-): Promise<string> {
-  const response = await typedJson<{
-    swarm: string;
-    request: string;
-    certificate: Certificate;
-  }>(context.store, responseCid, responseType);
-  const { request } = await verifiedRequest(context.store, response.request);
-  const identity = await accountIdentity(context.env);
-  const pending = object(
-    await saved(context, `${response.request}.pending.json`),
-    "pending request",
-  );
-  if (
-    request.swarm !== response.swarm ||
-    request.member !== identity.publicKey ||
-    pending.swarm !== response.swarm ||
-    pending.member !== identity.publicKey
-  )
-    throw new HostError(
-      "Response does not match this account's exact pending request and target swarm.",
+  const request =
+      typeof input === "string"
+        ? await verifiedRequest(input)
+        : await verifyRequest(input),
+    url = request.configUrl;
+  const dir = await directory(context);
+  return withPrivateLock(dir, async () => {
+    const { identity, record } = await ownerCheck(context, url);
+    if (request.owner !== identity.publicKey)
+      throw new HostError("Request targets a different Owner.");
+    let operation = await readPrivate<ApprovalOperation>(
+      dir,
+      `approval-${request.id}.json`,
     );
-  const client = await pointer(context, response.swarm, response.certificate);
-  if (alias !== undefined)
-    withState(context, (state) => {
-      state.checkSwarmAlias(alias, response.swarm);
-    });
-  await client.read();
-  try {
-    await save(context, `${response.swarm}.json`, {
-      certificate: response.certificate,
-      request: response.request,
-    });
-  } catch (cause) {
-    if (!nodeError(cause, "EEXIST")) throw cause;
-    const previous = object(
-      await saved(context, `${response.swarm}.json`),
-      "membership",
-    );
-    if (previous.request !== response.request)
+    if (operation && !operation.completed && options.again)
       throw new HostError(
-        "An existing membership differs; explicit renewal is outside this MVP.",
+        "The prior approval is unconfirmed; resume the same Request without --again before starting a new explicit approval.",
       );
-  }
-  try {
-    await addSwarm(context, response.swarm, alias);
-  } catch (cause) {
-    throw new HostError(
-      `Membership certificate was saved, but swarm registration failed: ${message(cause)}. Retry the same response or run ipab swarm add ${response.swarm}.`,
+    if (operation?.completed && !options.again) {
+      if (
+        operation.owner !== identity.publicKey ||
+        JSON.stringify(operation.request) !== JSON.stringify(request)
+      )
+        throw new HostError(
+          "This Request ID differs from advisory history; manually verify it and use --again for a new explicit approval.",
+        );
+      context.diagnostic?.(
+        `Previously approved Request ${request.id} from ${request.requestedAt}. History is advisory, not a revocation boundary.`,
+      );
+      context.diagnostic?.(
+        "Reusing the completed approval result without granting new authority. Use --again only after fresh manual confirmation.",
+      );
+      return url;
+    }
+    if (!operation || options.again) {
+      operation = {
+        owner: identity.publicKey,
+        request,
+        operation: uniqueId(),
+        createdAt: new Date().toISOString(),
+      };
+      await writePrivate(dir, `approval-${request.id}.json`, operation);
+    }
+    if (
+      operation.owner !== identity.publicKey ||
+      JSON.stringify(operation.request) !== JSON.stringify(request)
+    )
+      throw new HostError("Saved approval does not match this exact Request.");
+    const save = () =>
+      writePrivate(dir, `approval-${request.id}.json`, operation);
+    const c = coordinates(url),
+      api = client(context, c.service, identity);
+    const fetched = await fetchConfig(context, url);
+    if (
+      fetched.config.epoch !== record.config!.epoch ||
+      fetched.config.headId !== record.config!.headId
+    )
+      throw new HostError(
+        "Owner local keys are not synchronized with this organization epoch.",
+      );
+    if (!operation.profileId) {
+      const previousMember = fetched.config.members.find(
+        (m) => m.publicKey === request.member,
+      );
+      if (previousMember && previousMember.peerId !== request.peerId)
+        throw new HostError(
+          "PeerID rebinding requires removing the old membership first, then explicitly approving this Request.",
+        );
+      const existingProfile = fetched.config.members.find(
+        (m) => m.publicKey === request.member,
+      )?.profileId;
+      if (existingProfile) operation.profileId = existingProfile;
+      if (!operation.profileId)
+        operation.profileId = (
+          await api.create(
+            c.scopeId,
+            {
+              name: request.name,
+              addresses: [],
+              updatedAt: operation.createdAt,
+            },
+            `${operation.operation}.profile`,
+          )
+        ).id;
+      await save();
+    }
+    if (!operation.value) {
+      const member: Member = {
+        publicKey: request.member,
+        encryptionKey: request.encryptionKey,
+        peerId: request.peerId,
+        profileId: operation.profileId,
+        requestId: request.id,
+        approval: null,
+      };
+      const config = {
+        ...fetched.config,
+        members: fetched.config.members.filter(
+          (m) => m.publicKey !== request.member,
+        ),
+      };
+      if (config.members.some((m) => m.peerId === request.peerId))
+        throw new HostError("PeerID is already assigned to another member.");
+      if (request.member === identity.publicKey)
+        throw new HostError("Owner cannot request member approval.");
+      if (config.members.length >= 16)
+        throw new HostError("Organization member limit is 16.");
+      const certificate = await issueScopeCertificate(
+        {
+          v: 1,
+          service: c.service,
+          scopeId: c.scopeId,
+          subject: request.member,
+          write: [config.headId, member.profileId],
+        },
+        await importPrivateKeyPkcs8(identity.privateKey),
+      );
+      member.approval = await sealApproval(
+        binding(url, config, member),
+        { certificate, swarmKey: record.secret!.swarmKey },
+        identity,
+      );
+      config.members.push(member);
+      operation.value = config;
+      operation.baseline = fetched.variable.cid;
+      await save();
+    }
+    const observed = await api.read(c.scopeId, c.configId);
+    if (observed.cid !== (await valueCid(operation.value)))
+      await api.write(
+        c.scopeId,
+        c.configId,
+        operation.value,
+        operation.baseline!,
+        `${operation.operation}.publish`,
+      );
+    operation.completed = true;
+    await save();
+    record.config = operation.value;
+    await saveLocal(context, record);
+    return url;
+  });
+}
+export async function updateSwarm(
+  context: SwarmContext,
+  url: string,
+  changes: { name?: string; description?: string },
+) {
+  if (
+    (changes.name?.length ?? 0) > 256 ||
+    (changes.description?.length ?? 0) > 2048
+  )
+    throw new HostError("Organization name/description limit exceeded.");
+  const { identity, record } = await ownerCheck(context, url),
+    c = coordinates(url);
+  if (changes.name === undefined && changes.description === undefined)
+    throw new HostError("swarm update requires name or description.");
+  const fetched = await fetchConfig(context, url),
+    config = { ...fetched.config, ...changes };
+  const result = await client(context, c.service, identity).write(
+    c.scopeId,
+    c.configId,
+    config,
+    fetched.variable.cid,
+    uniqueId(),
+  );
+  record.config = config;
+  await saveLocal(context, record);
+  return {
+    configUrl: url,
+    headId: config.headId,
+    valueCid: result.cid,
+    properties: { name: config.name, description: config.description },
+  };
+}
+export async function updateProfile(
+  context: SwarmContext,
+  url: string,
+  changes: { name?: string; addresses?: string[] },
+): Promise<Profile> {
+  if (changes.name !== undefined && changes.name.length > 256)
+    throw new HostError("Profile name exceeds 256 characters.");
+  if ((changes.addresses?.length ?? 0) > 16)
+    throw new HostError("Profile address limit is 16.");
+  const record = await readyMembership(context, url),
+    identity = await contextIdentity(context),
+    c = coordinates(url);
+  const member = record.config!.members.find(
+    (m) => m.publicKey === identity.publicKey,
+  )!;
+  for (const address of changes.addresses ?? [])
+    validateAddress(address, member.peerId);
+  const api = client(
+    context,
+    c.service,
+    identity,
+    identity.publicKey === record.owner ? undefined : record.secret,
+  );
+  const existing = await api.read(c.scopeId, member.profileId);
+  const profile = {
+    ...parseProfile(existing.value, member.peerId),
+    ...changes,
+    updatedAt: new Date().toISOString(),
+  };
+  await api.write(
+    c.scopeId,
+    member.profileId,
+    profile,
+    existing.cid,
+    uniqueId(),
+  );
+  return profile;
+}
+interface Removal {
+  owner: string;
+  url: string;
+  operation: string;
+  member: string;
+  oldConfig: Organization;
+  configCid: string;
+  newKey: string;
+  oldKey: string;
+  finalHead?: Variable;
+  finalCaptured?: boolean;
+  finalClosureRoots?: string[];
+  newHeadId?: string;
+  nextConfig?: Organization;
+  published?: boolean;
+  completed?: boolean;
+}
+export async function removeMember(
+  context: SwarmContext,
+  url: string,
+  member: string,
+): Promise<void> {
+  const dir = await directory(context);
+  await withPrivateLock(dir, async () => {
+    const { identity, record: membership } = await ownerCheck(context, url);
+    if (member === identity.publicKey)
+      throw new HostError("Owner removal/recovery is unsupported.");
+    const fetched = await fetchConfig(context, url);
+    if (!fetched.config.members.some((m) => m.publicKey === member))
+      throw new HostError("Unknown member public key.");
+    const record: Removal = {
+      owner: identity.publicKey,
+      url,
+      operation: uniqueId(),
+      member,
+      oldConfig: fetched.config,
+      configCid: fetched.variable.cid,
+      oldKey: membership.secret!.swarmKey,
+      newKey: randomBytes(32).toString("hex"),
+    };
+    await writePrivate(dir, `transition-${localName(url)}`, record);
+  });
+  await resumeRemoval(context, url);
+}
+export async function resumeRemoval(
+  context: SwarmContext,
+  url: string,
+): Promise<void> {
+  const dir = await directory(context);
+  return withPrivateLock(dir, async () => {
+    const identity = await contextIdentity(context);
+    const record = await readPrivate<Removal>(
+      dir,
+      `transition-${localName(url)}`,
     );
-  }
-  return response.swarm;
+    if (!record || record.owner !== identity.publicKey || record.url !== url)
+      throw new HostError("No resumable switch owned by this identity.");
+    if (record.completed) return;
+    const c = coordinates(url),
+      api = client(context, c.service, identity);
+    const save = () =>
+      writePrivate(dir, `transition-${localName(url)}`, record);
+    try {
+      if (!record.finalHead) {
+        record.finalHead = await api.freeze(
+          c.scopeId,
+          record.oldConfig.headId,
+          `${record.operation}.freeze`,
+        );
+        await save();
+      }
+      // Fetch the frozen final DAG while the old private network is still connected.
+      // A publication acknowledged immediately before freeze may not be cached on Owner.
+      const membershipBeforeSwitch = await local(context, url);
+      if (!record.finalCaptured) {
+        membershipBeforeSwitch.config = record.oldConfig;
+        membershipBeforeSwitch.secret!.swarmKey = record.oldKey;
+        await activate(context, membershipBeforeSwitch);
+        if (!record.finalClosureRoots) {
+          record.finalClosureRoots = await frozenPublicationClosure(
+            context.store,
+            headValue(record.finalHead).root,
+          );
+          await save();
+        }
+        await provideContent(
+          context.store,
+          record.finalClosureRoots,
+          context.node!.api,
+          context.fetch,
+          context.node!.auth,
+        );
+        record.finalCaptured = true;
+        await save();
+      }
+      if (
+        !record.finalClosureRoots ||
+        record.finalClosureRoots[0] !== headValue(record.finalHead).root
+      )
+        throw new HostError(
+          "Frozen publication closure is missing; refusing to retire the old network or HEAD.",
+        );
+      if (!record.newHeadId) {
+        record.newHeadId = (
+          await api.create(
+            c.scopeId,
+            record.finalHead.value,
+            `${record.operation}.newhead`,
+          )
+        ).id;
+        await save();
+      }
+      if (!record.nextConfig) {
+        const config = {
+          ...record.oldConfig,
+          headId: record.newHeadId,
+          epoch: record.oldConfig.epoch + 1,
+          members: structuredClone(
+            record.oldConfig.members.filter(
+              (m) => m.publicKey !== record.member,
+            ),
+          ),
+          bootstrap: record.oldConfig.bootstrap.filter(
+            (address) =>
+              !address.endsWith(
+                `/p2p/${record.oldConfig.members.find((m) => m.publicKey === record.member)!.peerId}`,
+              ),
+          ),
+        };
+        for (const member of config.members) {
+          if (member.publicKey === identity.publicKey) continue;
+          const certificate = await issueScopeCertificate(
+            {
+              v: 1,
+              service: c.service,
+              scopeId: c.scopeId,
+              subject: member.publicKey,
+              write: [config.headId, member.profileId],
+            },
+            await importPrivateKeyPkcs8(identity.privateKey),
+          );
+          member.approval = await sealApproval(
+            binding(url, config, member),
+            { certificate, swarmKey: record.newKey },
+            identity,
+          );
+        }
+        record.nextConfig = config;
+        await save();
+      }
+      const leaving = record.oldConfig.members.find(
+        (m) => m.publicKey === record.member,
+      )!;
+      // Delete the profile before exposing the new configuration. Old HEAD stays readable until final cleanup.
+      try {
+        await api.freeze(
+          c.scopeId,
+          leaving.profileId,
+          `${record.operation}.profilefreeze`,
+        );
+      } catch (cause) {
+        if (!(cause instanceof ScopeApiError) || cause.status !== 410)
+          throw cause;
+      }
+      try {
+        await api.delete(
+          c.scopeId,
+          leaving.profileId,
+          `${record.operation}.profiledelete`,
+        );
+      } catch (cause) {
+        if (!(cause instanceof ScopeApiError) || cause.status !== 410)
+          throw cause;
+      }
+      if (!record.published) {
+        const observed = await api.read(c.scopeId, c.configId);
+        if (observed.cid !== (await valueCid(record.nextConfig)))
+          await api.write(
+            c.scopeId,
+            c.configId,
+            record.nextConfig,
+            record.configCid,
+            `${record.operation}.config`,
+          );
+        record.published = true;
+        await save();
+      }
+      const membership = await local(context, url);
+      membership.config = record.nextConfig;
+      membership.secret!.swarmKey = record.newKey;
+      await saveLocal(context, membership);
+      await activate(context, membership);
+      await provideContent(
+        context.store,
+        record.finalClosureRoots,
+        context.node!.api,
+        context.fetch,
+        context.node!.auth,
+      );
+      try {
+        await api.delete(
+          c.scopeId,
+          record.oldConfig.headId,
+          `${record.operation}.delete`,
+        );
+      } catch (cause) {
+        if (!(cause instanceof ScopeApiError) || cause.status !== 410)
+          throw cause;
+      }
+      record.completed = true;
+      await save();
+      withState(context, (state) => {
+        state.invalidateSwarmHeader(url);
+      });
+    } catch (cause) {
+      throw new HostError(
+        `Organization switch incomplete (old HEAD is never unfrozen): ${message(cause)}. Owner must run swarm resume ${url}.`,
+      );
+    }
+  });
 }
 export function formalName(name: string): string {
   relativePath(name);
@@ -964,35 +1730,34 @@ export function parseNameReference(
   reference: string,
 ): { swarm?: string; name: string } | undefined {
   if (/^name:/i.test(reference))
-    throw new HostError(
-      "name: references are no longer supported. Use ipab://SWARM_CID_OR_ALIAS/PATH or ipab:///PATH.",
-      2,
-    );
+    throw new HostError("name: is unsupported; use ipab://ALIAS/PATH.");
   if (!/^ipab:/i.test(reference)) return undefined;
   const match = /^ipab:\/\/([^/]*)\/([^?#\s]*)$/i.exec(reference);
-  if (!match || (match[1] && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(match[1])))
+  if (!match)
     throw new HostError(
-      "Invalid IPAB URI. Use ipab://SWARM_CID_OR_ALIAS/PATH or ipab:///PATH without credentials, port, query or fragment; percent-encode path segments.",
-      2,
+      "Invalid IPAB URI; percent-encode the configuration URL authority and each path segment.",
     );
+  const authority = decodeURIComponent(match[1]!);
+  if (authority && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(authority))
+    canonicalSwarmUrl(authority);
   const segments = match[2]!.split("/").map((segment) => {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(segment);
-    } catch {
-      throw new HostError("Invalid percent encoding in IPAB URI path.", 2);
-    }
+    const decoded = decodeURIComponent(segment);
     if (decoded.includes("/"))
-      throw new HostError(
-        "Encoded path separators are not allowed in IPAB URIs.",
-        2,
-      );
+      throw new HostError("Encoded path separators are unsupported.");
     return decoded;
   });
   return {
-    ...(match[1] ? { swarm: match[1] } : {}),
+    ...(authority ? { swarm: authority } : {}),
     name: formalName(segments.join("/")),
   };
+}
+function referenceFor(url: string, name: string): string {
+  const segment = (value: string) =>
+    encodeURIComponent(value).replace(
+      /[!'()*]/g,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  return `ipab://${segment(url)}/${name.split("/").map(segment).join("/")}`;
 }
 export async function resolveReference(
   context: SwarmContext,
@@ -1001,34 +1766,35 @@ export async function resolveReference(
   local: (reference: string) => string,
   raw = false,
 ): Promise<{ targetCid: string; cid: string }> {
-  let targetCid: string;
   const shared = parseNameReference(reference);
+  let targetCid: string;
   if (shared) {
-    const authority = shared.swarm;
-    const selectedSwarm = authority
-      ? withState(context, (state) => state.resolveSwarm(authority))
+    const selected = shared.swarm
+      ? withState(context, (state) => state.resolveSwarm(shared.swarm!))
       : swarm;
-    if (!selectedSwarm)
+    if (!selected)
       throw new HostError(
-        "Shared Names require a swarm in the URI, --swarm CID_OR_ALIAS or swarm.default. Run ipab swarm use CID_OR_ALIAS.",
+        "Select a configuration URL/alias using --swarm or swarm use.",
       );
-    const name = shared.name;
-    let header = await swarmHeader(context, selectedSwarm);
-    const lookup = () =>
-      Object.hasOwn(header.snapshot.names, name)
-        ? header.snapshot.names[name]
-        : undefined;
-    let link = lookup();
+    let header = await swarmHeader(context, selected);
+    let link = Object.hasOwn(header.snapshot.names, shared.name)
+      ? header.snapshot.names[shared.name]
+      : undefined;
     if (!link && header.source === "cache") {
-      header = await swarmHeader(context, selectedSwarm, true);
-      link = lookup();
+      header = await swarmHeader(context, selected, true);
+      link = Object.hasOwn(header.snapshot.names, shared.name)
+        ? header.snapshot.names[shared.name]
+        : undefined;
     }
     if (!link)
       throw new HostError(
-        `Formal Name "${name}" is not present in this swarm after refreshing HEAD.`,
+        `Formal Name "${shared.name}" was not found after refreshing HEAD.`,
       );
     targetCid = link.toString();
-  } else targetCid = local(reference);
+  } else {
+    if (swarm) await readyMembership(context, swarm);
+    targetCid = local(reference);
+  }
   let cid = targetCid;
   const visited = new Set<string>();
   for (let depth = 0; !raw; depth++) {
@@ -1042,14 +1808,63 @@ export async function resolveReference(
     });
     if (bundle.schemaKey !== (await encodeSchema(artifactType)).cid.toString())
       break;
-    const artifact = await typedJson<Artifact>(
-      context.store,
-      cid,
-      artifactType,
-    );
-    cid = CID.parse(artifact.value).toV1().toString();
+    cid = CID.parse(
+      parseArtifact(await typedJson(context.store, cid, artifactType)).value,
+    )
+      .toV1()
+      .toString();
   }
   return { targetCid, cid };
+}
+export async function searchNames(
+  context: SwarmContext,
+  query: string,
+  swarms: readonly { cid: string; alias: string | null }[],
+) {
+  if (
+    !query ||
+    query.length > 256 ||
+    [...query].some(
+      (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+    )
+  )
+    throw new HostError(
+      "Search query must be 1..256 characters without controls.",
+    );
+  const matches: {
+    swarm: string;
+    alias: string | null;
+    name: string;
+    reference: string;
+    targetCid: string;
+  }[] = [];
+  const searched: {
+    configUrl: string;
+    source: "cache" | "network";
+    root: string;
+    valueCid: string;
+    verifiedAt: string;
+  }[] = [];
+  for (const swarm of swarms) {
+    const header = await swarmHeader(context, swarm.cid);
+    searched.push({
+      configUrl: swarm.cid,
+      source: header.source,
+      root: header.head.root,
+      valueCid: header.head.cid,
+      verifiedAt: header.verifiedAt,
+    });
+    for (const name of Object.keys(header.snapshot.names).sort())
+      if (name.toLowerCase().includes(query.toLowerCase()))
+        matches.push({
+          swarm: swarm.cid,
+          alias: swarm.alias,
+          name,
+          reference: referenceFor(swarm.cid, name),
+          targetCid: header.snapshot.names[name]!.toString(),
+        });
+  }
+  return { matches, swarms: searched };
 }
 async function dependencies(
   store: IpfsStore,
@@ -1064,7 +1879,7 @@ async function dependencies(
     resolveCid: (cid) => store.block.get(cid.toString()),
   });
   if (bundle.schemaKey === (await encodeSchema(artifactType)).cid.toString()) {
-    const node = await typedJson<Artifact>(store, root, artifactType);
+    const node = parseArtifact(await typedJson(store, root, artifactType));
     await dependencies(store, node.value, found);
     if (node.previous) await dependencies(store, node.previous, found);
   } else if (bundle.schemaKey === appSchemaCid.toString()) {
@@ -1077,13 +1892,41 @@ async function dependencies(
       "App",
     );
     if (app.source) {
-      const source = object(app.source, "App source");
+      const source = object(app.source, "source");
       if (typeof source.cid !== "string")
         throw new HostError("Invalid App source association.");
       await dependencies(store, source.cid, found);
     }
   }
   return found;
+}
+export async function frozenPublicationClosure(
+  store: IpfsStore,
+  root: string,
+): Promise<string[]> {
+  const publications = new Set<string>(),
+    content = new Set<string>();
+  let current: string | undefined = root;
+  while (current !== undefined) {
+    if (publications.has(current) || publications.size >= 256)
+      throw new HostError(
+        "Frozen publication history exceeds limits or contains a cycle.",
+      );
+    publications.add(current);
+    const publication = await readPublication(store, current);
+    const snapshot = decodeSnapshot(
+      await store.block.get(publication.state.toString()),
+    );
+    for (const target of Object.values(snapshot.names))
+      await dependencies(store, target.toString(), content);
+    current = publication.previous?.toString();
+  }
+  return [
+    root,
+    ...[...new Set([...publications, ...content])]
+      .filter((cid) => cid !== root)
+      .sort(),
+  ];
 }
 export async function publish(
   context: SwarmContext,
@@ -1095,32 +1938,33 @@ export async function publish(
     snapshot?: boolean;
   },
 ): Promise<string> {
+  if (!options.swarm)
+    throw new HostError(
+      "Publication requires a selected Swarm configuration URL or alias.",
+    );
+  const head = await pointer(context, options.swarm);
   const roots = await dependencies(context.store, content);
   if (!options.name) {
     if (options.expect || options.snapshot)
       throw new HostError("--expect/--snapshot require --name.");
+    await head.read();
     await provideContent(
       context.store,
       [...roots],
-      context.provider,
+      context.node!.api,
       context.fetch,
+      context.node!.auth,
     );
     return content;
   }
   const name = formalName(options.name);
-  if (!options.swarm)
-    throw new HostError(
-      "Named publication requires --swarm CID or swarm.default.",
-    );
   if (options.snapshot && options.expect)
-    throw new HostError(
-      "Ordinary named snapshots cannot replace an occupied Name.",
-    );
+    throw new HostError("Snapshots cannot replace an occupied Name.");
   const expected = options.expect
     ? CID.parse(options.expect).toV1().toString()
     : undefined;
   if (expected)
-    await typedJson<Artifact>(context.store, expected, artifactType);
+    parseArtifact(await typedJson(context.store, expected, artifactType));
   const candidate = options.snapshot
     ? content
     : await jsonBundle(context.store, artifactType, {
@@ -1132,55 +1976,50 @@ export async function publish(
   if (expected)
     for (const root of await dependencies(context.store, expected))
       roots.add(root);
-  await provideContent(
-    context.store,
-    [...roots],
-    context.provider,
-    context.fetch,
-  );
-  const client = await pointer(context, options.swarm);
   for (let attempt = 0; attempt < 8; attempt++) {
-    const head = await client.read();
-    const current = await readSnapshot(context.store, head.root);
+    const currentHead = await head.read(),
+      current = await readSnapshot(context.store, currentHead.root);
     if (
       (Object.hasOwn(current.names, name)
         ? current.names[name]?.toString()
         : undefined) !== expected
     )
       throw new HostError(
-        `Edit conflict for ${name}; candidate ${candidate} and content ${content} remain retained. Refresh the Name and explicitly choose a baseline.`,
+        `Edit conflict for ${name}; candidate ${candidate} remains retained. Choose an explicit baseline.`,
         3,
         "EDIT_CONFLICT",
         "publication",
       );
-    const state = await writeSnapshot(context.store, {
-      ...current,
-      names: { ...current.names, [name]: CID.parse(candidate) },
-    });
-    const next = await publication(context.store, state, head.root);
+    const next = await publication(
+      context.store,
+      await writeSnapshot(context.store, {
+        ...current,
+        names: { ...current.names, [name]: CID.parse(candidate) },
+      }),
+      currentHead.root,
+    );
     await provideContent(
       context.store,
       [next, ...roots],
-      context.provider,
+      context.node!.api,
       context.fetch,
+      context.node!.auth,
     );
+    withState(context, (state) => {
+      state.invalidateSwarmHeader(options.swarm!);
+    });
     try {
-      withState(context, (state) => {
-        state.invalidateSwarmHeader(options.swarm!);
-      });
-      await client.write(next, head.revision, toBase64Url(randomBytes(18)));
+      await head.write(next, currentHead.cid, uniqueId());
       return candidate;
     } catch (cause) {
-      if (!(cause instanceof PointerApiError) || cause.status !== 412)
+      if (!(cause instanceof ScopeApiError) || cause.status !== 412)
         throw new HostError(
-          `HEAD update failed or its result is unknown: ${message(cause)}. Candidate ${candidate} remains retained; authenticate swarm status before retrying.`,
+          `HEAD publication unconfirmed: ${message(cause)}. Candidate ${candidate} remains retained; inspect HEAD before retry.`,
           1,
           "HEAD_UNCONFIRMED",
           "publication",
         );
     }
   }
-  throw new HostError(
-    `HEAD is busy; candidate ${candidate} remains retained. Retry the same explicit Name baseline.`,
-  );
+  throw new HostError(`HEAD is busy; candidate ${candidate} remains retained.`);
 }

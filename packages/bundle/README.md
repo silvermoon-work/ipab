@@ -200,3 +200,13 @@ The split changes canonical type bytes and therefore all existing type CIDs.
 Rebuild definitions and all embedded supported-schema CARs, then explicitly
 update pins/registrations. Template parameter `default` values are separate and
 remain supported.
+
+## Scope protocol
+
+Current source exports `@ipab/bundle/pointer/scope` for Scope / Variable
+onboarding: public reads, immutable Scope Owner, exact-ID nonexpiring
+certificates with subject possession, canonical DAG-CBOR JSON value CIDs,
+content CAS (including ABA), and irreversible freeze/delete. It supplies one
+canonical signing-message implementation shared by Worker and CLI. The former
+Pointer v2 HTTP protocol is intentionally unsupported by the service; there is
+no authentication fallback. See [the protocol](../../docs/onboarding.md).

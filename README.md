@@ -54,35 +54,53 @@ ipab config set store.gateway http://127.0.0.1:8080
 旧 Kubo pin／历史保留记录不会自动迁移或解除；需重新获取并建立本地 pin，
 旧节点上的 pin 由你独立管理。
 
-个人 swarm 的共享 Name／授权／发布需要已经准备好的私网 Kubo 内容提供者和
-签名指针服务，不由 IPAB 安装或部署。新 MVP 的命令、真实服务授权政策及
-`build` 的有意迁移见 [MVP 实现与决策](docs/mvp-implementation.md)。
+共享 Name 使用 Scope / Variable 服务与独立私网 Kubo。IPAB 按需校验下载安装
+Kubo 0.43.2，每个 Swarm 独立受保护 repo、密钥和端口，后台节点随 CLI 退出
+仍常驻；设备重启后下次使用恢复，不安装登录自启。服务部署仍由运营者明确完成。
+首版仅 LAN／可互访 VPN，无公共中继、内容托管或内容加密。
+完整流程和限制见 [Onboarding](docs/onboarding.md)。
+首次准备设备运行 `ipab setup --yes`：校验安装共享 Kubo 程序、准备受保护 HOME
+身份，重复运行幂等；不接触现有 daemon，不创建 Swarm repo 或登录自启。
 独立 CID／具名 pin 的本机操作仍不要求 Kubo。
 
 ### 多 swarm 与名称缓存
 
-创建或加入 swarm 后会自动登记到当前本机状态目录；首次登记且没有保存默认值时，
-会将它设为当前 swarm。已有授权的 swarm 可以手动登记并设置本地别名：
+Owner 创建 Swarm，分享返回的公开配置 URL，并通过可信第二渠道提供 status
+显示的 Owner 指纹。成员生成自包含 Request 文件，Owner 人工核对并审批后，
+成员下一次正常使用自动取得加密授权包并启动自己的私网节点；没有 Invite、
+Response 文件或 Join 步骤。Request 可原样重导出，无自动到期。
 
 ```sh
-ipab swarm add <swarm-cid> --alias work
+ipab swarm create --name Team --alias work
+ipab swarm status work
+# 在成员设备上：
+ipab swarm request <config-url> --owner-fingerprint <trusted-fingerprint> --alias work --output request.json
+# Owner 核对身份后：
+ipab swarm approve request.json --yes
+# 成员正常使用，自动接入：
 ipab swarm list
 ipab swarm use work
-ipab swarm update work --name "Team" --description "Shared workspace"
+ipab swarm profile work --name "Wei"
 ipab search hello
 ipab get --force ipab://work/apps/hello
 ipab get ipab:///apps/hello
 ```
 
-共享名称使用 `ipab://<swarm CID或本机别名>/<path>`；URI 中的 swarm 优先，
+共享名称使用
+`ipab://<本机别名或百分号编码的配置URL>/<path>`；URI 中的 swarm 优先，
 省略时用 `ipab:///<path>`，按 `--swarm CID或别名`、保存的 `swarm.default`
-选择。分享时使用 CID，搜索结果也输出带 swarm CID 的完整 URI。
+选择。搜索结果使用稳定配置 URL 的完整 URI，不用本机别名或旧 descriptor CID。
 旧 `name:<path>` 已移除；`IPAB_SWARM` 不再支持，需移除该环境变量并改用
 `--swarm` 或 `swarm use`。
 `swarm use` 不需要设置环境变量；`swarm remove work` 只移除本机登记，
 不删除证书、内容或远程成员资格。
-`swarm update` 修改共享名称和描述，任何已授权 member 都可执行；
-只更新指定字段，最后成功的写入生效，不改变本地别名，也不要求旧值或版本号。
+`swarm update` 只有 Owner 可修改公开组织名称和描述；成员只能改自己的资料。
+所有存活 Variable 均公开读，只鉴权写，Owner 证书准确绑定 HEAD／本人资料 ID，
+不设过期。HEAD 用内容 CID CAS（允许 ABA），不是历史 revision。
+Owner 用 `ipab --swarm work swarm exclude MEMBER_PUBLIC_KEY --yes` 移除成员：
+原子 freeze 旧 HEAD 后保留最后确认发布，换 HEAD/key/epoch 与剩余包，同配置 URL
+发布，并删除旧 HEAD／离开者资料。中断须 Owner `swarm resume work`，永不解冻。
+离线切换窗口、公开元数据及陈旧节点未提交上传风险是明确接受的限制。
 
 `exec`、`open`、`get` 的共享名称解析默认复用 5 分钟内的已验证 swarm HEAD；
 有效缓存找不到名称时刷新一次。`--force` 要求立即刷新；`exec` 的该参数必须
@@ -155,14 +173,14 @@ ipab --help
 
 - [MVP 主链路](docs/mvp-user-journey.md)：两台设备按同一个正式名称运行、修改并验证 App
   Bundle（目标场景）。
-- [个人 swarm 的创建与授权需求](docs/swarm-authorization.md)：设备入群、成员身份验证和共享发布根的更新（需求草案）；
+- [Swarm onboarding](docs/onboarding.md)：文件 Request、加密批准、懒接入、托管私网和可恢复成员移除；
   对应的签名指针服务见 [pointer-worker](packages/pointer-worker)。
-- [签名指针服务](packages/pointer-worker)：每个 swarm 一个可变 HEAD，
-  Ed25519 签名请求与成员证书，`If-Match` 版本乐观锁。
+- [Scope / Variable 服务](packages/pointer-worker)：Scope 持 Owner，多资源公开读，
+  Ed25519 subject 持钥写、内容 CID CAS 与不可逆 freeze/delete。
 - [Cloudflare 自安装 Apps](apps/cf-tools)：将 Pointer Worker 构建为内容 Bundle，
   用两个普通 App 本地运行／部署；首次安装锁定的 npm 依赖，支持 `--reinstall`。
-- [Pointers service API](docs/pointers-service.md)：服务端分配 pointer ID，
-  API key 创建、owner/member 签名读写与 nonce 防重放。
+- [Scope service API](docs/pointers-service.md)：独立随机 Scope/Variable ID，
+  API key 仅创建 Scope、Owner 管理、准确 ID 证书写与 nonce 防重放。
 - [命令参考](docs/reference.md)：具名 pin、应用关联、配置、历史与隐私。
 - [创建应用](docs/reference.md#app-开发上层-node-profile)：Node / Web
   App 模板与构建。

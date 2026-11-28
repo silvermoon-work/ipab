@@ -1,1074 +1,369 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { IpfsStore, type IpfsStoreOptions } from "@ipab/ipfs-store";
-import type * as StoreModule from "@ipab/ipfs-store";
-import { CarBlockIterator } from "@ipld/car/iterator";
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
-import {
-  encodeBundleCar,
-  memoryTree,
-  streamChunks,
-} from "@ipab/bundle-builder";
+import { IpfsStore } from "@ipab/ipfs-store";
+import { CarBlockIterator } from "@ipld/car/iterator";
 import {
   generateKeyPair,
-  randomBytes,
-  toBase64Url,
+  importPrivateKeyPkcs8,
+  signEd25519,
 } from "@ipab/bundle/pointer/crypto";
+import { issueScopeCertificate, uniqueId } from "@ipab/bundle/pointer/scope";
 import {
-  approveMembership,
-  artifactType,
-  createSwarm,
-  descriptor,
-  joinSwarm,
-  jsonBundle,
-  pointer,
-  publish,
-  requestMembership,
+  canonicalSwarmUrl,
+  formalName,
+  parseNameReference,
+  writeSnapshot,
   readSnapshot,
-  swarmHeader,
-  searchNames,
-  updateSwarm,
-  swarmType,
-  requestType,
-  resolveReference,
-  responseType,
+  jsonBundle,
   typedJson,
-  type Artifact,
-  type SwarmContext,
+  artifactType,
+  frozenPublicationClosure,
+  verifiedRequest,
+  membershipRequestSummary,
 } from "../src/swarm.js";
-import { getBundle } from "../src/get.js";
+import {
+  encryptionIdentity,
+  sealApproval,
+  openApproval,
+  type EnvelopeBinding,
+} from "../src/swarm-envelope.js";
+import { peerId, validateAddress } from "../src/kubo.js";
 import { appSchema } from "../src/app-definition.js";
-import type { Identity } from "../src/identity.js";
-import type * as IdentityModule from "../src/identity.js";
-import { cli } from "./helpers.js";
-import { writeCar } from "../src/authoring.js";
-import { State } from "../src/state.js";
+import { contentCar } from "../src/content-provider.js";
 
-const ports = vi.hoisted(() => ({
-  identity: vi.fn<(env: NodeJS.ProcessEnv) => Promise<Identity>>(),
-  store: undefined as IpfsStore | undefined,
-}));
-vi.mock("@ipab/ipfs-store", async () => {
-  const actual = await vi.importActual<typeof StoreModule>("@ipab/ipfs-store");
-  return {
-    ...actual,
-    IpfsStore: class extends actual.IpfsStore {
-      constructor(options: IpfsStoreOptions) {
-        super(options);
-        if (ports.store) return ports.store;
-      }
-    },
-  };
-});
-vi.mock("../src/identity.js", async () => ({
-  ...(await vi.importActual<typeof IdentityModule>("../src/identity.js")),
-  accountIdentity: ports.identity,
-  protectedPath: () => Promise.resolve(),
-  secureNew: () => Promise.resolve(),
-}));
-
-describe(
-  "client swarm workflow with mocked identity/retention/network ports",
-  { tags: ["mock"] },
-  () => {
-    const origin = "https://pointers.example";
-    const fixtureId = toBase64Url(new Uint8Array(32).fill(5));
+describe("onboarding protocol and content", { tags: ["unit"] }, () => {
+  it("shows verified approval identity, PeerID and old requestedAt without secrets or terminal injection", async () => {
+    const owner = await generateKeyPair(),
+      member = await generateKeyPair(),
+      node = await generateKeyPair();
+    const body = {
+      v: 1 as const,
+      id: uniqueId(),
+      requestedAt: "1995-01-01T00:00:00.000Z",
+      configUrl: `https://service.example/v1/${"A".repeat(43)}/${"B".repeat(43)}`,
+      scopeId: "A".repeat(43),
+      owner: owner.publicRaw,
+      name: "Member\nfake prompt",
+      member: member.publicRaw,
+      encryptionKey: encryptionIdentity().publicKey,
+      peerId: peerId(node.publicRaw),
+      peerPublicKey: node.publicRaw,
+    };
+    const peerSignature = await signEd25519(
+      node.privateKey,
+      JSON.stringify(["IPAB-REQUEST/1", body]),
+    );
+    const signature = await signEd25519(
+      member.privateKey,
+      JSON.stringify(["IPAB-REQUEST-MEMBER/1", body, peerSignature]),
+    );
+    const base = resolve(".test-work");
+    await mkdir(base, { recursive: true });
+    const directory = await mkdtemp(join(base, "request-summary-"));
+    const path = join(directory, "request.json");
+    try {
+      await writeFile(
+        path,
+        JSON.stringify({ ...body, peerSignature, signature }),
+      );
+      const summary = await membershipRequestSummary(
+        await verifiedRequest(path),
+      );
+      expect(summary).toContain(member.publicRaw);
+      expect(summary).toContain(body.peerId);
+      expect(summary).toContain(body.requestedAt);
+      expect(summary).toContain('"Member\\nfake prompt"');
+      expect(summary).not.toContain(member.privatePkcs8);
+      expect(summary).not.toContain(node.privatePkcs8);
+      await writeFile(
+        path,
+        JSON.stringify({ ...body, name: "Tampered", peerSignature, signature }),
+      );
+      await expect(verifiedRequest(path)).rejects.toThrow("possession proof");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("captures weak Artifact payload/history and App source links from every frozen publication before losing the old source", async () => {
+    const sender = IpfsStore.fromClient({
+      block: { get: () => Promise.reject(new Error("missing")) },
+    });
     const noteType = {
       contentType: "application/json",
       schema: { type: "object" },
     } as const;
-    let work: string, store: IpfsStore, a: SwarmContext, b: SwarmContext;
-    let root = "",
-      revision = 1,
-      creates = 0,
-      failProvide = false,
-      provideCalls = 0;
-    let reads = 0;
-    let identities: Map<string, Identity>;
-    beforeEach(async () => {
-      await mkdir(resolve(".test-work"), { recursive: true });
-      work = await mkdtemp(join(resolve(".test-work"), "swarm-mock-"));
-      identities = new Map();
-      for (const home of ["a", "b", "c"]) {
-        const keys = await generateKeyPair();
-        identities.set(home, {
-          publicKey: keys.publicRaw,
-          privateKey: keys.privatePkcs8,
-        });
-      }
-      ports.identity.mockImplementation((env) => {
-        const identity = identities.get(env.HOME ?? "");
-        if (!identity) throw new Error("Unknown isolated identity");
-        return Promise.resolve(identity);
-      });
-      const apiKey = toBase64Url(randomBytes(32));
-      store = IpfsStore.fromClient({
-        block: {
-          get: () => Promise.reject(new Error("Missing mocked content")),
+    const bytesByCid = new Map<string, Uint8Array>();
+    let oldSourceAvailable = true;
+    const receiver = IpfsStore.fromClient({
+      block: {
+        get: (cid) => {
+          const block = bytesByCid.get(cid);
+          if (!oldSourceAvailable || !block)
+            return Promise.reject(new Error("old source unavailable"));
+          return Promise.resolve(block);
         },
-      });
-      ports.store = store;
-      vi.spyOn(store, "registerOwner").mockImplementation(() => undefined);
-      vi.spyOn(store, "retain").mockResolvedValue(undefined);
-      vi.spyOn(store, "close").mockResolvedValue(undefined);
-      root = "";
-      revision = 1;
-      creates = 0;
-      provideCalls = 0;
-      failProvide = false;
-      reads = 0;
-      const fetcher: typeof fetch = async (input, options) => {
-        const request = new Request(input, options);
-        if (new URL(request.url).pathname.startsWith("/api/v0/dag/import")) {
-          provideCalls++;
-          if (failProvide) return new Response("unavailable", { status: 503 });
-          const file = (await request.formData()).get("file");
-          if (!(file instanceof Blob)) throw new Error("Missing provider CAR");
-          const car = await CarBlockIterator.fromBytes(
-            new Uint8Array(await file.arrayBuffer()),
-          );
-          const roots = await car.getRoots();
-          return new Response(
-            roots
-              .map((cid) =>
-                JSON.stringify({
-                  Root: { Cid: { "/": cid.toString() }, PinErrorMsg: "" },
-                }),
-              )
-              .join("\n"),
-          );
-        }
-        if (request.method === "POST") {
-          const body = (await request.json()) as { root: string };
-          root = body.root;
-          creates++;
-          return new Response(JSON.stringify({ id: fixtureId }), {
-            status: 201,
-            headers: { location: `/v1/pointers/${fixtureId}` },
-          });
-        }
-        if (request.method === "PUT") {
-          if (request.headers.get("if-match") !== `"${revision}"`)
-            return new Response(
-              JSON.stringify({
-                error: {
-                  code: "precondition_failed",
-                  details: { root, revision: String(revision) },
-                },
-              }),
-              { status: 412, headers: { etag: `"${revision}"` } },
-            );
-          root = ((await request.json()) as { root: string }).root;
-          revision++;
-        }
-        if (request.method === "GET") reads++;
-        return new Response(
-          JSON.stringify({ root, revision: String(revision) }),
-          { headers: { etag: `"${revision}"` } },
-        );
-      };
-      const context = async (home: string) => {
-        const stateDir = join(work, home);
-        await mkdir(stateDir);
-        return {
-          store,
-          stateDir,
-          env: { HOME: home },
-          provider: "http://127.0.0.1:5001",
-          fetch: fetcher,
-          pointerService: origin,
-          pointerApiKey: apiKey,
-        };
-      };
-      a = await context("a");
-      b = await context("b");
-      vi.stubGlobal("fetch", fetcher);
-      const contentConfig = join(work, "store.json");
-      await writeFile(
-        contentConfig,
-        JSON.stringify({ backend: "local", dataDir: join(work, "content") }),
-      );
-      vi.stubEnv("TASK_CONTENT_CONFIG", contentConfig);
+      },
     });
-    afterEach(async () => {
-      vi.restoreAllMocks();
-      ports.identity.mockReset();
-      ports.store = undefined;
-      vi.unstubAllGlobals();
-      vi.unstubAllEnvs();
-      await store.close();
-      await rm(work, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
+    const put = async (value: unknown) => {
+      const bytes = dagCbor.encode(value),
+        cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+      await sender.put(cid, bytes);
+      return cid.toString();
+    };
+    try {
+      const source = await jsonBundle(sender, noteType, { source: true });
+      const payload = await jsonBundle(sender, appSchema, {
+        name: "App",
+        version: "1.0.0",
+        entry: "resources/app.cjs",
+        source: { cid: source },
       });
-    });
-    const local = (reference: string) => reference;
-    it("persists headers across calls, expires at exactly five minutes, and honors force/zero TTL", async () => {
-      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
-      const swarm = await createSwarm(a);
-      const payload = await jsonBundle(store, noteType, { cached: true });
-      await publish(a, payload, {
-        swarm,
-        name: "documents/cached",
-        snapshot: true,
+      const priorPayload = await jsonBundle(sender, noteType, {
+        previous: true,
       });
-      const first = await swarmHeader(a, swarm);
-      const count = reads;
-      clock.mockReturnValue(Date.parse(first.verifiedAt) + 299_999);
-      expect((await swarmHeader({ ...a }, swarm)).source).toBe("cache");
-      expect(reads).toBe(count);
-      clock.mockReturnValue(Date.parse(first.verifiedAt) + 300_000);
-      expect((await swarmHeader(a, swarm)).source).toBe("network");
-      expect(reads).toBe(count + 1);
-      expect((await swarmHeader(a, swarm, true)).source).toBe("network");
-      expect((await swarmHeader({ ...a, cacheTtl: 0 }, swarm)).source).toBe(
-        "network",
-      );
-      expect(reads).toBe(count + 3);
-      expect((await resolveReference(a, payload, undefined, local)).cid).toBe(
-        payload,
-      );
-      expect(reads).toBe(count + 3);
-    });
-    it("refreshes a cached name miss once, freezes cached hits, and invalidates successful local publications", async () => {
-      const swarm = await createSwarm(a);
-      await joinSwarm(
-        b,
-        await approveMembership(a, await requestMembership(b, swarm)),
-      );
-      const payload = await jsonBundle(store, noteType, { text: "first" });
-      await publish(b, payload, { swarm, name: "new", snapshot: true });
-      const beforeMiss = reads;
-      expect((await resolveReference(a, "ipab:///new", swarm, local)).cid).toBe(
-        payload,
-      );
-      expect(reads).toBe(beforeMiss + 1);
-      const old = await publish(b, payload, { swarm, name: "versioned" });
-      await swarmHeader(a, swarm, true);
-      const next = await jsonBundle(store, noteType, { text: "next" });
-      const current = await publish(b, next, {
-        swarm,
-        name: "versioned",
-        expect: old,
+      const historicPayload = await jsonBundle(sender, noteType, {
+        historical: true,
       });
-      const beforeHit = reads;
-      expect(
-        (await resolveReference(a, "ipab:///versioned", swarm, local)).cid,
-      ).toBe(payload);
-      expect(reads).toBe(beforeHit);
-      expect(
-        (
-          await resolveReference(
-            { ...a, forceRefresh: true },
-            "ipab:///versioned",
-            swarm,
-            local,
-            true,
-          )
-        ).cid,
-      ).toBe(current);
-      expect(reads).toBe(beforeHit + 1);
-      const beforeMissing = reads;
-      await expect(
-        resolveReference(a, "ipab:///missing", swarm, local),
-      ).rejects.toThrow("not present");
-      expect(reads).toBe(beforeMissing + 1);
-      await expect(
-        resolveReference(
-          { ...a, forceRefresh: true },
-          "ipab:///missing",
-          swarm,
-          local,
-        ),
-      ).rejects.toThrow("not present");
-      expect(reads).toBe(beforeMissing + 2);
-      const replacement = await publish(a, payload, {
-        swarm,
-        name: "versioned",
-        expect: current,
+      const first = await jsonBundle(sender, artifactType, {
+        value: priorPayload,
+        timestamp: new Date().toISOString(),
       });
-      const beforeLocal = reads;
-      expect(
-        (await resolveReference(a, "ipab:///versioned", swarm, local, true))
-          .cid,
-      ).toBe(replacement);
-      expect(reads).toBe(beforeLocal + 1);
-    });
-    it("does not reuse expired credentials or fall back after refresh failure, and binds caches to identity", async () => {
-      const swarm = await createSwarm(a);
-      await joinSwarm(
-        b,
-        await approveMembership(a, await requestMembership(b, swarm), 60),
-      );
-      const before = reads;
-      expect(
-        (await swarmHeader({ ...a, stateDir: b.stateDir }, swarm)).source,
-      ).toBe("network");
-      expect(reads).toBe(before + 1);
-      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
-      await expect(swarmHeader(b, swarm)).rejects.toThrow("valid owner-issued");
-      const original = a.fetch!;
-      a.fetch = (input, options) => {
-        if (new Request(input, options).method === "GET")
-          return Promise.resolve(
-            new Response('{"error":{"code":"internal","message":"offline"}}', {
-              status: 503,
-            }),
-          );
-        return original(input, options);
-      };
-      await expect(swarmHeader(a, swarm, true)).rejects.toThrow();
-      clock.mockReturnValue(Date.now() + 300_000);
-      await expect(swarmHeader(a, swarm)).rejects.toThrow();
-    });
-    it("searches cached Names without payload reads, returns complete empty results, and refreshes expired scope", async () => {
-      const swarm = await createSwarm(a);
-      const payload = await jsonBundle(store, noteType, {
-        text: "not indexed",
+      const latest = await jsonBundle(sender, artifactType, {
+        value: payload,
+        previous: first,
+        timestamp: new Date().toISOString(),
       });
-      const node = await publish(a, payload, { swarm, name: "Apps/Hello" });
-      const header = await swarmHeader(a, swarm);
-      const blockGet = vi.spyOn(store.block, "get");
-      const before = reads;
-      const scope = [{ cid: swarm, alias: "work" }];
-      const result = await searchNames(a, "hello", scope);
-      expect(result.matches).toEqual([
-        {
-          swarm,
-          alias: "work",
-          name: "Apps/Hello",
-          reference: `ipab://${swarm}/Apps/Hello`,
-          targetCid: node,
-        },
-      ]);
-      expect(result.swarms[0]).toMatchObject({ cid: swarm, source: "cache" });
-      expect(blockGet).not.toHaveBeenCalled();
-      expect((await searchNames(a, "absent", scope)).matches).toEqual([]);
-      expect(reads).toBe(before);
-      vi.spyOn(Date, "now").mockReturnValue(
-        Date.parse(header.verifiedAt) + 300_000,
-      );
-      expect((await searchNames(a, "hello", scope)).swarms[0]?.source).toBe(
-        "network",
-      );
-      expect(reads).toBe(before + 1);
-      a.fetch = () =>
-        Promise.resolve(
-          new Response('{"error":{"code":"internal","message":"offline"}}', {
-            status: 503,
+      const historic = await jsonBundle(sender, artifactType, {
+        value: historicPayload,
+        timestamp: new Date().toISOString(),
+      });
+      const oldRoot = await put({
+        v: 1,
+        state: CID.parse(
+          await writeSnapshot(sender, {
+            v: 2,
+            names: { old: CID.parse(historic) },
           }),
-        );
-      await expect(
-        searchNames({ ...a, forceRefresh: true }, "hello", scope),
-      ).rejects.toThrow("Search was not completed");
-    });
-    it("manages registrations/current selection and searches multiple swarms through CLI without revocation", async () => {
-      const env = { HOME: "a" };
-      const swarm = await createSwarm(a, { alias: "work" });
-      const other = await jsonBundle(store, swarmType, {
-        ...(await descriptor(store, swarm)),
-        variable: toBase64Url(randomBytes(32)),
-      });
-      expect(
-        (
-          await cli(a.stateDir, ["swarm", "add", other, "--alias", "other"], {
-            env,
-          })
-        ).code,
-      ).toBe(0);
-      const state = new State(a.stateDir);
-      try {
-        expect(state.swarms()).toHaveLength(2);
-        expect(state.config()["swarm.default"]).toBe(swarm);
-      } finally {
-        state.close();
-      }
-      const conflict = await cli(
-        a.stateDir,
-        ["swarm", "create", "--alias", "work"],
-        { env },
-      );
-      expect(conflict.code).toBe(1);
-      expect(creates).toBe(1);
-      const beforeLocal = reads;
-      expect(
-        (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
-      ).toBe(0);
-      const listed = await cli(
-        a.stateDir,
-        ["--swarm", "work", "--json", "swarm", "list"],
-        {
-          env,
-        },
-      );
-      expect(JSON.parse(listed.out)).toMatchObject({
-        savedCurrent: other,
-        effectiveCurrent: swarm,
-        source: "flag",
-      });
-      expect(reads).toBe(beforeLocal);
-      const all = await cli(a.stateDir, ["--json", "search", "absent"], {
-        env,
-      });
-      expect(all.code, all.err).toBe(0);
-      expect(
-        (JSON.parse(all.out) as { swarms: unknown[] }).swarms,
-      ).toHaveLength(2);
-      const current = await cli(
-        a.stateDir,
-        ["--json", "search", "absent", "--current"],
-        { env },
-      );
-      expect(
-        (JSON.parse(current.out) as { swarms: { cid: string }[] }).swarms.map(
-          (entry) => entry.cid,
         ),
-      ).toEqual([other]);
+      });
+      const root = await put({
+        v: 1,
+        state: CID.parse(
+          await writeSnapshot(sender, {
+            v: 2,
+            names: { app: CID.parse(latest) },
+          }),
+        ),
+        previous: CID.parse(oldRoot),
+      });
+      const complete = [
+        root,
+        latest,
+        first,
+        historic,
+        payload,
+        priorPayload,
+        historicPayload,
+        source,
+      ];
+      const car = await CarBlockIterator.fromBytes(
+        await contentCar(sender, complete),
+      );
+      for await (const block of car)
+        bytesByCid.set(block.cid.toString(), block.bytes);
+      const closure = await frozenPublicationClosure(receiver, root);
+      expect(closure).toEqual(expect.arrayContaining(complete));
+      await contentCar(receiver, closure);
+      oldSourceAvailable = false;
+      const replay = await CarBlockIterator.fromBytes(
+        await contentCar(receiver, closure),
+      );
+      expect((await replay.getRoots()).map((cid) => cid.toString())).toEqual(
+        closure,
+      );
+      expect(await typedJson(receiver, source, noteType)).toEqual({
+        source: true,
+      });
+      expect(await typedJson(receiver, historicPayload, noteType)).toEqual({
+        historical: true,
+      });
+    } finally {
+      await receiver.close();
+      await sender.close();
+    }
+  });
+  it("accepts configuration URLs and encoded cross-device references without lowercasing identity", () => {
+    const url = `https://service.example/v1/${uniqueId()}/${uniqueId()}`;
+    expect(canonicalSwarmUrl(url)).toBe(url);
+    expect(
+      parseNameReference(
+        `ipab://${encodeURIComponent(url)}/Apps/Hello%20World`,
+      ),
+    ).toEqual({ swarm: url, name: "Apps/Hello World" });
+    expect(parseNameReference("ipab://Work/apps/Hello")).toEqual({
+      swarm: "Work",
+      name: "apps/Hello",
+    });
+    expect(parseNameReference("ipab:///apps/hello")).toEqual({
+      name: "apps/hello",
+    });
+    expect(
+      parseNameReference(
+        "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
+      ),
+    ).toBeUndefined();
+    for (const invalid of [
+      "name:hello",
+      "ipab://work/a%2Fb",
+      "ipab://work/../hello",
+      "ipab://work/name?query",
+    ])
+      expect(() => parseNameReference(invalid)).toThrow();
+    for (const invalid of [
+      url + "?x=1",
+      "http://untrusted.example/v1/a/b",
+      uniqueId(),
+    ])
+      expect(() => canonicalSwarmUrl(invalid)).toThrow();
+    expect(() => formalName("builtin:hello")).toThrow();
+  });
+  it("encrypts an exact-ID nonexpiring authorization package bound to all identities and resource IDs", async () => {
+    const owner = await generateKeyPair(),
+      member = await generateKeyPair(),
+      encryption = encryptionIdentity();
+    const binding: EnvelopeBinding = {
+      configUrl: "https://service.example/v1/scope/config",
+      scopeId: uniqueId(),
+      owner: owner.publicRaw,
+      member: member.publicRaw,
+      requestId: uniqueId(),
+      peerId: peerId(member.publicRaw),
+      profileId: uniqueId(),
+      headId: uniqueId(),
+      epoch: 1,
+      encryptionKey: encryption.publicKey,
+    };
+    const certificate = await issueScopeCertificate(
+      {
+        v: 1,
+        service: "https://service.example",
+        scopeId: binding.scopeId,
+        subject: member.publicRaw,
+        write: [binding.headId, binding.profileId],
+      },
+      await importPrivateKeyPkcs8(owner.privatePkcs8),
+    );
+    const secret = { certificate, swarmKey: "ab".repeat(32) };
+    const envelope = await sealApproval(binding, secret, {
+      publicKey: owner.publicRaw,
+      privateKey: owner.privatePkcs8,
+    });
+    expect(JSON.stringify(envelope)).not.toContain(secret.swarmKey);
+    expect(await openApproval(envelope, binding, encryption)).toEqual(secret);
+    for (const changes of [
+      { requestId: uniqueId() },
+      { epoch: 2 },
+      { profileId: uniqueId() },
+      { headId: uniqueId() },
+      { owner: member.publicRaw },
+      { member: owner.publicRaw },
+      { peerId: "another" },
+      { encryptionKey: encryptionIdentity().publicKey },
+      { configUrl: "https://other.example" },
+      { scopeId: uniqueId() },
+    ])
+      await expect(
+        openApproval(envelope, { ...binding, ...changes }, encryption),
+      ).rejects.toThrow("binding");
+    await expect(
+      openApproval(
+        { ...envelope, ciphertext: envelope.ciphertext.slice(1) },
+        binding,
+        encryption,
+      ),
+    ).rejects.toThrow("signature");
+    await expect(
+      openApproval(envelope, binding, {
+        ...encryption,
+        privateKey: encryptionIdentity().privateKey,
+      }),
+    ).rejects.toThrow("decrypt");
+  });
+  it("requires IPv4 TCP LAN/VPN addresses with the exact approved PeerID", () => {
+    const peer = peerId(Buffer.alloc(32, 1).toString("base64url"));
+    validateAddress(`/ip4/192.168.1.2/tcp/4001/p2p/${peer}`, peer);
+    validateAddress(`/ip4/10.20.0.2/tcp/4001/p2p/${peer}`, peer);
+    for (const value of [
+      `/ip4/999.1.1.1/tcp/4001/p2p/${peer}`,
+      `/ip4/10.0.0.2/tcp/65536/p2p/${peer}`,
+      "/dns/host/tcp/4001/p2p/a",
+      `/ip4/10.0.0.2/tcp/4001/p2p/another`,
+    ])
+      expect(() => {
+        validateAddress(value, peer);
+      }).toThrow();
+  });
+  it("keeps names as CID links in State and rejects old metadata or malformed publications", async () => {
+    const store = IpfsStore.fromClient({
+      block: { get: () => Promise.reject(new Error("missing")) },
+    });
+    const block = async (value: unknown) => {
+      const bytes = dagCbor.encode(value),
+        cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
+      await store.put(cid, bytes);
+      return cid;
+    };
+    try {
+      const target = await block({ content: true });
+      const state = await writeSnapshot(store, {
+        v: 2,
+        names: { "apps/hello": target },
+      });
+      const root = await block({ v: 1, state: CID.parse(state) });
       expect(
-        (
-          await cli(
-            a.stateDir,
-            ["--swarm", "work", "search", "absent", "--force"],
-            { env },
-          )
-        ).code,
-      ).toBe(0);
-      const removed = await cli(
-        a.stateDir,
-        ["--json", "swarm", "remove", "other"],
-        { env },
-      );
-      expect(JSON.parse(removed.out)).toEqual({
-        removed: other,
-        savedCurrent: null,
+        (await readSnapshot(store, root.toString())).names[
+          "apps/hello"
+        ]!.toString(),
+      ).toBe(target.toString());
+      const old = await block({
+        v: 1,
+        properties: { name: "old", description: "" },
+        names: {},
       });
-      expect((await (await pointer(a, other)).read()).root).toBe(root);
-      expect(
-        (await cli(a.stateDir, ["swarm", "use", "other"], { env })).code,
-      ).toBe(1);
-    });
-    it("lets members update information with last-write-wins retries while preserving concurrent Names and unspecified fields", async () => {
-      const swarm = await createSwarm(a, {
-        alias: "owned",
-        properties: { name: "Initial", description: "Original description" },
-      });
-      const payload = await jsonBundle(store, noteType, { text: "kept" });
-      const initial = await publish(a, payload, {
-        swarm,
-        name: "documents/initial",
-      });
-      await joinSwarm(
-        b,
-        await approveMembership(a, await requestMembership(b, swarm)),
-        "member",
-      );
-      const original = b.fetch!;
-      let concurrent = "",
-        raced = false,
-        writes = 0;
-      b.fetch = async (input, options) => {
-        const request = new Request(input, options);
-        if (request.method === "PUT") {
-          writes++;
-          if (!raced) {
-            raced = true;
-            await updateSwarm(a, swarm, {
-              description: "Concurrent description",
-            });
-            concurrent = await publish(a, payload, {
-              swarm,
-              name: "documents/concurrent",
-            });
-          }
-        }
-        return original(input, options);
-      };
-      const updated = await updateSwarm(b, swarm, { name: "Member name" });
-      expect(writes).toBe(2);
-      expect(updated.properties).toEqual({
-        name: "Member name",
-        description: "Concurrent description",
-      });
-      const header = await swarmHeader(b, swarm);
-      expect(header.source).toBe("network");
-      expect(header.snapshot.properties).toEqual(updated.properties);
-      expect(header.snapshot.names["documents/initial"]?.toString()).toBe(
-        initial,
-      );
-      expect(header.snapshot.names["documents/concurrent"]?.toString()).toBe(
-        concurrent,
-      );
-      const state = new State(b.stateDir);
-      try {
-        expect(state.registeredSwarm(swarm).alias).toBe("member");
-      } finally {
-        state.close();
-      }
-      await updateSwarm(a, swarm, {
-        name: "Owner name",
-        description: "Owner description",
-      });
-      const last = await updateSwarm(b, swarm, { name: "", description: "" });
-      expect((await readSnapshot(store, last.root)).properties).toEqual({
-        name: "",
-        description: "",
-      });
-    });
-    it("requires explicit information fields and reports non-CAS failures without success or stale-cache reuse", async () => {
-      const swarm = await createSwarm(a);
-      const before = reads;
-      await expect(updateSwarm(a, swarm, {})).rejects.toMatchObject({
-        exitCode: 2,
-      });
-      expect(reads).toBe(before);
       await expect(
-        updateSwarm({ ...a, env: { HOME: "c" } }, swarm, {
-          name: "Not a member",
-        }),
-      ).rejects.toThrow();
-      const original = a.fetch!;
-      let writes = 0;
-      a.fetch = (input, options) => {
-        if (new Request(input, options).method === "PUT") {
-          writes++;
-          return Promise.resolve(
-            new Response(
-              '{"error":{"code":"internal","message":"storage unavailable"}}',
-              { status: 500 },
-            ),
-          );
-        }
-        return original(input, options);
-      };
-      await expect(
-        updateSwarm(a, swarm, { name: "Unconfirmed" }),
-      ).rejects.toMatchObject({ code: "HEAD_UNCONFIRMED", exitCode: 1 });
-      expect(writes).toBe(1);
-      expect((await swarmHeader(a, swarm)).source).toBe("network");
-      expect((await readSnapshot(store, root)).properties.name).toBe("");
-    });
-    it("routes member information updates through aliases/default selection and exposes shared information in status", async () => {
-      const swarm = await createSwarm(a);
-      await joinSwarm(
-        b,
-        await approveMembership(a, await requestMembership(b, swarm)),
-        "work",
-      );
-      const env = { HOME: "b" };
-      const updated = await cli(
-        b.stateDir,
-        [
-          "--json",
-          "swarm",
-          "update",
-          "work",
-          "--name",
-          "Team",
-          "--description",
-          "Shared",
-        ],
-        { env },
-      );
-      expect(updated.code, updated.err).toBe(0);
-      expect(JSON.parse(updated.out)).toMatchObject({
-        cid: swarm,
-        properties: { name: "Team", description: "Shared" },
-      });
-      const cleared = await cli(
-        b.stateDir,
-        ["--json", "swarm", "update", "--description", ""],
-        { env },
-      );
-      expect(cleared.code, cleared.err).toBe(0);
-      expect(JSON.parse(cleared.out)).toMatchObject({
-        properties: { name: "Team", description: "" },
-      });
-      const status = await cli(b.stateDir, ["--json", "swarm", "status"], {
-        env,
-      });
-      expect(status.code, status.err).toBe(0);
-      expect(JSON.parse(status.out)).toMatchObject({
-        properties: { name: "Team", description: "" },
-      });
-      expect((await cli(b.stateDir, ["swarm", "update"], { env })).code).toBe(
-        2,
-      );
-    });
-    it("retries only network failures, reports bounded CAS contention, and preserves candidates on service errors", async () => {
-      const swarm = await createSwarm(a);
-      const original = a.fetch!;
-      let attempts = 0;
-      a.fetch = (input, options) => {
-        const request = new Request(input, options);
-        if (request.method === "GET" && attempts++ < 2)
-          return Promise.reject(new TypeError("network"));
-        return original(input, options);
-      };
-      await (await pointer(a, swarm)).read();
-      expect(attempts).toBe(3);
-      const content = await jsonBundle(store, noteType, { text: "retained" });
-      a.fetch = (input, options) => {
-        const request = new Request(input, options);
-        if (request.method === "PUT")
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                error: {
-                  code: "precondition_failed",
-                  message: "changed",
-                  details: { root, revision: String(revision) },
-                },
-              }),
-              { status: 412, headers: { etag: `"${revision}"` } },
-            ),
-          );
-        return original(input, options);
-      };
-      await expect(
-        publish(a, content, { swarm, name: "busy" }),
-      ).rejects.toThrow("HEAD is busy");
-      a.fetch = (input, options) => {
-        const request = new Request(input, options);
-        if (request.method === "PUT")
-          return Promise.resolve(
-            new Response(
-              '{"error":{"code":"internal","message":"storage failure"}}',
-              { status: 500 },
-            ),
-          );
-        return original(input, options);
-      };
-      await expect(
-        publish(a, content, { swarm, name: "unconfirmed" }),
-      ).rejects.toThrow("result is unknown");
-      await expect(publish(a, content, { snapshot: true })).rejects.toThrow(
-        "require --name",
-      );
-      await expect(publish(a, content, { name: "named" })).rejects.toThrow(
-        "requires --swarm",
-      );
-      await expect(
-        publish(a, content, { name: "../unsafe", swarm }),
-      ).rejects.toThrow("Unsafe");
-    });
-    it("rejects invalid publication/state data instead of treating it as an empty name table", async () => {
-      const block = async (value: unknown) => {
-        const bytes = dagCbor.encode(value);
-        const cid = CID.createV1(dagCbor.code, await sha256.digest(bytes));
-        await store.put(cid, bytes);
-        return cid;
-      };
-      await expect(
-        readSnapshot(store, await jsonBundle(store, noteType, {})),
-      ).rejects.toThrow("DAG-CBOR");
+        readSnapshot(store, (await block({ v: 1, state: old })).toString()),
+      ).rejects.toThrow("old State");
       await expect(
         readSnapshot(store, (await block({ v: 1 })).toString()),
       ).rejects.toThrow("publication");
-      for (const value of [
-        { v: 2, properties: { name: "", description: "" }, names: {} },
-        { v: 1, properties: { name: 1, description: "" }, names: {} },
-        {
-          v: 1,
-          properties: { name: "", description: "" },
-          names: { test: "not-a-CID" },
-        },
-        {
-          v: 1,
-          properties: { name: "", description: "" },
-          names: { "../bad": await block({}) },
-        },
-      ]) {
-        const state = await block(value);
-        const publication = await block({ v: 1, state });
-        await expect(
-          readSnapshot(store, publication.toString()),
-        ).rejects.toThrow();
-      }
+      const invalid = await block({ v: 2, names: { bad: "not-a-link" } });
+      await expect(
+        readSnapshot(store, (await block({ v: 1, state: invalid })).toString()),
+      ).rejects.toThrow("link");
+    } finally {
+      await store.close();
+    }
+  });
+  it("preserves complete Bundle type checking for Artifact records and original content targets", async () => {
+    const store = IpfsStore.fromClient({
+      block: { get: () => Promise.reject(new Error("missing")) },
     });
-    it("routes the new CLI create/request/approve/join/status/publish/get commands through configured ports", async () => {
-      const env = {
-        HOME: "a",
-        IPAB_POINTERS_SERVICE: origin,
-        IPAB_POINTERS_API_KEY: a.pointerApiKey!,
-        IPAB_SWARM_PROVIDER: a.provider,
+    try {
+      const value = {
+        value: "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq",
+        timestamp: new Date().toISOString(),
       };
-      const create = await cli(
-        a.stateDir,
-        [
-          "--json",
-          "swarm",
-          "create",
-          "--name",
-          "test",
-          "--description",
-          "owned",
-        ],
-        { env },
-      );
-      expect(create.code, create.err).toBe(0);
-      const swarm = (JSON.parse(create.out) as { cid: string }).cid;
-      const memberEnv = { HOME: "b", IPAB_SWARM_PROVIDER: b.provider };
-      const requested = await cli(
-        b.stateDir,
-        ["--json", "swarm", "request", swarm],
-        { env: memberEnv },
-      );
-      expect(requested.code, requested.err).toBe(0);
-      const request = (JSON.parse(requested.out) as { cid: string }).cid;
-      expect(
-        (await cli(a.stateDir, ["swarm", "approve", request], { env })).code,
-      ).toBe(1);
-      expect(
-        (
-          await cli(a.stateDir, ["swarm", "approve", request], {
-            env,
-            tty: true,
-            confirm: () => Promise.resolve(false),
-          })
-        ).code,
-      ).toBe(1);
-      const approved = await cli(
-        a.stateDir,
-        ["--json", "swarm", "approve", request, "--yes", "--expires-in", "600"],
-        { env },
-      );
-      expect(approved.code, approved.err).toBe(0);
-      const response = (JSON.parse(approved.out) as { cid: string }).cid;
-      expect(
-        (await cli(b.stateDir, ["swarm", "join", response], { env: memberEnv }))
-          .code,
-      ).toBe(0);
-      expect(
-        (await cli(b.stateDir, ["swarm", "status"], { env: memberEnv })).code,
-      ).toBe(0);
-      expect(
-        (
-          await cli(b.stateDir, ["--json", "swarm", "status", swarm], {
-            env: memberEnv,
-          })
-        ).code,
-      ).toBe(0);
-      const payload = await jsonBundle(store, noteType, { text: "Hello" });
-      const published = await cli(
-        a.stateDir,
-        [
-          "--swarm",
-          swarm,
-          "--json",
-          "publish",
-          payload,
-          "--name",
-          "documents/hello",
-        ],
-        { env },
-      );
-      expect(published.code, published.err).toBe(0);
-      const node = (JSON.parse(published.out) as { cid: string }).cid;
-      const downloaded = await cli(
-        b.stateDir,
-        [
-          "--swarm",
-          swarm,
-          "--json",
-          "get",
-          `ipab://${swarm}/documents/hello`,
-          "-o",
-          join(work, "cli-get"),
-        ],
-        { env: memberEnv },
-      );
-      expect(downloaded.code, downloaded.err).toBe(0);
-      expect(JSON.parse(downloaded.out)).toMatchObject({
-        targetCid: node,
-        cid: payload,
-      });
-      expect(
-        (
-          await cli(
-            b.stateDir,
-            [
-              "--swarm",
-              swarm,
-              "get",
-              "--raw",
-              "ipab:///documents/hello",
-              "-o",
-              join(work, "raw-get"),
-            ],
-            { env: memberEnv },
-          )
-        ).code,
-      ).toBe(0);
-      const encoded = await encodeBundleCar(
-        memoryTree(
-          new Map([
-            [
-              ".bundle.yaml",
-              new TextEncoder().encode(
-                JSON.stringify({
-                  title: "Note",
-                  entry: "entry.json",
-                  type: ".bundle-type.yaml",
-                }),
-              ),
-            ],
-            [
-              ".bundle-type.yaml",
-              new TextEncoder().encode(JSON.stringify(noteType)),
-            ],
-            ["entry.json", new TextEncoder().encode('{"text":"CAR"}')],
-          ]),
-        ),
-      );
-      const car = join(work, "content.car");
-      await writeCar(encoded, car);
-      expect((await cli(a.stateDir, ["publish", car], { env })).code).toBe(0);
-    });
-    it("creates, grants membership, publishes versions, and gets content/raw without implicit source fetch", async () => {
-      const swarm = await createSwarm(a);
-      expect((await descriptor(store, swarm)).variable).toBe(fixtureId);
-      const request = await requestMembership(b, swarm);
-      await expect(approveMembership(b, request)).rejects.toThrow("Only");
-      const response = await approveMembership(a, request);
-      expect(await joinSwarm(b, response)).toBe(swarm);
-      expect(await joinSwarm(b, response)).toBe(swarm);
-      const v1 = await jsonBundle(store, noteType, { text: "Hello" });
-      const node1 = await publish(a, v1, { swarm, name: "documents/hello" });
-      expect(
-        await resolveReference(b, "ipab:///documents/hello", swarm, local),
-      ).toEqual({ targetCid: node1, cid: v1 });
-      const directory = await getBundle(store, v1, join(work, "get"));
-      expect(
-        JSON.parse(await readFile(join(directory, "entry.json"), "utf8")),
-      ).toEqual({ text: "Hello" });
-      await expect(getBundle(store, v1, directory)).rejects.toThrow(
-        "not empty",
-      );
-      const v2 = await jsonBundle(store, noteType, { text: "Welcome" });
-      const node2 = await publish(b, v2, {
-        swarm,
-        name: "documents/hello",
-        expect: node1,
-      });
-      expect(
-        await typedJson<Artifact>(store, node2, artifactType),
-      ).toMatchObject({ value: v2, previous: node1 });
-      expect(
-        (
-          await resolveReference(
-            a,
-            "ipab:///documents/hello",
-            swarm,
-            local,
-            true,
-          )
-        ).cid,
-      ).toBe(node2);
+      const root = await jsonBundle(store, artifactType, value);
+      expect(await typedJson(store, root, artifactType)).toEqual(value);
       await expect(
-        publish(a, v1, { swarm, name: "documents/hello", expect: node1 }),
-      ).rejects.toMatchObject({ code: "EDIT_CONFLICT" });
-      expect(await publish(a, v1, {})).toBe(v1);
-      expect(
-        await publish(a, v1, {
-          swarm,
-          name: "documents/snapshot",
-          snapshot: true,
-        }),
-      ).toBe(v1);
-      const encoded = await encodeBundleCar(
-        memoryTree(
-          new Map([
-            [
-              ".bundle.yaml",
-              new TextEncoder().encode(
-                JSON.stringify({
-                  title: "App",
-                  entry: "app.json",
-                  type: ".bundle-type.yaml",
-                }),
-              ),
-            ],
-            [
-              ".bundle-type.yaml",
-              new TextEncoder().encode(JSON.stringify(appSchema)),
-            ],
-            [
-              "app.json",
-              new TextEncoder().encode(
-                JSON.stringify({
-                  name: "app",
-                  version: "1.0.0",
-                  description: "",
-                  entry: "resources/app.cjs",
-                  source: {
-                    cid: "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
-                  },
-                }),
-              ),
-            ],
-            [
-              "resources/app.cjs",
-              new TextEncoder().encode('console.log("Hello");'),
-            ],
-          ]),
-        ),
-      );
-      try {
-        const car = await CarBlockIterator.fromIterable(
-          streamChunks(encoded.stream),
-        );
-        for await (const block of car) await store.put(block.cid, block.bytes);
-        await getBundle(
-          store,
-          encoded.cid.toString(),
-          join(work, "app-with-unavailable-source"),
-        );
-      } finally {
-        await encoded.close();
-      }
-    });
-    it("retains a returned pointer ID and resumes descriptor provision without reallocating", async () => {
-      const original = a.fetch!;
-      a.fetch = async (input, options) => {
-        if (
-          new URL(
-            input instanceof Request ? input.url : input.toString(),
-          ).pathname.startsWith("/api/v0/dag/import") &&
-          creates === 1 &&
-          provideCalls === 1
-        )
-          return new Response("unavailable", { status: 503 });
-        return original(input, options);
-      };
-      const error = await createSwarm(a).catch((cause: unknown) => cause);
-      if (!(error instanceof Error))
-        throw new Error("Expected unconfirmed creation");
-      const operation = /--resume ([A-Za-z0-9_-]+)/.exec(error.message)?.[1];
-      expect(operation).toBeDefined();
-      expect(creates).toBe(1);
-      a.fetch = original;
-      const swarm = await createSwarm(a, { resume: operation! });
-      expect((await descriptor(store, swarm)).variable).toBe(fixtureId);
-      expect(creates).toBe(1);
-    });
-    it("resolves explicit URI swarms over defaults and emits portable encoded search references", async () => {
-      const swarm = await createSwarm(a, { alias: "Work" });
-      const payload = await jsonBundle(store, noteType, {});
-      const name = "documents/hello #世界'()!";
-      await publish(a, payload, { swarm, name, snapshot: true });
-      const result = await searchNames(a, "hello", [
-        { cid: swarm, alias: "Work" },
-      ]);
-      const reference = result.matches[0]!.reference;
-      expect(reference).toBe(
-        `ipab://${swarm}/documents/hello%20%23%E4%B8%96%E7%95%8C%27%28%29%21`,
-      );
-      const fallback = vi.fn(local);
-      const unrelated = await jsonBundle(store, noteType, { unrelated: true });
-      expect(await resolveReference(a, reference, unrelated, fallback)).toEqual(
-        {
-          targetCid: payload,
-          cid: payload,
-        },
-      );
-      expect(
-        await resolveReference(
-          a,
-          "ipab://Work/documents/hello%20%23%E4%B8%96%E7%95%8C%27%28%29%21",
-          undefined,
-          fallback,
-        ),
-      ).toEqual({
-        targetCid: payload,
-        cid: payload,
-      });
-      expect(fallback).not.toHaveBeenCalled();
-      const downloaded = await cli(
-        a.stateDir,
-        [
-          "--swarm",
-          unrelated,
-          "--json",
-          "get",
-          reference,
-          "-o",
-          join(work, "uri-get"),
-        ],
-        { env: a.env },
-      );
-      expect(downloaded.code, downloaded.err).toBe(0);
-      expect(JSON.parse(downloaded.out)).toMatchObject({
-        targetCid: payload,
-        cid: payload,
-      });
-      await expect(
-        resolveReference(a, "ipab://work/documents/hello", swarm, fallback),
-      ).rejects.toThrow("Unknown swarm alias");
-      const before = reads;
-      await expect(
-        resolveReference(a, "name:documents/hello", swarm, fallback),
-      ).rejects.toThrow("no longer supported");
-      expect(reads).toBe(before);
-      expect(fallback).not.toHaveBeenCalled();
-    });
-    it("rejects foreign origin, mismatched requests/certificates and unauthorized Name lookups", async () => {
-      await expect(
-        createSwarm(a, { service: "https://other.example" }),
-      ).rejects.toThrow("configured origin");
-      const swarm = await createSwarm(a);
-      const request = await requestMembership(b, swarm);
-      const response = await approveMembership(a, request);
-      const c = { ...b, env: { HOME: "c" } };
-      await expect(joinSwarm(c, response)).rejects.toThrow(
-        "exact pending request",
-      );
-      const savedResponse = await typedJson<{
-        swarm: string;
-        request: string;
-        certificate: unknown;
-      }>(store, response, responseType);
-      const tampered = await jsonBundle(store, responseType, {
-        ...savedResponse,
-        certificate: { body: {}, sig: "invalid" },
-      });
-      await expect(joinSwarm(b, tampered)).rejects.toThrow("certificate");
-      const savedRequest = await typedJson<Record<string, unknown>>(
-        store,
-        request,
-        requestType,
-      );
-      const invalid = await jsonBundle(store, requestType, {
-        ...savedRequest,
-        signature: "invalid",
-      });
-      await expect(approveMembership(a, invalid)).rejects.toThrow(
-        "possession proof",
-      );
-      await expect(approveMembership(a, request, 1)).rejects.toThrow(
-        "duration",
-      );
-      await expect(
-        resolveReference(a, "ipab:///missing", undefined, local),
-      ).rejects.toThrow("require");
-      await expect(
-        resolveReference(a, "ipab:///missing", swarm, local),
-      ).rejects.toThrow("not present");
-      await expect(
-        publish(a, await jsonBundle(store, noteType, {}), { expect: swarm }),
-      ).rejects.toThrow("require --name");
-      await expect(pointer(c, swarm)).rejects.toThrow();
-      failProvide = true;
-      await expect(
-        publish(a, await jsonBundle(store, noteType, {}), {
-          swarm,
-          name: "not-shared",
-        }),
-      ).rejects.toThrow("provider");
-    });
-  },
-);
+        typedJson(store, root, { contentType: "application/json" }),
+      ).rejects.toThrow("exact Bundle type");
+    } finally {
+      await store.close();
+    }
+  });
+});

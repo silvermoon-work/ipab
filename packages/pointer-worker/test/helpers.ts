@@ -1,23 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
 import {
-  certificateSigningMessage,
-  requestSigningMessage,
-  type Certificate,
-  type CertificateBody,
-} from "../src/protocol.ts";
+  ScopeClient,
+  issueScopeCertificate,
+  uniqueId,
+} from "@ipab/bundle/pointer/scope";
 import {
   generateKeyPair,
   importPrivateKeyPkcs8,
-  randomBytes,
   sha256Hex,
-  signEd25519,
   toBase64Url,
-  type KeyPair,
 } from "../src/crypto.ts";
-import { encodeCertificate, issueCertificate } from "../src/certificates.ts";
 import pointerWorker, { type Env } from "../src/index.ts";
-import { PointerObject } from "../src/pointer-object.ts";
-import { RegistryObject } from "../src/registry-object.ts";
+import { ScopeObject } from "../src/scope-object.ts";
+import { ScopeRegistry } from "../src/scope-registry.ts";
 
 Object.defineProperty(crypto.subtle, "timingSafeEqual", {
   configurable: true,
@@ -27,94 +22,9 @@ export const NOW = Math.floor(Date.now() / 1000);
 export const SERVICE = "https://pointer.example";
 export const ROOT =
   "bafyreid3qonq3i2rjekgz7mtarpu4zbfmgg4uhtcjtpijdgrrhdke5opzq";
-export const ROOT2 =
-  "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3ognsctz5sq3tv5yo2aqgndou";
 export const API_KEY = toBase64Url(new Uint8Array(32).fill(7));
-export async function makeCert(
-  owner: KeyPair,
-  member: KeyPair,
-  pointerId: string,
-  overrides: Partial<CertificateBody> = {},
-): Promise<Certificate> {
-  return issueCertificate(
-    {
-      v: 2,
-      service: SERVICE,
-      pointerId,
-      owner: owner.publicRaw,
-      member: member.publicRaw,
-      cid: toBase64Url(randomBytes(16)),
-      iat: NOW - 1,
-      exp: NOW + 3600,
-      ...overrides,
-    },
-    await importPrivateKeyPkcs8(owner.privatePkcs8),
-  );
-}
-export interface SignedOptions {
-  key: KeyPair;
-  method?: string;
-  path?: string;
-  pointerId?: string;
-  service?: string;
-  body?: string;
-  bodyBytes?: Uint8Array;
-  ifMatch?: string;
-  timestamp?: number;
-  nonce?: string;
-  idempotencyKey?: string;
-  certificate?: Certificate;
-  apiKey?: string;
-  subject?: string;
-}
-export async function signedRequest(options: SignedOptions): Promise<Request> {
-  const method = options.method ?? "GET";
-  const pointerId = options.pointerId ?? "";
-  const path = options.path ?? `/v1/pointers/${pointerId}`;
-  const body = options.body ?? "";
-  const timestamp = options.timestamp ?? NOW;
-  const nonce = options.nonce ?? toBase64Url(randomBytes(24));
-  const subject = options.subject ?? options.key.publicRaw;
-  const ifMatch = options.ifMatch ?? "",
-    idempotencyKey = options.idempotencyKey ?? "";
-  const signature = await signEd25519(
-    await importPrivateKeyPkcs8(options.key.privatePkcs8),
-    requestSigningMessage({
-      service: options.service ?? SERVICE,
-      pointerId,
-      method,
-      path,
-      timestamp,
-      nonce,
-      subject,
-      ifMatch,
-      idempotencyKey,
-      bodySha256: await sha256Hex(options.bodyBytes ?? body),
-    }),
-  );
-  const headers = new Headers({
-    authorization: `Ed25519 ${signature}`,
-    "x-pointer-timestamp": String(timestamp),
-    "x-pointer-nonce": nonce,
-    "x-pointer-subject": subject,
-  });
-  if (options.certificate)
-    headers.set("x-pointer-cert", encodeCertificate(options.certificate));
-  if (options.apiKey) headers.set("x-api-key", options.apiKey);
-  if (ifMatch) headers.set("if-match", ifMatch);
-  if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
-  if (body || options.bodyBytes)
-    headers.set("content-type", "application/json");
-  return new Request(`${SERVICE}${path}`, {
-    method,
-    headers,
-    ...(options.bodyBytes
-      ? { body: new Uint8Array(options.bodyBytes) }
-      : body
-        ? { body }
-        : {}),
-  });
-}
+export { generateKeyPair };
+
 export class MemoryStorage {
   readonly data = new Map<string, unknown>();
   failBeforeCommit = false;
@@ -181,86 +91,106 @@ export function testContext(storage = new MemoryStorage()): {
     } as unknown as DurableObjectState,
   };
 }
-export interface Service {
-  env: Env;
-  pointers: Map<string, PointerObject>;
-  pointerStores: Map<string, MemoryStorage>;
-  registryStore: MemoryStorage;
-  restart(): void;
-  fetch: typeof fetch;
-}
-export async function createService(
+export async function createScopeService(
   options: { service?: string; digest?: string; allowedOrigin?: string } = {},
-): Promise<Service> {
-  const pointers = new Map<string, PointerObject>();
-  const pointerStores = new Map<string, MemoryStorage>();
-  const registryStore = new MemoryStorage();
-  let registry: RegistryObject | undefined;
-  const env = {
+) {
+  const stores = new Map<string, MemoryStorage>(),
+    objects = new Map<string, ScopeObject>(),
+    registries = new Map<string, ScopeRegistry>();
+  const storageFor = (id: string) => {
+    let storage = stores.get(id);
+    if (!storage) {
+      storage = new MemoryStorage();
+      stores.set(id, storage);
+    }
+    return storage;
+  };
+  const environment = {
     POINTER_SERVICE: options.service ?? SERVICE,
     POINTER_API_KEY_SHA256: options.digest ?? (await sha256Hex(API_KEY)),
-    ALLOWED_ORIGIN: options.allowedOrigin,
-    POINTER: {
-      idFromName: (name: string) => name,
-      get: (name: string) => {
-        let instance = pointers.get(name);
-        if (!instance) {
-          const storage = pointerStores.get(name) ?? new MemoryStorage();
-          pointerStores.set(name, storage);
-          instance = new PointerObject(testContext(storage).ctx, environment);
-          pointers.set(name, instance);
+    ALLOWED_ORIGIN: options.allowedOrigin ?? "",
+    SCOPE: {
+      getByName: (id: string) => {
+        let object = objects.get(id);
+        if (!object) {
+          object = new ScopeObject(testContext(storageFor(id)).ctx, env);
+          objects.set(id, object);
         }
-        return instance;
+        return object;
       },
     },
-    REGISTRY: {
-      idFromName: (name: string) => name,
-      get: () =>
-        (registry ??= new RegistryObject(
-          testContext(registryStore).ctx,
-          environment,
-        )),
+    SCOPE_REGISTRY: {
+      getByName: (id: string) => {
+        let object = registries.get(id);
+        if (!object) {
+          object = new ScopeRegistry(testContext(storageFor(id)).ctx, env);
+          registries.set(id, object);
+        }
+        return object;
+      },
     },
   };
-  const environment = env as unknown as Env;
-  return {
-    env: environment,
-    pointers,
-    pointerStores,
-    registryStore,
-    restart: () => {
-      pointers.clear();
-      registry = undefined;
-    },
-    fetch: (input, init) =>
-      pointerWorker.fetch(
-        input instanceof Request ? input : new Request(input, init),
-        environment,
-      ),
-  };
-}
-export async function createPointer(
-  service: Service,
-  owner: KeyPair,
-  root = ROOT,
-  idempotencyKey?: string,
-): Promise<string> {
-  const response = await service.fetch(
-    await signedRequest({
-      key: owner,
-      method: "POST",
-      body: JSON.stringify({ owner: owner.publicRaw, root }),
-      apiKey: API_KEY,
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-    }),
-  );
-  if (response.status !== 201)
-    throw new Error(
-      `creation failed: ${response.status}: ${await response.text()}`,
+  const env = environment as unknown as Env;
+  const fetcher: typeof fetch = (input, init) =>
+    pointerWorker.fetch(
+      input instanceof Request ? input : new Request(input, init),
+      env,
     );
-  return (await response.json<{ id: string }>()).id;
+  return {
+    env,
+    stores,
+    objects,
+    fetch: fetcher,
+    restart() {
+      objects.clear();
+      registries.clear();
+    },
+  };
 }
-export async function responseJson(response: Response): Promise<unknown> {
-  return response.json();
+export async function scopeWorld() {
+  const service = await createScopeService(),
+    owner = await generateKeyPair(),
+    member = await generateKeyPair();
+  const signer = { publicKey: owner.publicRaw, privateKey: owner.privatePkcs8 };
+  const client = new ScopeClient({
+    service: SERVICE,
+    signer,
+    apiKey: API_KEY,
+    fetch: service.fetch,
+  });
+  const scope = await client.createScope(uniqueId()),
+    variable = await client.create(scope.id, { root: "A" }, uniqueId()),
+    profile = await client.create(scope.id, {}, uniqueId());
+  const certificate = await issueScopeCertificate(
+    {
+      v: 1,
+      service: SERVICE,
+      scopeId: scope.id,
+      subject: member.publicRaw,
+      write: [variable.id, profile.id],
+    },
+    await importPrivateKeyPkcs8(owner.privatePkcs8),
+  );
+  const memberClient = new ScopeClient({
+    service: SERVICE,
+    fetch: service.fetch,
+    signer: {
+      publicKey: member.publicRaw,
+      privateKey: member.privatePkcs8,
+      certificate,
+    },
+  });
+  const reader = new ScopeClient({ service: SERVICE, fetch: service.fetch });
+  return {
+    service,
+    owner,
+    member,
+    client,
+    scope,
+    variable,
+    profile,
+    certificate,
+    memberClient,
+    reader,
+  };
 }
-export { certificateSigningMessage, generateKeyPair };

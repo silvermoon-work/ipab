@@ -1,30 +1,23 @@
+import { ScopeObject, scopeAuthenticate, scopeWire } from "./scope-object.ts";
+import { ScopeRegistry } from "./scope-registry.ts";
 import { PointerObject } from "./pointer-object.ts";
 import { RegistryObject } from "./registry-object.ts";
-import { authenticate, boundedRequest } from "./verify.ts";
 import {
   canonicalService,
   isCanonicalPublicKey,
-  parseBody,
   POINTER_ID_PATTERN,
-  PROTOCOL_VERSION,
   ServiceError,
 } from "./protocol.ts";
 import { fromHex, sha256 } from "./crypto.ts";
 
-export { PointerObject, RegistryObject };
+export { ScopeObject, ScopeRegistry, PointerObject, RegistryObject };
 export type Env = globalThis.Env;
-
-function json(
-  body: unknown,
-  status = 200,
-  headers: Record<string, string> = {},
-): Response {
+function json(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
     headers: {
       "cache-control": "no-store, no-transform",
       "x-content-type-options": "nosniff",
-      ...headers,
     },
   });
 }
@@ -35,141 +28,116 @@ async function apiKeyValid(request: Request, env: Env): Promise<boolean> {
     !/^[a-f0-9]{64}$/.test(env.POINTER_API_KEY_SHA256 ?? "")
   )
     return false;
-  const actual = await sha256(key);
-  const expected = fromHex(env.POINTER_API_KEY_SHA256!);
-  // Workers timingSafeEqual compares digests without data-dependent timing.
   const subtle = crypto.subtle as SubtleCrypto & {
     timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
   };
-  return subtle.timingSafeEqual(actual, expected);
+  return subtle.timingSafeEqual(
+    await sha256(key),
+    fromHex(env.POINTER_API_KEY_SHA256!),
+  );
 }
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    const cors: Record<string, string> =
-      env.ALLOWED_ORIGIN && request.headers.get("origin") === env.ALLOWED_ORIGIN
-        ? {
-            "access-control-allow-origin": env.ALLOWED_ORIGIN,
-            "access-control-allow-methods": "GET, PUT, POST, OPTIONS",
-            "access-control-allow-headers":
-              "authorization, content-type, if-match, idempotency-key, x-api-key, x-pointer-cert, x-pointer-subject, x-pointer-timestamp, x-pointer-nonce",
-            "access-control-expose-headers": "etag",
-            vary: "origin",
-          }
-        : {};
     let response: Response;
     try {
+      const url = new URL(request.url);
+      const path = url.pathname;
+      if (path === "/_health" && request.method === "GET")
+        return json({ ok: true, protocol: "scope-variable/1" });
+      canonicalService(env.POINTER_SERVICE);
       if (request.method === "OPTIONS")
-        response = new Response(null, {
-          status: 204,
-          headers: {
-            "cache-control": "no-store",
-            "x-content-type-options": "nosniff",
-          },
-        });
-      else if (path === "/_health" && request.method === "GET")
-        response = json({ ok: true, protocol: PROTOCOL_VERSION });
-      else {
-        canonicalService(env.POINTER_SERVICE);
-        if (path === "/v1/pointers/") {
-          if (request.method !== "POST")
-            throw new ServiceError(405, "method_not_allowed", "use POST");
-          if (!(await apiKeyValid(request, env)))
-            throw new ServiceError(
-              401,
-              "unauthorized",
-              "valid service API key required",
-            );
-          const wire = await boundedRequest(request);
-          let body: Record<string, unknown>;
-          try {
-            body = parseBody(wire.body, true);
-          } catch (err) {
-            if (err instanceof ServiceError) throw err;
-            throw new ServiceError(400, "bad_request", String(err));
-          }
-          const owner = body.owner as string,
-            root = body.root as string;
-          const auth = await authenticate(
-            wire,
-            owner,
-            env.POINTER_SERVICE,
-            "",
-            Math.floor(Date.now() / 1000),
+        response = new Response(null, { status: 204 });
+      else if (path === "/v1/scopes" && request.method === "POST") {
+        if (!(await apiKeyValid(request, env)))
+          throw new ServiceError(
+            401,
+            "unauthorized",
+            "creation API key required",
           );
-          const registry = env.REGISTRY.get(
-            env.REGISTRY.idFromName("registry-v2"),
+        const wire = await scopeWire(request);
+        const body = JSON.parse(wire.body) as { owner: string } | null;
+        if (
+          !body ||
+          Object.keys(body).join() !== "owner" ||
+          !isCanonicalPublicKey(body.owner)
+        )
+          throw new ServiceError(
+            400,
+            "bad_request",
+            "canonical owner required",
           );
-          const config = await registry.reserve(owner, root, auth);
-          if ("error" in config)
-            throw new ServiceError(
-              config.error.status,
-              config.error.code,
-              config.error.message,
-            );
-          const pointer = env.POINTER.get(
-            env.POINTER.idFromName(`pointer-v2:${config.id}`),
+        const auth = await scopeAuthenticate(
+          wire,
+          body.owner,
+          env.POINTER_SERVICE,
+          "",
+          "",
+          true,
+        );
+        const registry = env.SCOPE_REGISTRY.getByName(
+          `scope-registry:${body.owner}`,
+        );
+        const allocation = await registry.reserve(body.owner, auth);
+        if ("error" in allocation)
+          throw new ServiceError(
+            allocation.error.status,
+            allocation.error.code,
+            allocation.error.message,
           );
-          // Do not remove a reservation on failure: a fresh proof with the same
-          // idempotency key recovers configuration even after an ambiguous commit.
-          await pointer.configure(config);
-          await registry.complete(config);
-          response = json({ id: config.id }, 201, {
-            location: `/v1/pointers/${config.id}`,
-          });
-        } else {
-          const id = /^\/v1\/pointers\/([^/]+)$/.exec(path)?.[1];
-          if (!id || !POINTER_ID_PATTERN.test(id))
-            throw new ServiceError(404, "not_found", "route does not exist");
-          if (!["GET", "PUT"].includes(request.method))
-            throw new ServiceError(405, "method_not_allowed", "use GET or PUT");
-          const pointer = env.POINTER.get(
-            env.POINTER.idFromName(`pointer-v2:${id}`),
+        await env.SCOPE.getByName(`scope:${allocation.id}`).configure(
+          allocation.owner,
+        );
+        response = json(allocation, 201);
+      } else {
+        const match = /^\/v1\/([^/]+)(?:\/([^/]+))?(?:\/(freeze))?$/.exec(path);
+        const scopeId = match?.[1] ?? "",
+          variableId = match?.[2] ?? "",
+          action = match?.[3] ?? "";
+        if (
+          !POINTER_ID_PATTERN.test(scopeId) ||
+          (variableId && !POINTER_ID_PATTERN.test(variableId))
+        )
+          throw new ServiceError(
+            404,
+            "not_found",
+            "route does not exist; old pointer protocol is unsupported",
           );
-          const result = await pointer.handle(await boundedRequest(request));
-          if ("error" in result)
-            throw new ServiceError(
-              result.error.status,
-              result.error.code,
-              result.error.message,
-            );
-          if (result.status === 409)
-            response = json(
-              {
-                error: {
-                  code: "idempotency_conflict",
-                  message: "Idempotency-Key was used for a different write",
-                },
-              },
-              409,
-            );
-          else
-            response = json(
-              result.status === 412
-                ? {
-                    error: {
-                      code: "precondition_failed",
-                      message: "pointer revision has changed",
-                      details: result.state,
-                    },
-                  }
-                : result.state,
-              result.status,
-              { etag: `"${result.state.revision}"` },
-            );
-        }
+        if (
+          !["GET", "POST", "PUT", "DELETE"].includes(request.method) ||
+          (action && request.method !== "POST") ||
+          (action && !variableId)
+        )
+          throw new ServiceError(405, "method_not_allowed", "invalid method");
+        const result = await env.SCOPE.getByName(`scope:${scopeId}`).handle(
+          await scopeWire(request),
+          scopeId,
+          variableId,
+          action,
+        );
+        if ("error" in result)
+          throw new ServiceError(
+            result.error.status,
+            result.error.code,
+            result.error.message,
+          );
+        response = json(JSON.parse(result.json) as unknown, result.status);
       }
-    } catch (err) {
-      if (err instanceof ServiceError)
+    } catch (cause) {
+      if (cause instanceof ServiceError)
         response = json(
-          { error: { code: err.code, message: err.message } },
-          err.status,
+          { error: { code: cause.code, message: cause.message } },
+          cause.status,
+        );
+      else if (cause instanceof SyntaxError)
+        response = json(
+          { error: { code: "bad_request", message: "invalid JSON" } },
+          400,
         );
       else {
         console.error(
           JSON.stringify({
-            event: "pointer_service_failure",
-            message: "configuration or storage failure",
+            event: "scope_service_failure",
+            message: "storage or configuration failure",
           }),
         );
         response = json(
@@ -178,8 +146,21 @@ export default {
         );
       }
     }
-    for (const [key, value] of Object.entries(cors))
-      response.headers.set(key, value);
+    if (
+      env.ALLOWED_ORIGIN &&
+      request.headers.get("origin") === env.ALLOWED_ORIGIN
+    ) {
+      response.headers.set("access-control-allow-origin", env.ALLOWED_ORIGIN);
+      response.headers.set(
+        "access-control-allow-methods",
+        "GET, POST, PUT, DELETE, OPTIONS",
+      );
+      response.headers.set(
+        "access-control-allow-headers",
+        "authorization, content-type, if-match, idempotency-key, x-api-key, x-ipab-certificate, x-ipab-subject, x-ipab-timestamp, x-ipab-nonce",
+      );
+      response.headers.set("vary", "origin");
+    }
     return response;
   },
 } satisfies ExportedHandler<Env>;

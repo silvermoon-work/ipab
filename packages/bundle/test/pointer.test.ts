@@ -11,12 +11,8 @@ vi.mock(
   async () => import("../src/pointer/crypto.js"),
 );
 vi.mock(
-  "@ipab/bundle/pointer/certificates",
-  async () => import("../src/pointer/certificates.js"),
-);
-vi.mock(
-  "@ipab/bundle/pointer/client",
-  async () => import("../src/pointer/client.js"),
+  "@ipab/bundle/pointer/scope",
+  async () => import("../src/pointer/scope.js"),
 );
 vi.mock(
   "@ipab/bundle/pointer/protected-files",

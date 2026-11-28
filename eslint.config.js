@@ -9,6 +9,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/.test-work/**",
       "**/.cache/**",
+      "**/.wrangler/**",
       "**/.content-*/**",
       ".turbo/**",
     ],

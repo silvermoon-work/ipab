@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { CID } from "multiformats/cid";
 import { join, resolve } from "node:path";
 import { readContentConfiguration } from "@ipab/ipfs-store/node";
 import type { StoreConfiguration } from "@ipab/ipfs-store";
@@ -7,8 +6,6 @@ import { HostError, object, syntax } from "./errors.js";
 
 export type ConfigKey =
   | "swarm.default"
-  | "swarm.service"
-  | "swarm.provider"
   | "swarm.cacheTtl"
   | "swarm.forceRefresh"
   | "store.gateway"
@@ -33,8 +30,6 @@ export interface ConfigItem {
 }
 export const defaults: Record<ConfigKey, ConfigValue> = {
   "swarm.default": null,
-  "swarm.service": null,
-  "swarm.provider": "http://127.0.0.1:5001",
   "swarm.cacheTtl": 300,
   "swarm.forceRefresh": false,
   "store.gateway": null,
@@ -46,8 +41,6 @@ export const defaults: Record<ConfigKey, ConfigValue> = {
   "bundle.outputDir": "dist",
 };
 const environments: Partial<Record<ConfigKey, string>> = {
-  "swarm.service": "IPAB_SWARM_SERVICE",
-  "swarm.provider": "IPAB_SWARM_PROVIDER",
   "swarm.cacheTtl": "IPAB_SWARM_CACHE_TTL",
   "swarm.forceRefresh": "IPAB_SWARM_FORCE_REFRESH",
   "store.gateway": "IPAB_STORE_GATEWAY",
@@ -184,17 +177,8 @@ export function parseValue(
   }
   if (key.startsWith("swarm.") && value === null) return null;
   if (key === "swarm.default" && typeof value === "string") {
-    try {
-      return CID.parse(value).toV1().toString();
-    } catch {
-      syntax("swarm.default requires an exact Swarm Bundle CID.");
-    }
+    return swarmUrl(value);
   }
-  if (
-    (key === "swarm.service" || key === "swarm.provider") &&
-    typeof value === "string"
-  )
-    return publicUrl(value);
   if (key === "store.gateway" && value === null) return null;
   if (
     key === "bundle.outputDir" &&
@@ -230,6 +214,26 @@ export function parseValue(
   );
 }
 
+export function swarmUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    pointerService(url.origin);
+    if (
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.toString() !== value ||
+      !/^\/v1\/[A-Za-z0-9_-]{43}\/[A-Za-z0-9_-]{43}$/.test(url.pathname)
+    )
+      throw new Error();
+    return value;
+  } catch {
+    return syntax(
+      "Swarm requires an exact /v1/{scope}/{variable} configuration URL; old CID protocol is unsupported.",
+    );
+  }
+}
 export function validateUserConfig(
   value: unknown,
 ): Partial<Record<ConfigKey, ConfigValue>> {
@@ -283,7 +287,7 @@ export function effectiveConfig(
 ): ConfigItem[] {
   if (env.IPAB_SWARM !== undefined)
     syntax(
-      "IPAB_SWARM is no longer supported. Remove it and use --swarm CID_OR_ALIAS or ipab swarm use CID_OR_ALIAS.",
+      "IPAB_SWARM is no longer supported. Remove it and use --swarm URL_OR_ALIAS or ipab swarm use URL_OR_ALIAS.",
     );
   if (env.IPAB_STORE_RPC !== undefined)
     syntax(

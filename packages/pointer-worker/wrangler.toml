@@ -1,6 +1,6 @@
-# Signed pointer service deployed as a Cloudflare Worker.
+# Scope / Variable service deployed as a Cloudflare Worker.
 #
-# One Durable Object per random pointer ID; registry only coordinates creation.
+# One Durable Object per Scope; old class names remain only for migration history.
 name = "ipab-pointer"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
@@ -22,6 +22,18 @@ class_name = "RegistryObject"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PointerObject", "RegistryObject"]
+
+[[durable_objects.bindings]]
+name = "SCOPE"
+class_name = "ScopeObject"
+
+[[durable_objects.bindings]]
+name = "SCOPE_REGISTRY"
+class_name = "ScopeRegistry"
+
+[[migrations]]
+tag = "scope-v1"
+new_sqlite_classes = ["ScopeObject", "ScopeRegistry"]
 
 [vars]
 # Set the exact canonical HTTPS origin deployed by the operator.

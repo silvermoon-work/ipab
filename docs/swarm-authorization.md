@@ -1,149 +1,23 @@
-# 个人 swarm 的创建与授权需求
+# Swarm authorization
 
-**状态：产品需求；对应 CLI 实现、真实服务授权政策与验证边界见
-[MVP 实现决策](mvp-implementation.md)。**
-中心服务（每个 swarm 一个可变 `HEAD` 的签名指针）已有实现：
-[packages/pointer-worker](../packages/pointer-worker)。CLI 的设备授权、命名域解析与
-跨设备同步已接入；下文保留需求背景，具体协议以实现决策为准。
-本文细化[项目愿景](../VISION.md)中的个人 swarm 接入场景：
-我在电脑上创建 swarm，授权笔记本加入；此后两台设备上的 Agent 都能读取和更新同一份
-Artifact 映射，无需共享私钥，也无需我批准每一次发布。
+The authoritative implemented protocol is
+[Scope / Variable onboarding](onboarding.md). It supersedes the former
+Invite/Request-CID/Response-CID/Join draft completely.
 
-## 授权保护什么
+One Swarm corresponds to one immutable-Owner Scope and one IPFS private network.
+All live Variables are publicly readable. Owner directly signs all management;
+members hold nonexpiring Owner certificates for the exact current HEAD and their
+own public profile, proving subject-key possession on every mutation.
 
-角色统一称为 **owner** 和 **member**。创建 swarm 的身份是 owner，
-只有 owner 能以根私钥签发成员证书；不另设可委派的授权者角色。
-member 是 swarm 成员，不等同于设备。本文用两台设备承载成员密钥来说明接入流程，
-不要求一个 member 必须对应一台设备。
-身份本身是每个 OS 账号 HOME 中的单一持久公私钥对，
-owner 和 member 是该身份相对于不同 swarm 的角色。
-同一身份可创建一个 swarm 成为 owner，又加入另一个 swarm 成为 member。
-不强制两种角色使用不同密钥，MVP 不提供同一账号内的多身份切换。
-同一账号下所有 Agent、项目与 swarm 自动复用该身份，切换 state-dir 不改变身份。
-不同 OS 账号独立初始化；密钥文件仅允许所属账号访问，Unix 使用文件权限，
-Windows 使用 ACL，不以硬件标识证明设备唯一。
-证书绑定身份与目标 swarm，不是新身份，也不扩大到其他 swarm。
+Requests are signed self-contained files persisted locally and re-exportable.
+Owner manually verifies real identity and publishes a signed X25519/AES-GCM
+package. Members automatically discover it on normal use. Removal atomically
+freezes old HEAD, preserves its final committed publication, rotates HEAD/PSK/
+epoch and remaining packages, deletes the leaving profile, publishes the new
+configuration at the unchanged URL and retires old HEAD. Persistent Owner-only
+resume never unfreezes a resource.
 
-用户和 Agent 使用 Swarm Bundle CID 作为 swarm 标识。该不可变的公开描述包含
-服务 URL、服务端变量标识和 owner 根公钥；只需交付 CID 即可提供完整接入信息。
-服务端变量标识是描述中的内部定位信息，不要求用户另行提供。
-描述中的字段统一为 service、variable 和 owner；owner 直接保存完整公钥，
-不另设 rootFingerprint 或 ownerFingerprint 字段。
-指纹只是可按需计算的人类核对摘要，不替代验签公钥，也不是授权信息。
-中心服务为每个 swarm 维护**一个**可变的 `HEAD`，并登记该 swarm 的根公钥。
-Swarm Bundle CID 不是密码。`HEAD` 是当前发布记录的 CID；
-发布记录引用映射表的 Merkle DAG 根及上一次发布（首次发布没有前序）。
-成员读取一次 `HEAD`，即可按需从 IPFS 获取同一快照中的 `Name → CID` 映射。
-名称与描述等可变 properties 保存在该 State 中；正常更新不改变 Swarm Bundle CID。
-properties 的具体编辑与冲突处理接口待后续设计。
-名称目标可以是普通 Bundle，也可以是通过 value 与可选 previous 表达版本关系的 Artifact
-Bundle，
-不再建立独立 AID 映射。
-中心服务不为每个 Artifact 建立变量，不存储或遍历映射表。
-
-owner 与所有有效 member 都能读 `HEAD`，也都能尝试更新它；
-既非 owner 又无 member 资格的访问者两者都不能做。
-仅有 member 资格不包括签发成员证书或替换根公钥。服务认证的是证书绑定的身份：
-多个 Agent 共用同一私钥时，服务不区分它们。
-若该密钥也是某个 swarm 的 owner 密钥，其持有者仍具备该 swarm 的签发能力，
-不能只靠本次操作的 member 标签限制私钥权限。
-
-## 场景一：我创建自己的 swarm
-
-我初始化当前 OS 账号 HOME 中的身份，已有密钥直接复用，
-自己保管私钥，只向中心服务提交公钥。
-该公钥被登记为所创建 swarm 的 owner 根公钥，同一身份可用于其他 swarm。
-创建时使用 cfg 中保存且绑定该服务的 API key 获得资源创建权限；
-服务通过带随机 nonce 与时间戳的签名请求验证我持有对应私钥，并将
-swarm 标识、根公钥和初始 HEAD 状态绑定。
-即使有人知道 swarm 标识，用另一个密钥对重新注册也不能覆盖已有绑定。
-创建后构建并提供 Swarm Bundle，返回其 CID。私钥不上传；
-创建者直接拥有该 swarm 的 HEAD 读写能力，不需要向自己申请 member 证书。
-owner 请求按服务已登记的根公钥直接验证签名；member 请求仍提交对应成员证书。
-create 的主要成功结果只有描述 CID，JSON 模式只含 cid；
-根公钥等信息通过 Swarm Bundle 获取，不重复输出。
-
-## 场景二：我授权一台新设备加入
-
-MVP 中双方已经安装 IPAB 和 Kubo、接入同一 IPFS 私网，并验证双向 CID 获取。
-这只建立内容交换能力，不赋予 member 身份或 HEAD 访问权。
-完整准备流程见 [MVP 主链路](mvp-user-journey.md#阶段零准备设备与-ipfs-私网)。
-
-笔记本上的 member 按 owner 交付的 Swarm Bundle CID 取得服务位置和可信根公钥，
-自动使用账号 HOME 中的身份，没有身份时先初始化。它构建授权请求 Bundle，
-包含目标 swarm、成员公钥和请求标识，以成员私钥证明持有该公钥，
-将 Bundle 提供给私网后，把请求 CID 交给 owner。
-request 的成功结果只返回请求 Bundle CID，JSON 模式只含 cid。
-
-owner 按 CID 获取并校验请求、确认 member 身份，
-用 **swarm 根私钥**签发成员证书，将 swarm 标识、成员公钥和有效期签入证书。
-owner 构建授权响应 Bundle，引用准确请求 CID 并包含证书，
-使响应可在私网获取，再将响应 CID 交回 member。
-approve 的成功结果只返回响应 Bundle CID，JSON 模式只含 cid。
-审核摘要、确认提示和提供进度属于诊断信息，不混入主要成功结果。
-
-member 获取响应，验证证书的根签名、目标 swarm、有效期和成员公钥，
-并核对响应属于自己的请求。成功后保存成员凭据，尝试读取 HEAD 完成接入。
-请求和响应均有明确 Bundle 类型；具体类型定义与命令待设计。
-两者不能依赖受保护的 HEAD 获取，因为此时 member 尚未获得访问资格。
-私钥不进入请求或响应，也不随 CID 交接。
-创建 swarm 的电脑若运行内容操作 Agent，同一 OS 账号复用 owner 身份，
-可以直接读写该 swarm；加入其他 swarm 时仍需其 owner 签发的 member 证书。
-
-证书证明“这个 swarm 接纳了这个公钥”，并不证明“出示证书的人持有成员私钥”。
-因此把笔记本的证书复制到另一台机器，不足以让后者读写 HEAD。
-
-## 场景三：新设备首次读取 HEAD
-
-笔记本通过 HTTPS，用**账号身份私钥**签署请求，连同成员证书一起提交。
-请求绑定目标服务、服务端 pointer ID、操作、该操作的参数、随机 nonce
-与时间戳。服务不发放 challenges，不把签名当作可重复使用的 bearer token。
-
-服务在返回 HEAD 或执行写入前，必须验证调用身份与本次请求。
-若调用身份是该 swarm 的 owner，直接以服务登记的根公钥验证请求签名；
-不要求 owner 出示自签 member 证书，仍须核对目标、操作、参数、时效和 nonce。
-member 则必须完成两项独立验证：
-
-1. **验证成员资格。** 按请求的 swarm 标识查到已登记的根公钥，验证证书签名、
-   所属 swarm 和有效期。不采信请求方自行提供的根公钥。
-2. **验证本次请求。** 用证书中的身份公钥验证凭证签名，核对签名覆盖的内容与
-   实际请求一致；验证时效并持久消费 nonce，不能让同一签名请求被再次接受。
-
-通过验证后，读操作返回当前 HEAD。验证失败时拒绝请求，不返回 HEAD，也不修改状态。
-读凭证不能改作写凭证，另一 swarm 的合法成员也不能借此访问本 swarm。
-
-## 场景四：两台已授权设备同时发布
-
-电脑和笔记本均读到发布根 `R0`，分别构造新根 `R1`、`R2`。两者都有权发布，
-但写请求必须签入**预期旧根和候选新根**。服务验证身份后，以持久、原子的
-比较并交换（CAS）更新整个 swarm 的 HEAD：
-
-- 电脑请求 `R0 → R1`。若当前仍为 `R0`，服务将 `R1` 持久化后确认成功。
-- 笔记本随后请求 `R0 → R2`。此时基线不匹配，服务向该成员返回冲突和当前根 `R1`，
-  保持 HEAD 不变。笔记本的成果仍可保留，但尚未发布。
-
-这里服务返回的是全局 CAS 竞争，不一定是用户的编辑冲突。
-用户提交的是目标 Name、预期旧发布节点 CID 和新包；
-全局 HEAD 由 IPAB 自己维护，不要求在命令行提供。
-IPAB 刷新到 `R1` 后，若目标 Name 仍指向用户预期的旧节点，
-则保留其他 Name 的修改，重建候选状态并内部重试 CAS。
-只有目标 Name 已偏离用户基线时才报告编辑冲突，不自动接受该 Name 的新基线。
-不能仅替换预期根并重发旧候选根，因为那会覆盖其他 Name 的更新。
-即使映射表后来恢复到原来的内容，恢复操作也是一次新的发布，旧请求不能因此重新生效。
-
-## 验收边界
-
-- 无需为每个 Name 登记权限。两台设备凭各自的证书和私钥，都能读取同一个 HEAD，
-  也能在基线匹配时发布。
-- 仅知道 swarm 标识、仅持有证书、使用错误私钥、使用过期证书或凭证，都不能读写。
-  重放请求、跨服务或跨 swarm 复用凭证、替换已签名的新根，同样不能成功。
-- 两个基于同一旧根的竞争更新最多一个成功；服务重启后，已确认的 HEAD 不回退。
-  中心服务离线时仍可处理手头的内容，但不能宣称已确认新发布。
-- 保护 HEAD
-  **不等于加密 IPFS 内容**。知道某个 CID 且可取得其块的参与者仍能读取那个快照；
-  HEAD 更新成功也不证明其他设备已经取得新块。内容保密和跨设备可获取性是独立需求。
-
-HTTP API、服务端 pointer ID、API key、Ed25519 签名及 nonce 防重放的
-目标契约见 [Pointers service API](pointers-service.md)。
-证书的最终编码、Bundle 类型定义、设备撤销与续期、
-根密钥轮换与遗失恢复均待后续设计。本文不规定 CLI 或网络接口格式。
+No generic revocation, expiry, Owner recovery, content encryption or public
+relay is provided. Public metadata and offline-switch windows are explicit
+accepted limitations, not guarantees that all old peers instantly stop serving
+content.

@@ -59,6 +59,7 @@ export async function provideContent(
   roots: readonly string[],
   endpoint: string,
   fetcher: typeof fetch = fetch,
+  authorizationToken?: string,
 ): Promise<void> {
   const url = new URL(publicUrl(endpoint));
   if (
@@ -78,6 +79,9 @@ export async function provideContent(
     `${url.toString().replace(/\/$/, "")}/api/v0/dag/import?pin-roots=true`,
     {
       method: "POST",
+      ...(authorizationToken
+        ? { headers: { authorization: `Bearer ${authorizationToken}` } }
+        : {}),
       body: data,
       redirect: "error",
       signal: AbortSignal.timeout(30_000),

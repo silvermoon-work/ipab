@@ -651,6 +651,9 @@ importers:
       '@ipab/cli':
         specifier: workspace:*
         version: link:../../apps/cli
+      '@ipab/ipfs-store':
+        specifier: workspace:*
+        version: link:../ipfs-store
       '@ipld/car':
         specifier: 'catalog:'
         version: 5.4.6

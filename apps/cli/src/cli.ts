@@ -30,12 +30,18 @@ import { buildBundle, inspectBundle, importBundle } from "./authoring.js";
 import { initApp } from "./app-authoring.js";
 import { assembleBundle } from "./assembly.js";
 import { getBundle } from "./get.js";
+import { setupDevice } from "./setup.js";
+import { keyId } from "@ipab/bundle/pointer/crypto";
 import {
   createSwarm,
   requestMembership,
   approveMembership,
-  joinSwarm,
-  descriptor,
+  exportRequest,
+  removeMember,
+  resumeRemoval,
+  updateProfile,
+  verifiedRequest,
+  membershipRequestSummary,
   swarmHeader,
   addSwarm,
   updateSwarm,
@@ -92,17 +98,24 @@ export const processIO: IO = {
   },
 };
 const commands: Record<string, string> = {
+  setup: "setup [--yes]",
   "swarm create": "swarm create [--service URL] [--resume OPERATION]",
-  "swarm request": "swarm request SWARM_CID",
-  "swarm approve": "swarm approve REQUEST_CID [--expires-in SECONDS] --yes",
-  "swarm join": "swarm join RESPONSE_CID",
-  "swarm status": "swarm status [SWARM_CID]",
+  "swarm request":
+    "swarm request CONFIG_URL --owner-fingerprint FINGERPRINT [--output FILE] [--alias ALIAS]",
+  "swarm export": "swarm export URL_OR_ALIAS --output FILE",
+  "swarm approve": "swarm approve REQUEST_FILE [--again] --yes",
+  "swarm exclude":
+    "swarm exclude MEMBER_PUBLIC_KEY [--swarm URL_OR_ALIAS] --yes",
+  "swarm resume": "swarm resume [URL_OR_ALIAS]",
+  "swarm profile":
+    "swarm profile [URL_OR_ALIAS] [--name NAME] [--address MULTIADDR]",
+  "swarm status": "swarm status [URL_OR_ALIAS]",
   "swarm list": "swarm list",
-  "swarm add": "swarm add SWARM_CID [--alias ALIAS]",
-  "swarm use": "swarm use CID_OR_ALIAS",
-  "swarm remove": "swarm remove CID_OR_ALIAS",
+  "swarm add": "swarm add CONFIG_URL [--alias ALIAS]",
+  "swarm use": "swarm use URL_OR_ALIAS",
+  "swarm remove": "swarm remove URL_OR_ALIAS",
   "swarm update":
-    "swarm update [CID_OR_ALIAS] [--name TEXT] [--description TEXT]",
+    "swarm update [URL_OR_ALIAS] [--name TEXT] [--description TEXT]",
   publish:
     "publish CID_OR_CAR [--name NAME [--expect OLD_NODE_CID | --snapshot]]",
   get: "get REF [--raw] [--force | --no-force] [-o DIRECTORY]",
@@ -152,6 +165,18 @@ const commandHelp: Record<
     notes?: string[];
   }
 > = {
+  setup: {
+    summary:
+      "Verify/install Kubo and prepare the protected HOME account identity",
+    examples: ["ipab setup --yes", "ipab setup"],
+    options: [
+      "--yes  Confirm installation and identity initialization outside a TTY.",
+    ],
+    notes: [
+      "Idempotent: reuse the same verified program and existing identity.",
+      "Does not create Swarm repos, start or contact any daemon, deploy services or install login startup.",
+    ],
+  },
   "swarm create": {
     summary: "Create a swarm using the account HOME identity",
     options: [
@@ -168,32 +193,56 @@ const commandHelp: Record<
     ],
     notes: [
       "Creation uses the protected, origin-bound API key and owner possession proof.",
-      "Uses the prepared private Kubo provider; never deploys infrastructure.",
-      "Returns one descriptor CID; owner needs no member certificate.",
+      "Installs checksum-verified Kubo on demand; each Swarm has its own protected repo and ports.",
+      "Returns the public organization configuration URL; owner needs no certificate.",
     ],
   },
   "swarm request": {
-    summary: "Publish a signed account membership request",
-    examples: ["ipab swarm request SWARM_CID"],
+    summary: "Save and export a signed self-contained membership Request",
+    examples: [
+      "ipab swarm request CONFIG_URL --owner-fingerprint TRUSTED_FINGERPRINT --output request.json --alias work",
+    ],
+    options: [
+      "--owner-fingerprint VALUE  Verify Owner through a trusted independent channel.",
+      "--name NAME  Initial public display name.",
+      "--alias ALIAS  Pre-register the target for lazy onboarding.",
+      "--output FILE  Export the saved exact Request; no expiry or new PeerID on retry.",
+    ],
     notes: [
-      "Returns one request CID. Private IPFS access is a prerequisite, not membership.",
+      "No Invite, Response file, password or Join. Next normal use fetches and decrypts the approved package.",
     ],
   },
   "swarm approve": {
     summary: "Owner signs a certificate for an exact request",
     options: [
       "--yes  Explicit approval; required outside a TTY.",
-      "--expires-in SECONDS  60..2592000; default 604800.",
+      "--again  Explicit fresh approval of an old Request; history is advisory.",
     ],
-    examples: ["ipab swarm approve REQUEST_CID --yes"],
-    notes: ["Returns one response CID. Never exports the owner private key."],
-  },
-  "swarm join": {
-    summary: "Verify a response and authenticate HEAD",
-    examples: ["ipab swarm join RESPONSE_CID"],
-    options: ["--alias ALIAS  Register this swarm with a local alias."],
+    examples: ["ipab swarm approve request.json --yes"],
     notes: [
-      "Requires this account's exact pending request and bound member certificate.",
+      "Creates a public profile and publishes an Owner-signed X25519/AES-GCM package. Exact-ID certificates have no expiry.",
+    ],
+  },
+  "swarm export": {
+    summary: "Re-export the same persisted Request",
+    examples: ["ipab swarm export work --output request.json"],
+  },
+  "swarm exclude": {
+    summary: "Owner removes a member with irreversible HEAD/key rotation",
+    examples: ["ipab --swarm work swarm exclude MEMBER_PUBLIC_KEY --yes"],
+    notes: [
+      "Freezes the old HEAD atomically, preserves its final committed publication, rotates the key and remaining packages, deletes the leaving profile and retires the old HEAD.",
+    ],
+  },
+  "swarm resume": {
+    summary: "Owner resumes an interrupted organization switch",
+    examples: ["ipab swarm resume work"],
+  },
+  "swarm profile": {
+    summary: "Update your public display name and LAN/VPN IPv4 TCP address",
+    examples: [
+      "ipab swarm profile work --name Wei",
+      "ipab swarm profile work --address /ip4/192.168.1.12/tcp/4001/p2p/PEER_ID",
     ],
   },
   "swarm status": {
@@ -213,7 +262,7 @@ const commandHelp: Record<
     options: [
       "--alias ALIAS  Unique local alias; does not rename the shared swarm.",
     ],
-    examples: ["ipab swarm add SWARM_CID --alias work"],
+    examples: ["ipab swarm add CONFIG_URL --alias work"],
     notes: [
       "Not a membership grant. The first registration becomes the saved default only if none exists.",
     ],
@@ -231,8 +280,8 @@ const commandHelp: Record<
     ],
   },
   "swarm update": {
-    summary: "Update shared swarm information as an owner or member",
-    arguments: ["CID_OR_ALIAS  Defaults to the effective current swarm."],
+    summary: "Owner updates public organization information",
+    arguments: ["URL_OR_ALIAS  Defaults to the effective current swarm."],
     options: [
       "--name TEXT  Replace the shared display name; empty text clears it.",
       "--description TEXT  Replace the shared description; empty text clears it.",
@@ -242,9 +291,8 @@ const commandHelp: Record<
       'ipab swarm update --description ""',
     ],
     notes: [
-      "Requires at least one field. Any authorized member can update both fields.",
-      "Last successful write wins for the specified fields; no expected-value/version input.",
-      "Automatically retries HEAD contention while preserving current Names and unspecified properties.",
+      "Requires at least one field. Members can change only their own profile.",
+      "Content-CID CAS prevents overwriting concurrent organization changes.",
       "Shared name changes do not rename local registry aliases.",
     ],
   },
@@ -300,7 +348,7 @@ const commandHelp: Record<
     notes: [
       "Stdout contains only the absolute directory path; --json also returns content and original target CIDs.",
       "Temporary exports remain after exit; copy before cleanup, not symlink. Use --output for a persistent destination.",
-      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
+      "ipab://ALIAS_OR_ENCODED_CONFIG_URL/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "Does not install, build, edit, or automatically retrieve associated source.",
     ],
   },
@@ -407,7 +455,7 @@ const commandHelp: Record<
     ],
     notes: [
       "Apps are NOT sandboxed; run only Apps you trust.",
-      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
+      "ipab://ALIAS_OR_ENCODED_CONFIG_URL/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "History stores argv by default; do not put secrets in arguments.",
       "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
       "--json is not supported; App stdio is passed through.",
@@ -429,7 +477,7 @@ const commandHelp: Record<
     ],
     notes: [
       "Requires a saved registration and App support for the exact content type.",
-      "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
+      "ipab://ALIAS_OR_ENCODED_CONFIG_URL/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "Apps are NOT sandboxed; run only Apps you trust.",
       "Logs may contain secrets; stdin is never logged. Logging makes output non-TTY.",
       "--json is not supported; App stdio is passed through.",
@@ -579,7 +627,7 @@ const commandHelp: Record<
 
 export function help(path = ""): string {
   const globalOptions = `Global options (before COMMAND):
-  --swarm CID|ALIAS Select shared swarm (otherwise swarm.default; URI swarm takes precedence)
+  --swarm URL|ALIAS Select shared swarm (otherwise swarm.default; URI swarm takes precedence)
   --state-dir PATH  Set the local state directory
   --store-gateway URL  Use a read-only upstream HTTP gateway
   --json            Output management/development metadata, not App stdio`;
@@ -600,6 +648,7 @@ Create:
   bundle    ${groups.bundle}
 
 Manage:
+  setup     ${commandHelp.setup!.summary}
   swarm     ${groups.swarm}
   search    Search formal Names across registered swarms
   publish   ${commandHelp.publish!.summary}
@@ -850,7 +899,11 @@ export function parse(argv: readonly string[]): Parsed {
     result.positional = tokens;
     return result;
   }
-  if (!["open", "init", "build", "publish", "get", "search"].includes(group)) {
+  if (
+    !["open", "init", "build", "publish", "get", "search", "setup"].includes(
+      group,
+    )
+  ) {
     if (
       ![
         "bundle",
@@ -887,52 +940,75 @@ export function parse(argv: readonly string[]): Parsed {
       "API key must be provided through '-' and piped stdin; never pass it in command arguments.",
     );
   const booleans =
-    result.path === "bundle build"
-      ? ["replace", "schema-only", "no-import"]
-      : result.path === "build"
-        ? ["replace", "no-import"]
-        : result.path === "publish"
-          ? ["snapshot"]
-          : result.path === "get"
-            ? ["raw", "force", "no-force"]
-            : result.path === "search"
-              ? ["current", "force", "no-force"]
-              : result.path === "swarm approve"
-                ? ["yes"]
-                : result.path === "register set"
-                  ? ["replace"]
-                  : result.path === "history remove"
+    result.path === "setup"
+      ? ["yes"]
+      : result.path === "bundle build"
+        ? ["replace", "schema-only", "no-import"]
+        : result.path === "build"
+          ? ["replace", "no-import"]
+          : result.path === "publish"
+            ? ["snapshot"]
+            : result.path === "get"
+              ? ["raw", "force", "no-force"]
+              : result.path === "search"
+                ? ["current", "force", "no-force"]
+                : result.path === "swarm approve"
+                  ? ["yes", "again"]
+                  : result.path === "swarm exclude"
                     ? ["yes"]
-                    : result.path === "open"
-                      ? ["log", "raw", "force", "no-force"]
-                      : [];
+                    : result.path === "register set"
+                      ? ["replace"]
+                      : result.path === "history remove"
+                        ? ["yes"]
+                        : result.path === "open"
+                          ? ["log", "raw", "force", "no-force"]
+                          : [];
   const values =
     result.path === "swarm create"
       ? ["service", "resume", "name", "description", "alias"]
-      : result.path === "swarm add" || result.path === "swarm join"
+      : result.path === "swarm add"
         ? ["alias"]
-        : result.path === "swarm update"
-          ? ["name", "description"]
-          : result.path === "swarm approve"
-            ? ["expires-in"]
-            : result.path === "publish"
-              ? ["name", "expect"]
-              : result.path === "get"
-                ? ["output"]
-                : result.path === "init"
-                  ? ["template"]
-                  : result.path === "bundle build" || result.path === "build"
-                    ? ["output"]
-                    : result.path === "history list"
-                      ? ["app", "status", "since", "until", "limit", "before"]
-                      : result.path === "history remove"
-                        ? ["app", "status", "since", "until"]
-                        : result.path === "pin list"
-                          ? ["type"]
-                          : [];
+        : result.path === "swarm request"
+          ? ["owner-fingerprint", "name", "alias", "output"]
+          : result.path === "swarm export"
+            ? ["output"]
+            : result.path === "swarm profile"
+              ? ["name", "address"]
+              : result.path === "swarm update"
+                ? ["name", "description"]
+                : result.path === "swarm approve"
+                  ? []
+                  : result.path === "publish"
+                    ? ["name", "expect"]
+                    : result.path === "get"
+                      ? ["output"]
+                      : result.path === "init"
+                        ? ["template"]
+                        : result.path === "bundle build" ||
+                            result.path === "build"
+                          ? ["output"]
+                          : result.path === "history list"
+                            ? [
+                                "app",
+                                "status",
+                                "since",
+                                "until",
+                                "limit",
+                                "before",
+                              ]
+                            : result.path === "history remove"
+                              ? ["app", "status", "since", "until"]
+                              : result.path === "pin list"
+                                ? ["type"]
+                                : [];
   while (tokens.length) {
     const value = tokens.shift()!;
-    if (value.startsWith("--") || value === "-o") {
+    if (
+      result.path === "swarm exclude" &&
+      /^--[A-Za-z0-9_-]{41}$/.test(value)
+    ) {
+      result.positional.push(value);
+    } else if (value.startsWith("--") || value === "-o") {
       const option = value === "-o" ? "output" : value.slice(2);
       if (result.path === "init" && option === "param") {
         const input = tokens.shift();
@@ -948,7 +1024,11 @@ export function parse(argv: readonly string[]): Parsed {
         const input = tokens.shift();
         if (
           input === undefined ||
-          input.startsWith("--") ||
+          (input.startsWith("--") &&
+            !(
+              ["resume", "owner-fingerprint"].includes(option) &&
+              /^[A-Za-z0-9_-]{43}$/.test(input)
+            )) ||
           (input === "" && result.path !== "swarm update")
         )
           syntax(`${value} needs a value.`);
@@ -965,10 +1045,14 @@ export function parse(argv: readonly string[]): Parsed {
   )
     syntax("--current and --swarm are mutually exclusive.");
   const counts: Record<string, [number, number]> = {
+    setup: [0, 0],
     "swarm create": [0, 0],
     "swarm request": [1, 1],
     "swarm approve": [1, 1],
-    "swarm join": [1, 1],
+    "swarm export": [1, 1],
+    "swarm exclude": [1, 1],
+    "swarm resume": [0, 1],
+    "swarm profile": [0, 1],
     "swarm status": [0, 1],
     "swarm list": [0, 0],
     "swarm add": [1, 1],
@@ -1078,6 +1162,28 @@ async function performCli(
     }
     if (parsed.path === "history remove" && !parsed.options.yes && !io.tty)
       syntax("Non-interactive history remove requires --yes.");
+    if (parsed.path === "setup") {
+      if (
+        !parsed.options.yes &&
+        (!io.tty ||
+          !(await io.confirm(
+            "Install checksum-verified Kubo and initialize/reuse the protected HOME identity? No daemon will be contacted or started.",
+          )))
+      )
+        throw new HostError(
+          "Setup requires explicit --yes or interactive confirmation.",
+        );
+      const result = await setupDevice(
+        stateLocation(parsed.flags, env).path,
+        env,
+      );
+      io.out(
+        parsed.flags.json
+          ? JSON.stringify(result)
+          : `Kubo ${result.kuboVersion}: ${result.binary}\nAccount fingerprint: ${result.fingerprint}\nReady. Nodes start only when a Swarm is used.`,
+      );
+      return 0;
+    }
     const builtins = await builtinContent();
     state = new State(stateLocation(parsed.flags, env).path, builtins.pins);
     if (
@@ -1109,11 +1215,15 @@ async function performCli(
         ? undefined
         : String(value("swarm.default"));
     const swarmContext = (): SwarmContext => ({
-      store: store!,
+      get store() {
+        return store!;
+      },
+      set store(next) {
+        store = next;
+      },
       state: state!,
       env,
       stateDir: stateLocation(parsed.flags, env).path,
-      provider: String(value("swarm.provider") ?? "http://127.0.0.1:5001"),
       cacheTtl: Number(value("swarm.cacheTtl")),
       forceRefresh: parsed.options.force
         ? true
@@ -1150,7 +1260,13 @@ async function performCli(
       case "swarm list": {
         const result = { swarms: state.swarms(), ...selection() };
         emit(
-          result,
+          {
+            ...result,
+            swarms: result.swarms.map((entry) => ({
+              configUrl: entry.cid,
+              alias: entry.alias,
+            })),
+          },
           [
             ...result.swarms.map(
               (entry) =>
@@ -1186,17 +1302,67 @@ async function performCli(
       case "swarm create":
       case "swarm request":
       case "swarm approve":
-      case "swarm join":
+      case "swarm export":
+      case "swarm exclude":
+      case "swarm resume":
+      case "swarm profile":
       case "swarm status":
       case "publish":
       case "get": {
         store = new IpfsStore(await storeConfiguration(value("store.gateway")));
         const context = swarmContext();
+        if (parsed.path === "swarm export") {
+          const id = await exportRequest(
+            context,
+            state.resolveSwarm(first!),
+            String(parsed.options.output ?? ""),
+          );
+          emit({ id }, id);
+          break;
+        }
+        if (
+          ["swarm exclude", "swarm resume", "swarm profile"].includes(
+            parsed.path,
+          )
+        ) {
+          const url =
+            parsed.path === "swarm exclude"
+              ? selectedSwarm
+              : first
+                ? state.resolveSwarm(first)
+                : selectedSwarm;
+          if (!url) syntax("Select a Swarm configuration URL or alias.");
+          if (parsed.path === "swarm exclude") {
+            if (!parsed.options.yes)
+              syntax("Member removal is irreversible; --yes required.");
+            await removeMember(context, url, first!);
+          } else if (parsed.path === "swarm resume")
+            await resumeRemoval(context, url);
+          else {
+            const profile = await updateProfile(context, url, {
+              ...(typeof parsed.options.name === "string"
+                ? { name: parsed.options.name }
+                : {}),
+              ...(typeof parsed.options.address === "string"
+                ? { addresses: [parsed.options.address] }
+                : {}),
+            });
+            emit(profile, JSON.stringify(profile));
+            store = context.store;
+            break;
+          }
+          store = context.store;
+          emit(
+            { url, completed: true },
+            `Organization switch complete: ${url}`,
+          );
+          break;
+        }
         if (parsed.path === "swarm update") {
           const cid = first ? state.resolveSwarm(first) : selectedSwarm;
           if (!cid)
             syntax(
-              "swarm update requires a registered alias, Swarm CID or current swarm.",
+              "swarm update requires a registered alias, configuration URL or current swarm.",
             );
           const result = await updateSwarm(context, cid, {
             ...(typeof parsed.options.name === "string"
@@ -1208,12 +1374,12 @@ async function performCli(
           });
           emit(
             result,
-            `Swarm: ${result.cid}\nName: ${printable(result.properties.name)}\nDescription: ${printable(result.properties.description)}\nHEAD: ${result.root}\nRevision: ${result.revision}`,
+            `Swarm: ${result.configUrl}\nName: ${printable(result.properties.name)}\nDescription: ${printable(result.properties.description)}\nHEAD ID: ${result.headId}\nConfig content CID: ${result.valueCid}`,
           );
           break;
         }
         if (parsed.path === "swarm add") {
-          const cid = exactCid(first!);
+          const cid = state.resolveSwarm(first!);
           await addSwarm(
             context,
             cid,
@@ -1223,7 +1389,11 @@ async function performCli(
           );
           const entry = state.registeredSwarm(cid);
           emit(
-            { ...entry, savedCurrent: state.config()["swarm.default"] ?? null },
+            {
+              configUrl: entry.cid,
+              alias: entry.alias,
+              savedCurrent: state.config()["swarm.default"] ?? null,
+            },
             `Registered swarm ${entry.alias ?? cid} (${cid}).`,
           );
           break;
@@ -1265,23 +1435,45 @@ async function performCli(
         if (parsed.path === "swarm status") {
           const cid = first ? state.resolveSwarm(first) : selectedSwarm;
           if (!cid)
-            syntax("swarm status requires a Swarm CID or swarm.default.");
-          const data = await descriptor(store, cid);
-          const { head, snapshot } = await swarmHeader(context, cid, true);
+            syntax(
+              "swarm status requires a configuration URL or swarm.default.",
+            );
+          const { head, config } = await swarmHeader(context, cid, true);
+          store = context.store;
           emit(
             {
-              cid,
-              ...data,
+              configUrl: cid,
+              owner: config.owner,
+              ownerFingerprint: await keyId(config.owner),
+              epoch: config.epoch,
+              peerId: context.node!.peerId,
+              addresses: context.node!.addresses,
               root: head.root,
-              revision: head.revision,
-              properties: snapshot.properties,
+              valueCid: head.cid,
+              properties: {
+                name: config.name,
+                description: config.description,
+              },
             },
-            `Swarm: ${cid}\nName: ${printable(snapshot.properties.name)}\nDescription: ${printable(snapshot.properties.description)}\nHEAD: ${head.root}\nRevision: ${head.revision}`,
+            `Swarm: ${cid}\nOwner fingerprint: ${await keyId(config.owner)}\nPeerID: ${context.node!.peerId}\nLocal address: ${context.node!.addresses.join(", ")}\nName: ${printable(config.name)}\nDescription: ${printable(config.description)}\nHEAD: ${head.root}\nContent CID: ${head.cid}`,
           );
           break;
         }
         if (parsed.path === "get") {
-          const contentStore = store;
+          const localCid = first!.startsWith("ipab://")
+            ? undefined
+            : state.resolve(first!);
+          const builtin = builtins.pins.find((pin) => pin.cid === localCid);
+          const selected = builtin
+            ? { cid: builtin.cid, targetCid: builtin.cid }
+            : await resolveReference(
+                context,
+                first!,
+                selectedSwarm,
+                (reference) => state!.resolve(reference),
+                Boolean(parsed.options.raw),
+              );
+          const contentStore = context.store;
           const source = IpfsStore.fromClient(
             {
               block: {
@@ -1298,16 +1490,8 @@ async function performCli(
             },
             contentStore.limits,
           );
-          let selected: { cid: string; targetCid: string };
           let directory: string;
           try {
-            selected = await resolveReference(
-              { ...context, store: source },
-              first!,
-              selectedSwarm,
-              (reference) => state!.resolve(reference),
-              Boolean(parsed.options.raw),
-            );
             directory = await getBundle(
               source,
               selected.cid,
@@ -1344,34 +1528,35 @@ async function performCli(
               : {}),
           });
         } else if (parsed.path === "swarm request")
-          cid = await requestMembership(context, exactCid(first!));
+          cid = await requestMembership(context, first!, {
+            ownerFingerprint: String(parsed.options["owner-fingerprint"] ?? ""),
+            ...(typeof parsed.options.name === "string"
+              ? { name: parsed.options.name }
+              : {}),
+            ...(typeof parsed.options.alias === "string"
+              ? { alias: parsed.options.alias }
+              : {}),
+            ...(typeof parsed.options.output === "string"
+              ? { output: parsed.options.output }
+              : {}),
+          });
         else if (parsed.path === "swarm approve") {
+          const request = await verifiedRequest(first!);
+          io.err(await membershipRequestSummary(request));
           if (
             !parsed.options.yes &&
             (!io.tty ||
               !(await io.confirm(
-                `Approve membership request ${first!}? This grants swarm HEAD read/write access.`,
+                `Approve the verified Request ${request.id} above? This grants current HEAD and the member's profile write access; all reads are public.`,
               )))
           )
             throw new HostError(
               "Approval requires explicit --yes or interactive confirmation.",
             );
-          cid = await approveMembership(
-            context,
-            exactCid(first!),
-            parsed.options["expires-in"] === undefined
-              ? undefined
-              : Number(parsed.options["expires-in"]),
-          );
-        } else if (parsed.path === "swarm join")
-          cid = await joinSwarm(
-            context,
-            exactCid(first!),
-            typeof parsed.options.alias === "string"
-              ? parsed.options.alias
-              : undefined,
-          );
-        else {
+          cid = await approveMembership(context, request, {
+            again: Boolean(parsed.options.again),
+          });
+        } else {
           let content: string;
           if (first!.toLowerCase().endsWith(".car"))
             content = (
@@ -1389,11 +1574,19 @@ async function performCli(
             snapshot: Boolean(parsed.options.snapshot),
           });
         }
-        if (parsed.path === "swarm create" || parsed.path === "swarm join")
+        store = context.store;
+        if (parsed.path === "swarm create")
           io.err(
             `Registered swarm ${state.registeredSwarm(cid).alias ?? cid}. Saved current: ${state.config()["swarm.default"] ?? "(none)"}.`,
           );
-        emit({ cid }, cid);
+        emit(
+          parsed.path === "swarm request"
+            ? { requestId: cid }
+            : parsed.path === "swarm create" || parsed.path === "swarm approve"
+              ? { configUrl: cid }
+              : { cid },
+          cid,
+        );
         break;
       }
       case "store usage":
@@ -1829,15 +2022,17 @@ async function performCli(
           );
         await recoverInactive(state);
         store = new IpfsStore(await storeConfiguration(value("store.gateway")));
+        const context = swarmContext();
         const target = (
           await resolveReference(
-            swarmContext(),
+            context,
             first!,
             selectedSwarm,
             (reference) => state!.resolve(reference),
             Boolean(parsed.options.raw),
           )
         ).cid;
+        store = context.store;
         let appCid: string;
         let appArgv: string[];
         if (parsed.path === "open") {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const names = JSON.parse(await readFile("smoke-packages.json", "utf8"));
 assert.equal(names.length, 5);
@@ -22,5 +23,31 @@ for (const name of names) {
     if (result.error) throw result.error;
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), pkg.version);
+    if (name === "@ipab/cli") {
+      const stateDir = await mkdtemp(join(tmpdir(), "ipab-builtin-smoke-"));
+      try {
+        const pins = spawnSync(
+          process.execPath,
+          [
+            join("node_modules", name, entry),
+            "--state-dir",
+            stateDir,
+            "--json",
+            "pin",
+            "list",
+          ],
+          { encoding: "utf8", shell: false, timeout: 30_000 },
+        );
+        if (pins.error) throw pins.error;
+        assert.equal(pins.status, 0, pins.stderr);
+        assert.ok(
+          JSON.parse(pins.stdout).items.some(
+            (pin) => pin.name === "builtin:skill.ipab" && pin.builtin === true,
+          ),
+        );
+      } finally {
+        await rm(stateDir, { recursive: true, force: true });
+      }
+    }
   }
 }

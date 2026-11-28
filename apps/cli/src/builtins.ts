@@ -5,6 +5,9 @@ import {
 } from "./template-definition.js";
 import { builtinTemplateNames } from "./app-templates.js";
 import { builtinTemplateSource } from "./template-source.js";
+import { openBundle } from "@ipab/bundle";
+import { fileURLToPath } from "node:url";
+import { readCar } from "./authoring.js";
 import type { NamedPin, PinMetadata } from "./state.js";
 
 async function loadBuiltins(): Promise<{
@@ -39,6 +42,25 @@ async function loadBuiltins(): Promise<{
       schemaCid: templateSchemaCid.toString(),
     });
   }
+  const skill = await readCar(
+    fileURLToPath(new URL("../dist/builtins/skill.ipab.car", import.meta.url)),
+    {},
+  );
+  const bundle = await openBundle(skill.root, { resolveCid: skill.resolveCid });
+  if (
+    bundle.manifest.entry !== "SKILL.md" ||
+    bundle.schema.type.contentType !== "text/markdown" ||
+    bundle.validation.status !== "validated"
+  )
+    throw new Error(
+      "Built-in IPAB Skill must be a validated Markdown Skill Bundle.",
+    );
+  for (const [cid, bytes] of skill.blocks) blocks.set(cid, bytes);
+  add("builtin:skill.ipab", skill.root.toString(), {
+    kind: "bundle",
+    title: bundle.manifest.title,
+    schemaCid: bundle.schemaKey,
+  });
   return { pins, blocks };
 }
 

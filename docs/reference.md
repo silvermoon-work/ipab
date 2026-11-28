@@ -194,10 +194,11 @@ GC 仅处理本轮开始时已枚举的 block。
 内置内容可直接用名字或准确 CID 供 Bundle 检查／模板初始化读取，
 不需要先导入用户 Store：
 
-| 内置 pin                   | 实例标题                      | 内容                    |
-| -------------------------- | ----------------------------- | ----------------------- |
-| `builtin:template.node`    | IPAB Node Project Template    | 默认 Node 项目模板      |
-| `builtin:template.web-app` | IPAB Web App Project Template | 前后端 Web App 项目模板 |
+| 内置 pin                   | 实例标题                      | 内容                                |
+| -------------------------- | ----------------------------- | ----------------------------------- |
+| `builtin:template.node`    | IPAB Node Project Template    | 默认 Node 项目模板                  |
+| `builtin:template.web-app` | IPAB Web App Project Template | 前后端 Web App 项目模板             |
+| `builtin:skill.ipab`       | IPAB Skill                    | 人与 Agents 的 Swarm 信息共享 Skill |
 
 内置 App／Template 类型 block 仍是离线类型定义来源，但不是 pin，
 不会出现在 `pin list/show` 或 `resolvePin` 中。
@@ -786,6 +787,18 @@ ipab --json bundle inspect .\my-note\dist\bundle.car
   不清空源目录、`dist` 或共享 Store。再次构建已有产物需显式 `--replace`。
 
 ### Agent Skill Bundle
+
+当前源码构建的 CLI 交付内置 `builtin:skill.ipab`，源码在
+[skills/ipab](../skills/ipab)，构建时生成经过校验的
+`dist/builtins/skill.ipab.car`。
+它使用下面同一份 Agent Skill 类型契约，以 `SKILL.md` 为入口，
+附带 `references/USAGE.md`；frontmatter 介绍用途与 Swarm，简短正文说明信息共享、
+成果贡献和协作迭代。运行时只读取交付的 CAR，不读取仓库 Skill 目录。
+
+可通过 `pin list/show` 发现，通过名称或准确 CID 检查和导出。
+`ipab get builtin:skill.ipab` 不要求预先导入或联网；Bundle 的安装与 Agent
+正文加载是独立步骤，示例见[命令组合](#获取-bundle-与命令组合)。没有通用
+`default: true` frontmatter 或安装后自动修改 Agent 配置的行为。
 
 [示例目录](../examples/agent-skill)提供可复用的完整
 [类型定义](../examples/agent-skill/.bundle-type.yaml)，示例 manifest 选择

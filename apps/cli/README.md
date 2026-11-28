@@ -19,6 +19,13 @@ Node.js 22.15.0 or newer is required. Built-in Node and Web App project
 templates are validated CAR assets shipped in this package; initialization works
 offline and does not install dependencies or run hooks.
 
+The current source also ships `builtin:skill.ipab`, a validated Markdown Skill
+Bundle about sharing information and Artifacts between people and Agents within
+a Swarm. Export it offline with `ipab get builtin:skill.ipab`; its concise
+`SKILL.md` links bundled usage references. It is not included in the published
+rc.2 release. Shipping the Bundle does not install it into Agent directories or
+configure automatic loading.
+
 See the [user guide](https://github.com/silvermoon-work/ipab#readme) and
 [command reference](https://github.com/silvermoon-work/ipab/blob/main/docs/reference.md)
 for Store configuration, execution, pins, templates and App development.

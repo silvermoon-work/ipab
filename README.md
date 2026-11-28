@@ -116,6 +116,26 @@ Owner 用 `ipab --swarm work swarm exclude MEMBER_PUBLIC_KEY --yes` 移除成员
 
 ## 快速上手
 
+### 内置 IPAB Skill
+
+当前源码构建的 CLI 随包提供只读 `builtin:skill.ipab` Bundle，介绍人与多个
+Agents 的信息共享，以及 Swarm 内统一的内容共享和名称映射。正文简短，
+具体命令放在按需读取的参考文档中；可离线导出：
+
+```sh
+ipab get builtin:skill.ipab
+```
+
+需要安装到 Agent 时，可在 Bash 中组合：
+
+```bash
+folder=$(ipab get builtin:skill.ipab) &&
+  npx skills add "$folder" --global --agent github-copilot --copy
+```
+
+随 CLI 交付不等于自动安装到 Agent 或默认加载正文；发现、加载与始终加载配置由
+具体 Agent 决定。此内置 Skill 尚不包含在已发布的 `0.1.0-rc.2` 中。
+
 ### 运行应用
 
 将示例中的 `<app-cid>` 替换为你信任且当前 Store 可获取的 App Bundle CID：

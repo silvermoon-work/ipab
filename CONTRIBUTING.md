@@ -79,9 +79,15 @@ Builder 的各测试任务将 Skill 示例
 运行时不重建模板，也不读取仓库模板目录。Turbo 将模板源码纳入 CLI 构建缓存键，
 CLI 的 test 与 test-coverage 先构建自身以准备资源。
 
+CLI 同时将 `skills/ipab` 构建为 `dist/builtins/skill.ipab.car`，校验 Markdown
+入口并通过运行时内置加载器复核 CID。Skill 源码参与 CLI build 的 Turbo 缓存键，
+运行时不读取仓库源码；安装到 Agent 与默认加载由消费端独立处理。
+
 `pnpm build` 后执行 `pnpm test-package-smoke` 只做 npm 交付安装 smoke：
 从 `deliverable.yaml` 发现五个非 private 交付包，分别打包为 tarball，
 在独立临时消费目录从这些 tarball 安装，加载公开 JS 入口并运行 CLI `--version`。
+CLI 另用隔离状态目录执行 `pin list`，确认安装后的内置 Skill CAR 可加载；
+不读取或修改用户状态。
 内部依赖用临时 pnpm overrides 映射到本次 tarball，不链接 workspace；
 不安装开发工具、不做类型编译，不创建模板项目、不构建或启动 Viewer。
 业务行为由各包现有测试覆盖，不在此重复。

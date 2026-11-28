@@ -44,6 +44,22 @@ if (process.exitCode === 0) {
         selector === "web-app" ? [`webAppDependency=${framework.version}`] : [],
     });
   }
+  const skill = await buildBundle(
+    fileURLToPath(new URL("../../../skills/ipab/", import.meta.url)),
+    {
+      output: fileURLToPath(
+        new URL("../dist/builtins/skill.ipab.car", import.meta.url),
+      ),
+      replace: true,
+    },
+  );
+  const { builtinContent } = await import("../dist/builtins.js");
+  const builtins = await builtinContent();
+  if (
+    builtins.pins.find((pin) => pin.name === "builtin:skill.ipab")?.cid !==
+    skill.cid
+  )
+    throw new Error("Built-in IPAB Skill CID does not match.");
   if (process.platform !== "win32") {
     const entry = fileURLToPath(new URL("../dist/main.js", import.meta.url));
     chmodSync(entry, statSync(entry).mode | 0o111);

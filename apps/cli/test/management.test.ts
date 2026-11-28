@@ -44,7 +44,7 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
   const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
 
-  it("gets builtin templates offline by name and CID without importing their blocks", async () => {
+  it("gets builtin Bundles offline by name and CID without importing their blocks", async () => {
     const contentConfig = join(work.root, "get-store.json");
     await writeFile(
       contentConfig,
@@ -76,6 +76,12 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
         expect(await readFile(join(result.directory, ".bundle.yaml"))).toEqual(
           manifest,
         );
+        if (pin.name === "builtin:skill.ipab") {
+          for (const path of ["SKILL.md", join("references", "USAGE.md")])
+            expect(await readFile(join(result.directory, path))).toEqual(
+              await readFile(join("..", "..", "skills", "ipab", path)),
+            );
+        }
         const rebuilt = await cli(work.stateDir, [
           "--json",
           "bundle",

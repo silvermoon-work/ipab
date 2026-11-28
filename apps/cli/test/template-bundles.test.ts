@@ -252,7 +252,11 @@ describe("Data-only Template Bundles", { tags: ["release-e2e"] }, () => {
   });
   it("exposes complete read-only builtin pins and resolves their content without a Store", async () => {
     const builtins = await builtinContent();
-    const names = ["builtin:template.node", "builtin:template.web-app"];
+    const names = [
+      "builtin:template.node",
+      "builtin:template.web-app",
+      "builtin:skill.ipab",
+    ];
     expect(builtins.pins.map((pin) => pin.name)).toEqual(names);
     const offline = ["--store-gateway", "http://127.0.0.1:1", "--json"];
     const listed = await cli(work.stateDir, [...offline, "pin", "list"]);

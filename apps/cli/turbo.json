@@ -5,7 +5,8 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/templates/node/**",
-        "$TURBO_ROOT$/templates/web-app/**"
+        "$TURBO_ROOT$/templates/web-app/**",
+        "$TURBO_ROOT$/skills/ipab/**"
       ]
     },
     "test": {

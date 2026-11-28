@@ -44,6 +44,41 @@ ipab --json history list --status succeeded
 ipab history remove --status failed --until 2026-11-01T00:00:00Z --yes
 ```
 
+### 获取 Bundle 与命令组合
+
+`ipab get REF` 验证并解包 Bundle，不执行入口或附带脚本。省略 `--output`
+时，每次在系统临时目录中创建一个独立导出目录，不再默认写入当前目录下的 CID
+文件夹。需要固定位置时显式指定 `--output DIRECTORY`，目标仍须为新目录或空目录。
+
+普通 stdout 只输出导出目录的绝对路径，指定 `--output` 时也相同；提示和错误写入
+stderr。失败退出非零，不输出成功路径。使用 `ipab --json get REF` 获取完整
+`cid`、`targetCid` 和 `directory` 信息，其中 `targetCid` 保留原始编辑基线。
+普通输出不再包含 `CID:`、`Target CID:` 或 `Directory:` 标签。
+
+临时导出成功后不会在进程退出时删除，也不会被 IPAB 自动清理；调用方使用完毕后
+负责清理自己的导出目录。系统可能清理临时文件，因此需持久保留时使用 `--output`
+或复制到持久目录，不要建立依赖临时导出目录的符号链接。
+
+例如，在 Bash 中获取标准 Skill Bundle 后交给 Skills CLI 安装：
+
+```bash
+folder=$(ipab get <skill-bundle-cid>) &&
+  npx skills add "$folder" --global --agent github-copilot --copy
+```
+
+赋值命令保留 `ipab get` 的退出码，`&&` 在获取失败时阻止安装；引号保留路径中的
+空格。不能用未检查状态的反引号或 `npx skills add "$(ipab get ...)"` 代替。
+`--copy` 避免安装结果依赖临时目录。Bundle 必须包含 Skills CLI 可发现的标准
+`SKILL.md`；`get` 不改写任意入口文件名，也不负责安装或信任 Skill。
+
+内置 Bundle 同样可以直接导出，支持只读 pin 名称或其准确内容 CID，无需先导入
+用户 Store，也不联网获取内置内容：
+
+```sh
+ipab get builtin:template.node --output node-template
+ipab get builtin:template.web-app
+```
+
 ### 本机命令与上游 Gateway
 
 CLI 包名为 `@ipab/cli`，命令为 `ipab`；当前已发布 `0.1.0-rc.2`。

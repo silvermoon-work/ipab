@@ -1,5 +1,6 @@
-import { dirname, resolve } from "node:path";
-import { lstat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { lstat, mkdtemp, realpath, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { openBundle, bundleLimits } from "@ipab/bundle";
 import { CID } from "multiformats/cid";
 import type { IpfsStore } from "@ipab/ipfs-store";
@@ -10,7 +11,7 @@ import { HostError } from "./errors.js";
 export async function getBundle(
   store: IpfsStore,
   cid: string,
-  output = cid,
+  output?: string,
 ): Promise<string> {
   await openBundle(CID.parse(cid), {
     resolveCid: (cid) => store.block.get(cid.toString()),
@@ -51,18 +52,39 @@ export async function getBundle(
     }
   };
   await visit(CID.parse(cid), "", 0);
-  const directory = resolve(output);
-  for (let current = directory; ; current = dirname(current)) {
-    try {
-      const stat = await lstat(current);
-      if (stat.isSymbolicLink() || !stat.isDirectory())
-        throw new HostError(
-          "Download destination must not cross a symlink or file.",
-        );
-    } catch (cause) {
-      if (!nodeError(cause, "ENOENT")) throw cause;
+  const directory =
+    output === undefined
+      ? await mkdtemp(join(await realpath(tmpdir()), "ipab-get-"))
+      : resolve(output);
+  try {
+    for (let current = directory; ; current = dirname(current)) {
+      try {
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink() || !stat.isDirectory())
+          throw new HostError(
+            "Download destination must not cross a symlink or file.",
+          );
+      } catch (cause) {
+        if (!nodeError(cause, "ENOENT")) throw cause;
+      }
+      if (dirname(current) === current) break;
     }
-    if (dirname(current) === current) break;
+    return await scaffoldFiles(directory, files);
+  } catch (cause) {
+    const failures: unknown[] = [cause];
+    if (output === undefined) {
+      try {
+        await rmdir(directory);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 1)
+      throw new AggregateError(
+        failures,
+        "Download failed and temporary directory cleanup also failed.",
+        { cause },
+      );
+    throw cause;
   }
-  return scaffoldFiles(directory, files);
 }

@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { IpfsStore, type IpfsStoreOptions } from "@ipab/ipfs-store";
 import type * as StoreModule from "@ipab/ipfs-store";
 import { CarBlockIterator } from "@ipld/car/iterator";
@@ -45,6 +54,7 @@ import type { Identity } from "../src/identity.js";
 import type * as IdentityModule from "../src/identity.js";
 import { cli } from "./helpers.js";
 import { writeCar } from "../src/authoring.js";
+import * as authoring from "../src/authoring.js";
 import { State } from "../src/state.js";
 
 const ports = vi.hoisted(() => ({
@@ -787,23 +797,25 @@ describe(
         targetCid: node,
         cid: payload,
       });
+      const rawDirectory = join(work, "raw get");
+      const raw = await cli(
+        b.stateDir,
+        [
+          "--swarm",
+          swarm,
+          "get",
+          "--raw",
+          "ipab:///documents/hello",
+          "-o",
+          rawDirectory,
+        ],
+        { env: memberEnv },
+      );
+      expect(raw.code, raw.err).toBe(0);
+      expect(raw.out).toBe(rawDirectory);
       expect(
-        (
-          await cli(
-            b.stateDir,
-            [
-              "--swarm",
-              swarm,
-              "get",
-              "--raw",
-              "ipab:///documents/hello",
-              "-o",
-              join(work, "raw-get"),
-            ],
-            { env: memberEnv },
-          )
-        ).code,
-      ).toBe(0);
+        JSON.parse(await readFile(join(raw.out, "entry.json"), "utf8")),
+      ).toMatchObject({ value: payload });
       const encoded = await encodeBundleCar(
         memoryTree(
           new Map([
@@ -828,6 +840,85 @@ describe(
       const car = join(work, "content.car");
       await writeCar(encoded, car);
       expect((await cli(a.stateDir, ["publish", car], { env })).code).toBe(0);
+    });
+    it("exports to unique temporary directories with path-only stdout and preserves JSON metadata", async () => {
+      const payload = await jsonBundle(store, noteType, { text: "Temporary" });
+      const directories: string[] = [];
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await cli(a.stateDir, ["get", payload], {
+            env: a.env,
+          });
+          expect(result.code, result.err).toBe(0);
+          directories.push(result.out);
+          expect(isAbsolute(result.out)).toBe(true);
+          expect(dirname(result.out)).toBe(await realpath(tmpdir()));
+          expect(result.out).not.toContain("\n");
+          expect(
+            JSON.parse(await readFile(join(result.out, "entry.json"), "utf8")),
+          ).toEqual({ text: "Temporary" });
+        }
+        expect(directories[0]).not.toBe(directories[1]);
+        expect(existsSync(resolve(payload))).toBe(false);
+        const result = await cli(a.stateDir, ["--json", "get", payload], {
+          env: a.env,
+        });
+        expect(result.code, result.err).toBe(0);
+        const downloaded = JSON.parse(result.out) as { directory: string };
+        directories.push(downloaded.directory);
+        expect(JSON.parse(result.out)).toEqual({
+          targetCid: payload,
+          cid: payload,
+          directory: downloaded.directory,
+        });
+        expect(
+          JSON.parse(
+            await readFile(join(downloaded.directory, "entry.json"), "utf8"),
+          ),
+        ).toEqual({ text: "Temporary" });
+      } finally {
+        for (const directory of directories)
+          await rm(directory, { recursive: true, force: true });
+      }
+    });
+    it("reports failed gets without a stdout path and removes failed temporary exports", async () => {
+      for (const reference of [
+        fixtureId,
+        "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      ]) {
+        const missing = await cli(a.stateDir, ["get", reference], {
+          env: a.env,
+        });
+        expect(missing.code).not.toBe(0);
+        expect(missing.out).toBe("");
+        expect(missing.err).toContain("Error:");
+      }
+      const payload = await jsonBundle(store, noteType, {});
+      let directory = "";
+      vi.spyOn(authoring, "scaffoldFiles").mockImplementation((target) => {
+        directory = target;
+        return Promise.reject(new Error("Export write failed"));
+      });
+      const failed = await cli(a.stateDir, ["get", payload], { env: a.env });
+      expect(failed.code).toBe(1);
+      expect(failed.out).toBe("");
+      expect(failed.err).toContain("Export write failed");
+      expect(isAbsolute(directory)).toBe(true);
+      expect(existsSync(directory)).toBe(false);
+    });
+    it("does not print a get result when closing the Store fails", async () => {
+      const payload = await jsonBundle(store, noteType, {});
+      vi.spyOn(store, "close").mockRejectedValueOnce(
+        new Error("Store close failed"),
+      );
+      const result = await cli(
+        a.stateDir,
+        ["get", payload, "-o", join(work, "close-failed")],
+        { env: a.env },
+      );
+      expect(result.code).toBe(1);
+      expect(result.out).toBe("");
+      expect(result.err).toContain("Store close failed");
     });
     it("creates, grants membership, publishes versions, and gets content/raw without implicit source fetch", async () => {
       const swarm = await createSwarm(a);

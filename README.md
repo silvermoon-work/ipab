@@ -79,6 +79,11 @@ ipab get ipab:///apps/hello
 选择。分享时使用 CID，搜索结果也输出带 swarm CID 的完整 URI。
 旧 `name:<path>` 已移除；`IPAB_SWARM` 不再支持，需移除该环境变量并改用
 `--swarm` 或 `swarm use`。
+`get` 省略 `--output`
+时解包到独立的系统临时目录，普通 stdout 只输出绝对目录路径；
+`--json` 保留 CID 与原始目标信息。临时导出不会在退出时删除，调用方负责清理，
+需持久位置时显式指定 `--output`。命令组合见
+[获取 Bundle](docs/reference.md#获取-bundle-与命令组合)。
 `swarm use` 不需要设置环境变量；`swarm remove work` 只移除本机登记，
 不删除证书、内容或远程成员资格。
 `swarm update` 修改共享名称和描述，任何已授权 member 都可执行；

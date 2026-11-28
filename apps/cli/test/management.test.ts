@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli, help, parse } from "../src/cli.js";
 import {
@@ -43,6 +43,64 @@ describe("management contract", { tags: ["release-e2e"] }, () => {
   });
   const schema = appSchemaCid.toString();
   const another = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+
+  it("gets builtin templates offline by name and CID without importing their blocks", async () => {
+    const contentConfig = join(work.root, "get-store.json");
+    await writeFile(
+      contentConfig,
+      JSON.stringify({
+        backend: "local",
+        dataDir: join(work.root, "get-blocks"),
+      }),
+    );
+    vi.stubEnv("TASK_CONTENT_CONFIG", contentConfig);
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Network must not be used for builtin get"));
+    const builtins = await builtinContent();
+    for (const pin of builtins.pins) {
+      const output = join(work.root, pin.name.replaceAll(":", "-"));
+      const named = await cli(work.stateDir, ["get", pin.name, "-o", output]);
+      expect(named.code, named.err).toBe(0);
+      expect(named.out).toBe(output);
+      const manifest = await readFile(join(output, ".bundle.yaml"));
+      const byCid = await cli(work.stateDir, ["--json", "get", pin.cid]);
+      expect(byCid.code, byCid.err).toBe(0);
+      const result = JSON.parse(byCid.out) as { directory: string };
+      try {
+        expect(JSON.parse(byCid.out)).toEqual({
+          cid: pin.cid,
+          targetCid: pin.cid,
+          directory: result.directory,
+        });
+        expect(await readFile(join(result.directory, ".bundle.yaml"))).toEqual(
+          manifest,
+        );
+        const rebuilt = await cli(work.stateDir, [
+          "--json",
+          "bundle",
+          "build",
+          result.directory,
+          "--no-import",
+          "--output",
+          join(work.root, `${pin.name.replaceAll(":", "-")}.car`),
+        ]);
+        expect(rebuilt.code, rebuilt.err).toBe(0);
+        expect(JSON.parse(rebuilt.out)).toMatchObject({ cid: pin.cid });
+      } finally {
+        await rm(result.directory, { recursive: true, force: true });
+      }
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    const store = new IpfsStore({
+      dataDir: join(work.root, "get-blocks"),
+    });
+    try {
+      expect(await store.usage()).toEqual({ cachedBytes: 0, pinnedBytes: 0 });
+    } finally {
+      await store.close();
+    }
+  });
 
   it("persists stdin-only pointer API keys with account-only storage", async () => {
     const key = Buffer.alloc(32, 7).toString("base64url");

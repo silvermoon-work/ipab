@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { readFile } from "node:fs/promises";
 import { IpfsStore } from "@ipab/ipfs-store";
 import { randomUUID } from "node:crypto";
-import type { CID } from "multiformats/cid";
+import { CID } from "multiformats/cid";
 import stringWidth from "string-width";
 import {
   configKey,
@@ -289,15 +289,17 @@ const commandHelp: Record<
       "--raw  Select the Artifact node instead of its value.",
       "--force  Refresh the shared Name's swarm HEAD.",
       "--no-force  Override swarm.forceRefresh and use valid cached headers.",
-      "-o, --output DIRECTORY  New or empty directory; defaults to resolved CID.",
+      "-o, --output DIRECTORY  New or empty directory; defaults to a unique temporary directory.",
     ],
     examples: [
       "ipab --json get ipab:///apps/hello -o hello-app",
       "ipab get ipab://work/apps/hello -o hello-app",
+      "ipab get CONTENT_CID",
       "ipab get --raw RELEASE_CID",
     ],
     notes: [
-      "Returns the selected content CID and original target CID (editing baseline).",
+      "Stdout contains only the absolute directory path; --json also returns content and original target CIDs.",
+      "Temporary exports remain after exit; copy before cleanup, not symlink. Use --output for a persistent destination.",
       "ipab://SWARM_CID_OR_ALIAS/PATH selects its own swarm; ipab:///PATH uses --swarm or swarm.default.",
       "Does not install, build, edit, or automatically retrieve associated source.",
     ],
@@ -1279,24 +1281,49 @@ async function performCli(
           break;
         }
         if (parsed.path === "get") {
-          const selected = await resolveReference(
-            context,
-            first!,
-            selectedSwarm,
-            (reference) => state!.resolve(reference),
-            Boolean(parsed.options.raw),
+          const contentStore = store;
+          const source = IpfsStore.fromClient(
+            {
+              block: {
+                get: (key, options) => {
+                  options?.signal?.throwIfAborted();
+                  const builtin = builtins.blocks.get(
+                    CID.parse(key).toV1().toString(),
+                  );
+                  return builtin
+                    ? Promise.resolve(builtin.slice())
+                    : contentStore.block.get(key, options);
+                },
+              },
+            },
+            contentStore.limits,
           );
-          const directory = await getBundle(
-            store,
-            selected.cid,
-            typeof parsed.options.output === "string"
-              ? parsed.options.output
-              : undefined,
-          );
-          emit(
-            { ...selected, directory },
-            `CID: ${selected.cid}\nTarget CID: ${selected.targetCid}\nDirectory: ${directory}`,
-          );
+          let selected: { cid: string; targetCid: string };
+          let directory: string;
+          try {
+            selected = await resolveReference(
+              { ...context, store: source },
+              first!,
+              selectedSwarm,
+              (reference) => state!.resolve(reference),
+              Boolean(parsed.options.raw),
+            );
+            directory = await getBundle(
+              source,
+              selected.cid,
+              typeof parsed.options.output === "string"
+                ? parsed.options.output
+                : undefined,
+            );
+          } finally {
+            await source.close();
+          }
+          const closing = store;
+          store = undefined;
+          await closeStore(closing, undefined);
+          state.close();
+          state = undefined;
+          emit({ ...selected, directory }, directory);
           break;
         }
         let cid: string;

@@ -111,6 +111,15 @@ ipab publish CONTENT_CID --name documents/snapshot --snapshot
 ipab publish CONTENT_CID
 ```
 
+`get` without `--output` exports to a unique system temporary directory, not a
+CID-named directory in the current working directory. Plain stdout contains only
+the absolute directory path, including when `--output` is supplied. Use `--json`
+to retain the content CID and original target CID alongside the directory.
+Successful temporary exports remain after exit; callers own their cleanup and
+must copy rather than symlink when installing from them. See
+[command composition](reference.md#获取-bundle-与命令组合) for a failure-gated
+Bash example.
+
 Named publication creates an Artifact unless `--snapshot` explicitly names
 ordinary content. Initial names must be unoccupied; ordinary snapshots cannot
 replace an occupied Name. Iteration requires the exact old Artifact node.
